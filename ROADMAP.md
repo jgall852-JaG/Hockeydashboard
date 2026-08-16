@@ -112,3 +112,156 @@ Suggested next actions (short term)
 Contact / Notes
 - This roadmap is generated from the current project status and constraints (no parser changes, no upload workflow changes, localStorage schema preserved).
 - For any version that needs larger client-side storage (snapshots, history), propose schema extension and migration plan before implementation.
+
+# =====================================================
+# FUTURE VISION - FANTASY HOCKEY FRONT OFFICE
+# =====================================================
+
+## League Intelligence Philosophy
+
+Player Value != Fantasy Projection
+
+Player Value should consider:
+
+- Position Scarcity
+- Games Played
+- First Half Schedule
+- Second Half Schedule
+- Playoff Schedule
+- Farm Eligibility
+- Matching Rights
+- Contract Cost
+- Age
+- Draft Pedigree
+- League-Specific Position Rules
+- Owner Behavior Patterns
+
+---
+
+## Intelligence Data Sources
+
+Location:
+
+Hockey DB's
+
+Sources:
+
+- NHL API
+- NHL EDGE Data
+- Historical NHL Data
+- Excel Projections
+- Draft Guides
+- Prospect Rankings
+- Scouting Reports
+- Historical Auction Results
+- Historical League Exports
+- Position Scarcity Models
+- Personal Research
+
+Potential Data Tools:
+
+- nhl-api-py
+- Fantasy-NHML
+- Custom valuation models
+
+---
+
+## v0.4 Prospect Explorer
+
+Features:
+
+- Owner Filter
+- Farm Filter
+- Matching Rights Filter
+- Draft Year Filter
+- Cost Range Filter
+- Prospect Search
+- Position Search
+
+---
+
+## v0.5 Draft War Room
+
+Features:
+
+- Live Auction Draft Board
+- Current Bid Tracking
+- Target Value Calculation
+- Draft Watchlists
+- Drafted Player Tracking
+- Value Alerts
+
+Outputs:
+
+- Bargain
+- Fair Value
+- Overpay
+
+---
+
+## v0.6 League Valuation Engine
+
+Inputs:
+
+- NHL Statistics
+- Schedule Data
+- League Costs
+- Position Scarcity
+- Farm Status
+- Matching Rights
+
+Outputs:
+
+- Expected League Value
+- Current Cost
+- Difference
+- Undervalued Rating
+- Overvalued Rating
+
+---
+
+## v0.7 Trade Analyzer
+
+Features:
+
+- Team A vs Team B
+- Asset Comparison
+- Future Value Comparison
+- Farm Impact Analysis
+- Matching Rights Impact
+
+---
+
+## v0.8 Intelligence Database
+
+Purpose:
+
+Build a hockey research warehouse using:
+
+- PDFs
+- Excel Files
+- CSV Files
+- NHL Data
+- Draft Guides
+- Scouting Reports
+
+Location:
+
+C:\Users\galla\OneDrive\Desktop\Hockey DB's
+
+---
+
+## v1.0 Fantasy Hockey Front Office
+
+Goals:
+
+Answer:
+
+- Who should I draft?
+- What is this player worth?
+- Am I overpaying?
+- Who has the best prospect pool?
+- What trades improve my team?
+- Which prospects are undervalued?
+- Which owners have surplus assets?
+
