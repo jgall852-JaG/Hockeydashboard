@@ -8,6 +8,8 @@ const state = {
   importedData: null,
   selectedOwner: null,
   previewRows: [],
+  ownerSearch: '',
+  playerSearch: '',
 };
 
 function parseCSVLine(line) {
@@ -314,6 +316,10 @@ function formatValue(value) {
   return String(value);
 }
 
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function renderTable(headers, rows) {
   if (!rows.length) {
     return '<div class="empty-state">No records available.</div>';
@@ -367,7 +373,18 @@ function renderOwnerList(ownerData) {
     </div>
   `;
 
-  const ownerListMarkup = ownerData.owners.map((owner) => {
+  // Apply owner search filter (case-insensitive)
+  const search = (state.ownerSearch || '').trim().toLowerCase();
+  const ownersFiltered = search
+    ? ownerData.owners.filter((o) => o.name.toLowerCase().includes(search))
+    : ownerData.owners.slice();
+
+  // Preserve selected owner when possible: if current selectedOwner not in filtered list, pick first
+  if (state.selectedOwner && !ownersFiltered.some((o) => o.name === state.selectedOwner)) {
+    state.selectedOwner = ownersFiltered.length ? ownersFiltered[0].name : null;
+  }
+
+  const ownerListMarkup = ownersFiltered.map((owner) => {
     const isActive = state.selectedOwner === owner.name;
 
     return `
@@ -385,6 +402,13 @@ function renderOwnerList(ownerData) {
     `;
   }).join('');
 
+  // Owner search input HTML
+  const searchHtml = `
+    <div style="margin:10px 0 12px;">
+      <input id="ownerSearchInput" placeholder="Search owners..." value="${escapeHtml(state.ownerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
+    </div>
+  `;
+
   return `
     <aside class="panel owner-list">
       <div class="preview-header">
@@ -392,19 +416,25 @@ function renderOwnerList(ownerData) {
         <span class="meta-pill">${ownerData.totalOwners}</span>
       </div>
       ${statusHtml}
+      ${searchHtml}
       <div class="owner-list">${ownerListMarkup}</div>
     </aside>
   `;
 }
 
-function renderPlayerList(players) {
-  if (!players || !players.length) {
+function renderPlayerList(players, filter) {
+  const search = (filter || '').trim().toLowerCase();
+  const filtered = search
+    ? (players || []).filter((p) => (p.name || '').toLowerCase().includes(search))
+    : (players || []);
+
+  if (!filtered || !filtered.length) {
     return '<div class="empty-state">No players.</div>';
   }
 
   return `
     <ul class="player-list">
-      ${players.map((player) => `<li>${player.name || 'Unnamed Player'}</li>`).join('')}
+      ${filtered.map((player) => `<li>${player.name || 'Unnamed Player'}</li>`).join('')}
     </ul>
   `;
 }
@@ -440,22 +470,25 @@ function renderOwnerDetails(ownerData) {
   `;
 
   const cards = `
+    <div style="margin-bottom:10px;">
+      <input id="playerSearchInput" placeholder="Search players..." value="${escapeHtml(state.playerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
+    </div>
     <div class="detail-grid">
       <article class="detail-card">
         <h3>Prospects</h3>
-        ${renderPlayerList(selectedOwner.prospects)}
+        ${renderPlayerList(selectedOwner.prospects, state.playerSearch)}
       </article>
       <article class="detail-card">
         <h3>Veterans</h3>
-        ${renderPlayerList(selectedOwner.veterans)}
+        ${renderPlayerList(selectedOwner.veterans, state.playerSearch)}
       </article>
       <article class="detail-card">
         <h3>Farm Players</h3>
-        ${renderPlayerList(selectedOwner.farmPlayers)}
+        ${renderPlayerList(selectedOwner.farmPlayers, state.playerSearch)}
       </article>
       <article class="detail-card">
         <h3>Matching Rights</h3>
-        ${renderPlayerList(selectedOwner.matchingRights)}
+        ${renderPlayerList(selectedOwner.matchingRights, state.playerSearch)}
       </article>
     </div>
   `;
@@ -508,12 +541,33 @@ function renderOwnerView(unifiedState) {
 
   document.getElementById('backToImportBtn').classList.remove('hidden');
 
+  // owner click handlers
   document.querySelectorAll('.owner-item').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedOwner = button.dataset.owner;
       renderOwnerView(unifiedState);
     });
   });
+
+  // owner search handler
+  const ownerSearchInput = document.getElementById('ownerSearchInput');
+  if (ownerSearchInput) {
+    ownerSearchInput.addEventListener('input', (e) => {
+      state.ownerSearch = e.target.value || '';
+      // re-render with same unified state
+      renderOwnerView(unifiedState);
+    });
+  }
+
+  // player search handler
+  const playerSearchInput = document.getElementById('playerSearchInput');
+  if (playerSearchInput) {
+    playerSearchInput.addEventListener('input', (e) => {
+      state.playerSearch = e.target.value || '';
+      // re-render to apply player filters but keep owner selection
+      renderOwnerView(unifiedState);
+    });
+  }
 }
 
 function renderImportScreen() {
