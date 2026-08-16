@@ -338,3 +338,46 @@ button.secondary {
     align-items: flex-start;
   }
 }
+
+/* v0.3a summary and owner-stats */
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.summary-card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
+  text-align: center;
+}
+
+.summary-card .summary-value {
+  font-size: 1.45rem;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.summary-card .summary-label {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.owner-summary {
+  margin: 12px 0 18px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--line-soft);
+}
+
+.owner-summary .meta-pill {
+  background: rgba(255,255,255,0.015);
+  color: var(--muted);
+  padding: 8px 10px;
+  font-size: 0.85rem;
+}

@@ -258,6 +258,56 @@ function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
   return next;
 }
 
+// ----------------------------
+// Dashboard / Owner Statistics helpers
+// ----------------------------
+
+function computeDashboardSummary(stateObj) {
+  const prospects = Object.values(stateObj.datasets.prospects?.prospects || {});
+  const veterans = Object.values(stateObj.datasets.veterans?.veterans || {});
+  const ownerSet = new Set();
+  if (stateObj.datasets.prospects?.owners) Object.keys(stateObj.datasets.prospects.owners).forEach((o) => ownerSet.add(o));
+  if (stateObj.datasets.veterans?.owners) Object.keys(stateObj.datasets.veterans.owners).forEach((o) => ownerSet.add(o));
+  prospects.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
+  veterans.forEach((v) => { if (v && v.owner) ownerSet.add(v.owner); });
+
+  const totalOwners = ownerSet.size;
+  const totalProspects = prospects.length;
+  const totalVeterans = veterans.length;
+  const totalFarmPlayers = prospects.filter((p) => p.farm).length;
+  const totalMatchingRights = prospects.filter((p) => p.matchingRights).length;
+
+  return { totalOwners, totalProspects, totalVeterans, totalFarmPlayers, totalMatchingRights };
+}
+
+function computeOwnerStatistics(ownerEntry) {
+  const prospectCount = (ownerEntry.prospects || []).length;
+  const veteranCount = (ownerEntry.veterans || []).length;
+  const farmCount = (ownerEntry.farmPlayers || []).length;
+  const matchingRightsCount = (ownerEntry.matchingRights || []).length;
+
+  const totalProspectCost = (ownerEntry.prospects || []).reduce((sum, p) => sum + (Number(p.cost) || 0), 0);
+  const averageProspectCost = prospectCount ? totalProspectCost / prospectCount : 0;
+
+  let highest = null;
+  (ownerEntry.prospects || []).forEach((p) => {
+    const c = Number(p.cost) || 0;
+    if (highest === null || c > highest.cost) {
+      highest = { playerId: p.playerId, name: p.name, cost: c };
+    }
+  });
+
+  return {
+    prospectCount,
+    veteranCount,
+    farmCount,
+    matchingRightsCount,
+    totalProspectCost,
+    averageProspectCost,
+    highestCostProspect: highest,
+  };
+}
+
 function formatValue(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'number') return Number.isInteger(value) ? value.toString() : value.toFixed(2);
@@ -370,6 +420,25 @@ function renderOwnerDetails(ownerData) {
     `;
   }
 
+  const stats = computeOwnerStatistics(selectedOwner);
+  const totalCostFmt = formatValue(stats.totalProspectCost);
+  const avgCostFmt = stats.prospectCount ? formatValue(stats.averageProspectCost) : '—';
+  const highest = stats.highestCostProspect ? `${stats.highestCostProspect.name} ($${stats.highestCostProspect.cost})` : '—';
+
+  const ownerSummary = `
+    <div class="owner-summary panel">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+        <div class="meta-pill">Prospects: ${stats.prospectCount}</div>
+        <div class="meta-pill">Veterans: ${stats.veteranCount}</div>
+        <div class="meta-pill">Farm: ${stats.farmCount}</div>
+        <div class="meta-pill">Matching Rights: ${stats.matchingRightsCount}</div>
+        <div class="meta-pill">Total Prospect Cost: $${totalCostFmt}</div>
+        <div class="meta-pill">Avg Prospect Cost: $${avgCostFmt}</div>
+        <div class="meta-pill">Highest Prospect: ${highest}</div>
+      </div>
+    </div>
+  `;
+
   const cards = `
     <div class="detail-grid">
       <article class="detail-card">
@@ -396,6 +465,7 @@ function renderOwnerDetails(ownerData) {
       <div class="details-header">
         <h2>${selectedOwner.name}</h2>
       </div>
+      ${ownerSummary}
       ${cards}
     </section>
   `;
@@ -413,11 +483,23 @@ function renderOwnerView(unifiedState) {
     state.selectedOwner = ownerData.owners[0].name;
   }
 
+  const summary = computeDashboardSummary(unifiedState);
+  const summaryHtml = `
+    <section class="panel summary-grid">
+      <div class="summary-card"><div class="summary-value">${summary.totalOwners}</div><div class="summary-label">Total Owners</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalProspects}</div><div class="summary-label">Total Prospects</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalVeterans}</div><div class="summary-label">Total Veterans</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalFarmPlayers}</div><div class="summary-label">Total Farm Players</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalMatchingRights}</div><div class="summary-label">Total Matching Rights</div></div>
+    </section>
+  `;
+
   const ownerListMarkup = renderOwnerList(ownerData);
   const ownerDetailMarkup = renderOwnerDetails(ownerData);
 
   const app = document.getElementById('app');
   app.innerHTML = `
+    ${summaryHtml}
     <div class="owner-layout">
       ${ownerListMarkup}
       ${ownerDetailMarkup}
