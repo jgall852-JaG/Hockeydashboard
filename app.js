@@ -310,6 +310,150 @@ function computeOwnerStatistics(ownerEntry) {
   };
 }
 
+// ----------------------------
+// League Intelligence & Data Quality
+// ----------------------------
+
+function computeOwnerAggregates(stateObj) {
+  const prospects = Object.values(stateObj.datasets.prospects?.prospects || {});
+  const veterans = Object.values(stateObj.datasets.veterans?.veterans || {});
+
+  const ownerAggregates = {}; // owner -> aggregates
+
+  function ensureOwner(o) {
+    if (!o) return;
+    if (!ownerAggregates[o]) {
+      ownerAggregates[o] = {
+        prospectCount: 0,
+        veteranCount: 0,
+        farmCount: 0,
+        matchingRightsCount: 0,
+        totalProspectCost: 0,
+        highestProspect: null,
+      };
+    }
+  }
+
+  // Prospects
+  prospects.forEach((p) => {
+    const o = p.owner || 'Unknown';
+    ensureOwner(o);
+    const agg = ownerAggregates[o];
+    agg.prospectCount += 1;
+    if (p.farm) agg.farmCount += 1;
+    if (p.matchingRights) agg.matchingRightsCount += 1;
+    const c = Number(p.cost) || 0;
+    agg.totalProspectCost += c;
+    if (!agg.highestProspect || c > agg.highestProspect.cost) {
+      agg.highestProspect = { playerId: p.playerId, name: p.name, cost: c };
+    }
+  });
+
+  // Veterans
+  veterans.forEach((v) => {
+    const o = v.owner || 'Unknown';
+    ensureOwner(o);
+    const agg = ownerAggregates[o];
+    agg.veteranCount += 1;
+  });
+
+  // Compute derived fields and global metrics
+  let mostProspects = { owner: null, count: -1 };
+  let mostVeterans = { owner: null, count: -1 };
+  let mostFarm = { owner: null, count: -1 };
+  let mostMatching = { owner: null, count: -1 };
+  let mostExpensiveProspect = null;
+  let mostExpensiveVeteran = null;
+
+  Object.entries(ownerAggregates).forEach(([owner, agg]) => {
+    if (agg.prospectCount > mostProspects.count || (agg.prospectCount === mostProspects.count && owner < (mostProspects.owner || ''))) {
+      mostProspects = { owner, count: agg.prospectCount };
+    }
+    if (agg.veteranCount > mostVeterans.count || (agg.veteranCount === mostVeterans.count && owner < (mostVeterans.owner || ''))) {
+      mostVeterans = { owner, count: agg.veteranCount };
+    }
+    if (agg.farmCount > mostFarm.count || (agg.farmCount === mostFarm.count && owner < (mostFarm.owner || ''))) {
+      mostFarm = { owner, count: agg.farmCount };
+    }
+    if (agg.matchingRightsCount > mostMatching.count || (agg.matchingRightsCount === mostMatching.count && owner < (mostMatching.owner || ''))) {
+      mostMatching = { owner, count: agg.matchingRightsCount };
+    }
+
+    // candidate for most expensive prospect
+    if (agg.highestProspect) {
+      if (!mostExpensiveProspect || agg.highestProspect.cost > mostExpensiveProspect.cost) {
+        mostExpensiveProspect = { owner, ...agg.highestProspect };
+      }
+    }
+  });
+
+  // most expensive veteran from veterans list
+  veterans.forEach((v) => {
+    const cost = Number(v.currentCost ?? v.currentcost ?? v.current) || 0;
+    if (!mostExpensiveVeteran || cost > mostExpensiveVeteran.cost) {
+      mostExpensiveVeteran = { owner: v.owner || 'Unknown', playerId: v.playerId, name: v.name, cost };
+    }
+  });
+
+  return {
+    ownerAggregates,
+    global: {
+      mostProspects,
+      mostVeterans,
+      mostFarm,
+      mostMatching,
+      mostExpensiveProspect,
+      mostExpensiveVeteran,
+    },
+  };
+}
+
+function renderLeagueIntelligence(aggregates) {
+  const g = aggregates.global;
+  const mep = g.mostExpensiveProspect ? `${escapeHtml(g.mostExpensiveProspect.name)} (${g.mostExpensiveProspect.owner}) $${formatValue(g.mostExpensiveProspect.cost)}` : '—';
+  const mev = g.mostExpensiveVeteran ? `${escapeHtml(g.mostExpensiveVeteran.name)} (${g.mostExpensiveVeteran.owner}) $${formatValue(g.mostExpensiveVeteran.cost)}` : '—';
+
+  return `
+    <section class="panel league-intel">
+      <h3>League Intelligence</h3>
+      <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px;">
+        <div class="meta-pill">Most Prospects: ${g.mostProspects.owner ? escapeHtml(g.mostProspects.owner) + ` (${g.mostProspects.count})` : '—'}</div>
+        <div class="meta-pill">Most Veterans: ${g.mostVeterans.owner ? escapeHtml(g.mostVeterans.owner) + ` (${g.mostVeterans.count})` : '—'}</div>
+        <div class="meta-pill">Most Farm Players: ${g.mostFarm.owner ? escapeHtml(g.mostFarm.owner) + ` (${g.mostFarm.count})` : '—'}</div>
+        <div class="meta-pill">Most Matching Rights: ${g.mostMatching.owner ? escapeHtml(g.mostMatching.owner) + ` (${g.mostMatching.count})` : '—'}</div>
+        <div class="meta-pill">Most Expensive Prospect: ${mep}</div>
+        <div class="meta-pill">Most Expensive Veteran: ${mev}</div>
+      </div>
+    </section>
+  `;
+}
+
+function renderDataQualityPanel(stateObj) {
+  const md = stateObj.metadata || {};
+  const datasets = ['prospects','veterans','roster','transactions'];
+  const rows = datasets.map((d) => {
+    const m = md[d] || { status: 'empty' };
+    const status = m.status === 'ok' ? '✅' : '❌';
+    const records = m.records != null ? `(${m.records})` : '';
+    const when = m.importedAt ? `Imported: ${new Date(m.importedAt).toLocaleString()}` : '';
+    return `<div class="dq-row">${status} <strong>${d.charAt(0).toUpperCase()+d.slice(1)}</strong> ${records} <div class="dq-meta">${when}</div></div>`;
+  }).join('');
+
+  const lastUpdated = (() => {
+    const times = datasets.map(d => md[d]?.importedAt).filter(Boolean).map(t => new Date(t).getTime());
+    if (!times.length) return 'Never';
+    return new Date(Math.max(...times)).toLocaleString();
+  })();
+
+  return `
+    <section class="panel data-quality">
+      <h3>Data Quality</h3>
+      <div style="margin-top:10px;">${rows}</div>
+      <div style="margin-top:8px;color:var(--muted);font-size:0.9rem;">Last updated: ${escapeHtml(lastUpdated)}</div>
+    </section>
+  `;
+}
+
 function formatValue(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'number') return Number.isInteger(value) ? value.toString() : value.toFixed(2);
@@ -530,12 +674,21 @@ function renderOwnerView(unifiedState) {
   const ownerListMarkup = renderOwnerList(ownerData);
   const ownerDetailMarkup = renderOwnerDetails(ownerData);
 
+  // compute aggregates once
+  const aggregates = computeOwnerAggregates(unifiedState);
+  const leagueHtml = renderLeagueIntelligence(aggregates);
+  const dataQualityHtml = renderDataQualityPanel(unifiedState);
+
   const app = document.getElementById('app');
   app.innerHTML = `
     ${summaryHtml}
     <div class="owner-layout">
       ${ownerListMarkup}
-      ${ownerDetailMarkup}
+      <div>
+        ${leagueHtml}
+        ${dataQualityHtml}
+        ${ownerDetailMarkup}
+      </div>
     </div>
   `;
 

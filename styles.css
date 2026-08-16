@@ -381,3 +381,22 @@ button.secondary {
   padding: 8px 10px;
   font-size: 0.85rem;
 }
+
+.league-intel {
+  margin-bottom: 12px;
+}
+
+.data-quality .dq-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.015);
+  margin-bottom: 8px;
+}
+
+.data-quality .dq-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
