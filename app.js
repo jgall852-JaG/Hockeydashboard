@@ -2085,6 +2085,53 @@ function handleImport(csvText, fileName) {
   });
 }
 
+async function bootstrapDefaultData() {
+  const bootstrapFiles = [
+    { datasetType: 'prospects', fileName: 'Data/Rosters/AHL Draft - Prospects.csv' },
+    { datasetType: 'veterans', fileName: 'Data/Rosters/AHL Draft - Veterans.csv' },
+  ];
+
+  let nextState = loadState();
+  let bootstrapped = false;
+
+  for (const entry of bootstrapFiles) {
+    const urls = getRuntimeDataCandidates(entry.fileName);
+    let csvText = null;
+
+    for (const url of urls) {
+      try {
+        const response = await fetch(url);
+        if (response.ok) {
+          csvText = await response.text();
+          break;
+        }
+      } catch (error) {
+        csvText = null;
+      }
+    }
+
+    if (!csvText) {
+      continue;
+    }
+
+    const parsedData = entry.datasetType === 'prospects' ? parseProspects(csvText) : parseVeterans(csvText);
+    if (!parsedData || (!parsedData.prospects && !parsedData.veterans)) {
+      continue;
+    }
+
+    nextState = mergeDataset(nextState, entry.datasetType, parsedData, entry.fileName);
+    bootstrapped = true;
+  }
+
+  if (!bootstrapped) {
+    return null;
+  }
+
+  persistState(nextState);
+  state.importedData = nextState;
+  return nextState;
+}
+
 async function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
   backToImportBtn.addEventListener('click', () => {
@@ -2120,9 +2167,17 @@ async function initialize() {
   if (anyLoaded) {
     await hydratePlayerReferenceData();
     renderCurrentView();
-  } else {
-    renderImportScreen();
+    return;
   }
+
+  const bootstrapped = await bootstrapDefaultData();
+  if (bootstrapped) {
+    await hydratePlayerReferenceData();
+    renderCurrentView();
+    return;
+  }
+
+  renderImportScreen();
 }
 
 if (typeof document !== 'undefined') {
