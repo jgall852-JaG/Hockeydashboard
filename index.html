@@ -11,9 +11,15 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">Hockey Dashboard</p>
-          <h1>Owner View</h1>
+          <h1 id="pageTitle">Owner View</h1>
         </div>
-        <button id="backToImportBtn" class="secondary hidden">Upload Another</button>
+        <div class="header-actions">
+          <div id="viewToggle" class="view-toggle hidden" aria-label="Dashboard view switcher">
+            <button id="ownerViewBtn" type="button" class="secondary active">Owner View</button>
+            <button id="prospectViewBtn" type="button" class="secondary">Prospect Explorer</button>
+          </div>
+          <button id="backToImportBtn" class="secondary hidden">Upload Another</button>
+        </div>
       </header>
 
       <main id="app" class="app" aria-live="polite"></main>

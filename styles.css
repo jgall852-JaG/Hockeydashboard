@@ -54,6 +54,34 @@ button, input {
   margin-bottom: 20px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 6px;
+}
+
+.view-toggle button {
+  min-width: 138px;
+}
+
+.view-toggle button.active {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  border-color: transparent;
+  color: #0b1523;
+  font-weight: 700;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--accent);
@@ -399,4 +427,192 @@ button.secondary {
 .data-quality .dq-meta {
   color: var(--muted);
   font-size: 0.85rem;
+}
+
+.prospect-explorer {
+  display: grid;
+  gap: 18px;
+}
+
+.prospect-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.prospect-summary-card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 14px;
+  text-align: center;
+}
+
+.prospect-summary-value {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--accent);
+}
+
+.prospect-summary-label {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.health-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.health-strip .meta-pill {
+  color: var(--text);
+  border-color: rgba(103, 183, 255, 0.18);
+}
+
+.filter-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.filter-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.field-group {
+  display: grid;
+  gap: 6px;
+}
+
+.field-group label {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.field-group input,
+.field-group select {
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.015);
+  color: var(--text);
+}
+
+.prospect-table-wrap {
+  overflow-x: auto;
+}
+
+.prospect-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+}
+
+.prospect-table th,
+.prospect-table td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 10px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.prospect-table th {
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.prospect-table thead tr.subhead th {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  background: rgba(103, 183, 255, 0.05);
+  border-bottom: 1px solid rgba(103, 183, 255, 0.18);
+}
+
+.schedule-head {
+  text-align: center;
+}
+
+.schedule-subhead,
+.schedule-cell {
+  text-align: center;
+}
+
+.prospect-table th:nth-child(5),
+.prospect-table th:nth-child(6),
+.prospect-table th:nth-child(7),
+.prospect-table td.schedule-cell {
+  background: rgba(103, 183, 255, 0.03);
+}
+
+.prospect-table tbody tr:hover {
+  background: rgba(103, 183, 255, 0.04);
+}
+
+.override-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.override-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.override-list {
+  display: grid;
+  gap: 10px;
+}
+
+.override-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.override-chip strong {
+  color: var(--text);
+}
+
+.prospect-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 64px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.prospect-tag.is-true {
+  border-color: rgba(67, 195, 139, 0.45);
+  color: var(--success);
+}
+
+.prospect-tag.is-false {
+  border-color: rgba(245, 108, 108, 0.35);
+  color: var(--danger);
+}
+
+.prospect-empty {
+  color: var(--muted);
+  font-style: italic;
 }

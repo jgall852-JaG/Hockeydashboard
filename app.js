@@ -4,13 +4,1293 @@ import { parseVeterans } from './veteranParser.js';
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const MAX_PREVIEW_ROWS = 10;
 
+const GAMES_PLAYED_BULATOR_DATA = {
+  'Anaheim Ducks': { teamName: 'Anaheim Ducks', firstHalfEligibleGames: 28, secondHalfEligibleGames: 24, totalEligibleGames: 52 },
+  'Boston Bruins': { teamName: 'Boston Bruins', firstHalfEligibleGames: 28, secondHalfEligibleGames: 39, totalEligibleGames: 67 },
+  'Buffalo Sabres': { teamName: 'Buffalo Sabres', firstHalfEligibleGames: 33, secondHalfEligibleGames: 28, totalEligibleGames: 61 },
+  'Calgary Flames': { teamName: 'Calgary Flames', firstHalfEligibleGames: 29, secondHalfEligibleGames: 28, totalEligibleGames: 57 },
+  'Carolina Hurricanes': { teamName: 'Carolina Hurricanes', firstHalfEligibleGames: 29, secondHalfEligibleGames: 34, totalEligibleGames: 63 },
+  'Chicago Blackhawks': { teamName: 'Chicago Blackhawks', firstHalfEligibleGames: 30, secondHalfEligibleGames: 25, totalEligibleGames: 55 },
+  'Colorado Avalanche': { teamName: 'Colorado Avalanche', firstHalfEligibleGames: 33, secondHalfEligibleGames: 32, totalEligibleGames: 65 },
+  'Columbus Blue Jackets': { teamName: 'Columbus Blue Jackets', firstHalfEligibleGames: 33, secondHalfEligibleGames: 32, totalEligibleGames: 65 },
+  'Dallas Stars': { teamName: 'Dallas Stars', firstHalfEligibleGames: 33, secondHalfEligibleGames: 35, totalEligibleGames: 68 },
+  'Detroit Red Wings': { teamName: 'Detroit Red Wings', firstHalfEligibleGames: 30, secondHalfEligibleGames: 31, totalEligibleGames: 61 },
+  'Edmonton Oilers': { teamName: 'Edmonton Oilers', firstHalfEligibleGames: 33, secondHalfEligibleGames: 34, totalEligibleGames: 67 },
+  'Florida Panthers': { teamName: 'Florida Panthers', firstHalfEligibleGames: 31, secondHalfEligibleGames: 32, totalEligibleGames: 63 },
+  'Los Angeles Kings': { teamName: 'Los Angeles Kings', firstHalfEligibleGames: 29, secondHalfEligibleGames: 31, totalEligibleGames: 60 },
+  'Minnesota Wild': { teamName: 'Minnesota Wild', firstHalfEligibleGames: 31, secondHalfEligibleGames: 36, totalEligibleGames: 67 },
+  'Montreal Canadiens': { teamName: 'Montreal Canadiens', firstHalfEligibleGames: 32, secondHalfEligibleGames: 36, totalEligibleGames: 68 },
+  'Nashville Predators': { teamName: 'Nashville Predators', firstHalfEligibleGames: 34, secondHalfEligibleGames: 35, totalEligibleGames: 69 },
+  'New Jersey Devils': { teamName: 'New Jersey Devils', firstHalfEligibleGames: 32, secondHalfEligibleGames: 28, totalEligibleGames: 60 },
+  'New York Islanders': { teamName: 'New York Islanders', firstHalfEligibleGames: 32, secondHalfEligibleGames: 30, totalEligibleGames: 62 },
+  'New York Rangers': { teamName: 'New York Rangers', firstHalfEligibleGames: 31, secondHalfEligibleGames: 30, totalEligibleGames: 61 },
+  'Ottawa Senators': { teamName: 'Ottawa Senators', firstHalfEligibleGames: 31, secondHalfEligibleGames: 31, totalEligibleGames: 62 },
+  'Philadelphia Flyers': { teamName: 'Philadelphia Flyers', firstHalfEligibleGames: 30, secondHalfEligibleGames: 31, totalEligibleGames: 61 },
+  'Pittsburgh Penguins': { teamName: 'Pittsburgh Penguins', firstHalfEligibleGames: 29, secondHalfEligibleGames: 29, totalEligibleGames: 58 },
+  'San Jose Sharks': { teamName: 'San Jose Sharks', firstHalfEligibleGames: 29, secondHalfEligibleGames: 31, totalEligibleGames: 60 },
+  'Seattle Kraken': { teamName: 'Seattle Kraken', firstHalfEligibleGames: 27, secondHalfEligibleGames: 32, totalEligibleGames: 59 },
+  'St. Louis Blues': { teamName: 'St. Louis Blues', firstHalfEligibleGames: 31, secondHalfEligibleGames: 31, totalEligibleGames: 62 },
+  'Tampa Bay Lightning': { teamName: 'Tampa Bay Lightning', firstHalfEligibleGames: 32, secondHalfEligibleGames: 35, totalEligibleGames: 67 },
+  'Toronto Maple Leafs': { teamName: 'Toronto Maple Leafs', firstHalfEligibleGames: 33, secondHalfEligibleGames: 28, totalEligibleGames: 61 },
+  'Utah Hockey Club': { teamName: 'Utah Hockey Club', firstHalfEligibleGames: 26, secondHalfEligibleGames: 29, totalEligibleGames: 55 },
+  'Vancouver Canucks': { teamName: 'Vancouver Canucks', firstHalfEligibleGames: 29, secondHalfEligibleGames: 28, totalEligibleGames: 57 },
+  'Vegas Golden Knights': { teamName: 'Vegas Golden Knights', firstHalfEligibleGames: 31, secondHalfEligibleGames: 31, totalEligibleGames: 62 },
+  'Washington Capitals': { teamName: 'Washington Capitals', firstHalfEligibleGames: 29, secondHalfEligibleGames: 34, totalEligibleGames: 63 },
+  'Winnipeg Jets': { teamName: 'Winnipeg Jets', firstHalfEligibleGames: 31, secondHalfEligibleGames: 30, totalEligibleGames: 61 },
+};
+
+const TEAM_ABBREVIATION_TO_NAME = {
+  ANA: 'Anaheim Ducks',
+  BOS: 'Boston Bruins',
+  BUF: 'Buffalo Sabres',
+  CGY: 'Calgary Flames',
+  CAR: 'Carolina Hurricanes',
+  CHI: 'Chicago Blackhawks',
+  COL: 'Colorado Avalanche',
+  CBJ: 'Columbus Blue Jackets',
+  DAL: 'Dallas Stars',
+  DET: 'Detroit Red Wings',
+  EDM: 'Edmonton Oilers',
+  FLO: 'Florida Panthers',
+  FLA: 'Florida Panthers',
+  CBS: 'Columbus Blue Jackets',
+  LA: 'Los Angeles Kings',
+  LAK: 'Los Angeles Kings',
+  MIN: 'Minnesota Wild',
+  MTL: 'Montreal Canadiens',
+  NSH: 'Nashville Predators',
+  NJ: 'New Jersey Devils',
+  NJD: 'New Jersey Devils',
+  NYI: 'New York Islanders',
+  NYR: 'New York Rangers',
+  OTT: 'Ottawa Senators',
+  PHI: 'Philadelphia Flyers',
+  PIT: 'Pittsburgh Penguins',
+  SJ: 'San Jose Sharks',
+  SJS: 'San Jose Sharks',
+  SEA: 'Seattle Kraken',
+  STL: 'St. Louis Blues',
+  TBL: 'Tampa Bay Lightning',
+  TOR: 'Toronto Maple Leafs',
+  UTA: 'Utah Hockey Club',
+  VAN: 'Vancouver Canucks',
+  VGK: 'Vegas Golden Knights',
+  WSH: 'Washington Capitals',
+  WIN: 'Winnipeg Jets',
+  WPG: 'Winnipeg Jets',
+};
+
+const TEAM_SCHEDULE_ALIASES = {
+  anaheim: 'Anaheim Ducks',
+  'anaheim ducks': 'Anaheim Ducks',
+  boston: 'Boston Bruins',
+  'boston bruins': 'Boston Bruins',
+  buffalo: 'Buffalo Sabres',
+  'buffalo sabres': 'Buffalo Sabres',
+  calgary: 'Calgary Flames',
+  'calgary flames': 'Calgary Flames',
+  carolina: 'Carolina Hurricanes',
+  'carolina hurricanes': 'Carolina Hurricanes',
+  chicago: 'Chicago Blackhawks',
+  'chicago blackhawks': 'Chicago Blackhawks',
+  colorado: 'Colorado Avalanche',
+  'colorado avalanche': 'Colorado Avalanche',
+  columbus: 'Columbus Blue Jackets',
+  'columbus blue jackets': 'Columbus Blue Jackets',
+  dallas: 'Dallas Stars',
+  'dallas stars': 'Dallas Stars',
+  detroit: 'Detroit Red Wings',
+  'detroit red wings': 'Detroit Red Wings',
+  edmonton: 'Edmonton Oilers',
+  'edmonton oilers': 'Edmonton Oilers',
+  florida: 'Florida Panthers',
+  'florida panthers': 'Florida Panthers',
+  'los angeles': 'Los Angeles Kings',
+  'los angeles kings': 'Los Angeles Kings',
+  minnesota: 'Minnesota Wild',
+  'minnesota wild': 'Minnesota Wild',
+  montreal: 'Montreal Canadiens',
+  'montreal canadiens': 'Montreal Canadiens',
+  nashville: 'Nashville Predators',
+  'nashville predators': 'Nashville Predators',
+  'new jersey': 'New Jersey Devils',
+  'new jersey devils': 'New Jersey Devils',
+  'ny islanders': 'New York Islanders',
+  'new york islanders': 'New York Islanders',
+  'ny rangers': 'New York Rangers',
+  'new york rangers': 'New York Rangers',
+  ottawa: 'Ottawa Senators',
+  'ottawa senators': 'Ottawa Senators',
+  phila: 'Philadelphia Flyers',
+  philad: 'Philadelphia Flyers',
+  'philadelphia flyers': 'Philadelphia Flyers',
+  pittsburgh: 'Pittsburgh Penguins',
+  'pittsburgh penguins': 'Pittsburgh Penguins',
+  'san jose': 'San Jose Sharks',
+  'san jose sharks': 'San Jose Sharks',
+  seattle: 'Seattle Kraken',
+  'seattle kraken': 'Seattle Kraken',
+  'st louis': 'St. Louis Blues',
+  'st. louis': 'St. Louis Blues',
+  'st. louis blues': 'St. Louis Blues',
+  'tampa bay': 'Tampa Bay Lightning',
+  'tampa bay lightning': 'Tampa Bay Lightning',
+  toronto: 'Toronto Maple Leafs',
+  'toronto maple leafs': 'Toronto Maple Leafs',
+  utah: 'Utah Hockey Club',
+  'utah hockey club': 'Utah Hockey Club',
+  vancouver: 'Vancouver Canucks',
+  'vancouver canucks': 'Vancouver Canucks',
+  vegas: 'Vegas Golden Knights',
+  'vegas golden knights': 'Vegas Golden Knights',
+  washington: 'Washington Capitals',
+  'washington capitals': 'Washington Capitals',
+  winnipeg: 'Winnipeg Jets',
+  'winnipeg jets': 'Winnipeg Jets',
+};
+
+const PLAYER_REFERENCE_FALLBACK = {
+  'brayden tracy': 'ANA',
+  'john beecher': 'BOS',
+  'jacob perreault': 'ANA',
+  'ryan nugent-hopkins': 'EDM',
+  'pavel buchnevich': 'STL',
+  'pierre-luc dubois': 'WSH',
+  'steven stamkos': 'NSH',
+  'mikael granlund': 'ANA',
+  'mika zibanejad': 'NYR',
+  'sam bennett': 'FLA',
+  'tyler seguin': 'DAL',
+  'matt barzal': 'NYI',
+  'david pastrnak': 'BOS',
+  'connor mcdavid': 'EDM',
+  'nikita kucherov': 'TBL',
+  'nathan mackinnon': 'COL',
+  'kyle connor': 'WPG',
+};
+
+const PLAYER_ALIAS_REGISTRY = {
+  'zane parekh': ['zayne parekh'],
+  'zayne parekh': ['zane parekh'],
+  'berkly catton': ['berkley catton'],
+  'berkley catton': ['berkly catton'],
+  'axel sandin pellikka': ['axel sandin pellikka', 'axel sandin pelikka', 'a sandin pel'],
+  'axel sandin pelikka': ['axel sandin pellikka', 'axel sandin pellikka', 'a sandin pel'],
+  'a sandin pel': ['axel sandin pellikka', 'axel sandin pelikka'],
+  'andrew cristall': ['a cristall', 'cristall'],
+  'a cristall': ['andrew cristall', 'cristall'],
+  'cristall': ['andrew cristall', 'a cristall'],
+};
+
+const PLAYER_MANUAL_OVERRIDES_KEY = 'hockey-dashboard-player-overrides';
+
 const state = {
   importedData: null,
   selectedOwner: null,
   previewRows: [],
   ownerSearch: '',
   playerSearch: '',
+  currentView: 'owner',
+  prospectFilters: {
+    owner: 'all',
+    farm: 'all',
+    matchingRights: 'all',
+    draftYear: 'all',
+    costMin: '',
+    costMax: '',
+    search: '',
+  },
+  playerReferenceLookup: null,
+  playerPositionLookup: null,
+  playerManualOverrides: {},
+  manualOverrideDraft: {
+    source: '',
+    target: '',
+  },
+  playerAliasRegistry: PLAYER_ALIAS_REGISTRY,
 };
+
+function createDefaultProspectFilters() {
+  return {
+   owner: 'all',
+   farm: 'all',
+   matchingRights: 'all',
+   draftYear: 'all',
+   costMin: '',
+   costMax: '',
+   search: '',
+  };
+}
+
+function hasAnyDatasetLoaded(unifiedState) {
+  return ['prospects', 'veterans', 'roster', 'transactions'].some((key) => unifiedState?.metadata?.[key]?.status === 'ok');
+}
+
+function getProspectRecordsFromState(unifiedState) {
+  return getEnrichedProspects(unifiedState);
+}
+
+function normalizeProspectCost(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function getProspectOwnerOptions(prospects) {
+  return [...new Set(prospects.map((player) => player.owner).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function getProspectDraftYearOptions(prospects) {
+  return [...new Set(prospects
+   .map((player) => Number(player.draftYear))
+   .filter((year) => Number.isFinite(year)))].sort((a, b) => b - a);
+}
+
+function normalizeLeagueKey(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[&/._-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function normalizePlayerName(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[.&/\\-]+/g, ' ')
+    .replace(/\bjr\b/g, '')
+    .replace(/\bii\b|\biii\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizePositionToken(value) {
+  const normalized = String(value ?? '').trim().toUpperCase();
+  if (!normalized || normalized === 'X') return null;
+  if (['L', 'LW', 'LEFT', 'LEFTWING', 'LEFT WING'].includes(normalized)) return 'LW';
+  if (['R', 'RW', 'RIGHT', 'RIGHTWING', 'RIGHT WING'].includes(normalized)) return 'RW';
+  if (['C', 'CENTRE', 'CENTER'].includes(normalized)) return 'C';
+  if (['D', 'DEF', 'DEFENCE', 'DEFENSE', 'DEFENCEMAN', 'DEFENSEMAN'].includes(normalized)) return 'D';
+  if (['UTIL', 'UTILITY', 'U'].includes(normalized)) return 'UTIL';
+  return normalized.replace(/\s+/g, '');
+}
+
+function normalizePositionDisplay(value) {
+  const parts = String(value ?? '')
+    .split(/[\/,|]/)
+    .map((part) => normalizePositionToken(part))
+    .filter(Boolean);
+
+  const unique = [...new Set(parts)];
+  const order = ['C', 'LW', 'RW', 'D', 'UTIL'];
+  return unique.sort((left, right) => {
+    const leftIndex = order.indexOf(left);
+    const rightIndex = order.indexOf(right);
+    if (leftIndex === -1 && rightIndex === -1) return left.localeCompare(right);
+    if (leftIndex === -1) return 1;
+    if (rightIndex === -1) return -1;
+    return leftIndex - rightIndex;
+  }).join('/');
+}
+
+function loadPlayerManualOverrides() {
+  if (typeof localStorage === 'undefined') return {};
+
+  try {
+    const raw = localStorage.getItem(PLAYER_MANUAL_OVERRIDES_KEY);
+    if (!raw) return {};
+
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    return Object.entries(parsed).reduce((acc, [source, target]) => {
+      const normalizedSource = normalizePlayerName(source);
+      const normalizedTarget = String(target || '').trim();
+      if (normalizedSource && normalizedTarget) {
+        acc[normalizedSource] = normalizedTarget;
+      }
+      return acc;
+    }, {});
+  } catch (error) {
+    return {};
+  }
+}
+
+function persistPlayerManualOverrides(overrides) {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(PLAYER_MANUAL_OVERRIDES_KEY, JSON.stringify(overrides || {}));
+}
+
+function getPlayerAliasCandidates(playerName) {
+  const normalizedSeed = normalizePlayerName(playerName);
+  const variantSet = new Set([normalizedSeed]);
+  const tokens = normalizedSeed.split(' ').filter(Boolean);
+
+  if (tokens.length >= 2) {
+    const first = tokens[0];
+    const last = tokens[tokens.length - 1];
+    variantSet.add(`${first[0]} ${last}`.trim());
+    variantSet.add(`${first} ${last}`.trim());
+  }
+
+  if (tokens.length >= 3) {
+    const first = tokens[0];
+    const middle = tokens[1];
+    const last = tokens[tokens.length - 1];
+    variantSet.add(`${first[0]} ${middle[0]} ${last}`.trim());
+  }
+
+  Object.entries(state.playerAliasRegistry || {}).forEach(([canonicalKey, aliases]) => {
+    if (canonicalKey === normalizedSeed || aliases.includes(normalizedSeed)) {
+      variantSet.add(canonicalKey);
+      aliases.forEach((alias) => variantSet.add(normalizePlayerName(alias)));
+    }
+  });
+
+  const aliasKey = state.playerAliasRegistry?.[normalizedSeed];
+  if (aliasKey) {
+    aliasKey.forEach((alias) => variantSet.add(normalizePlayerName(alias)));
+  }
+
+  const directAliases = state.playerAliasRegistry ? Object.keys(state.playerAliasRegistry).filter((key) => normalizePlayerName(key) === normalizedSeed) : [];
+  directAliases.forEach((key) => {
+    const aliases = state.playerAliasRegistry[key] || [];
+    aliases.forEach((alias) => variantSet.add(normalizePlayerName(alias)));
+  });
+
+  return [...variantSet].filter(Boolean);
+}
+
+function parseReferenceTeamCsvRows(csvText) {
+  if (!csvText) return [];
+
+  return csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => {
+      const cells = line.split(',').map((cell) => cell.trim());
+      const matches = [];
+
+      for (let index = 0; index < cells.length - 1; index += 1) {
+        const rawName = cells[index];
+        const rawCode = cells[index + 1];
+
+        if (!rawName || !rawCode) continue;
+        if (rawName === 'x' || rawCode === 'x') continue;
+        if (/^(?:left wing|center|right wing|defense|defenceman|forward|util)$/i.test(rawName)) continue;
+        if (/^[A-Z]{2,4}$/.test(rawCode) || /^[A-Z]{2,4}\s*$/.test(rawCode)) {
+          matches.push({ name: rawName, teamCode: rawCode.toUpperCase() });
+        }
+      }
+
+      return matches;
+    });
+}
+
+function parsePositionList(positionValue) {
+  return String(positionValue || '')
+    .split(/[\/,|]/)
+    .map((part) => normalizePositionToken(part))
+    .filter(Boolean);
+}
+
+function parsePositionReferenceRows(csvText) {
+  if (!csvText) return [];
+
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return [];
+
+  const header = lines[0].toUpperCase();
+  const isUtilityFile = header.startsWith('UTILITY') || (header.includes('POSITION') && !header.includes('LEFT WING'));
+
+  if (isUtilityFile) {
+    return lines.slice(1).flatMap((line) => {
+      const cells = line.split(',').map((cell) => cell.trim());
+      const name = cells[0];
+      const teamCode = cells[1];
+      const position = cells[2];
+      if (!name || !teamCode || !position) return [];
+      if (name.toLowerCase() === 'x') return [];
+
+      const normalizedName = normalizePlayerName(name);
+      if (!normalizedName) return [];
+
+      return [{
+        name: normalizedName,
+        teamCode: teamCode.toUpperCase(),
+        positions: parsePositionList(position),
+        source: 'utility',
+      }];
+    });
+  }
+
+  const slotDefinitions = [
+    { index: 0, position: 'LW' },
+    { index: 2, position: 'C' },
+    { index: 4, position: 'RW' },
+    { index: 6, position: 'D' },
+  ];
+
+  return lines.slice(1).flatMap((line) => {
+    const cells = line.split(',').map((cell) => cell.trim());
+    return slotDefinitions.flatMap(({ index, position }) => {
+      const name = cells[index];
+      const teamCode = cells[index + 1];
+      if (!name || !teamCode) return [];
+      if (name.toLowerCase() === 'x') return [];
+
+      const normalizedName = normalizePlayerName(name);
+      if (!normalizedName) return [];
+
+      return [{
+        name: normalizedName,
+        teamCode: teamCode.toUpperCase(),
+        positions: [position],
+        source: 'positions',
+      }];
+    });
+  });
+}
+
+function buildReferenceLookup(csvText) {
+  const results = new Map();
+
+  parseReferenceTeamCsvRows(csvText).forEach(({ name, teamCode }) => {
+    const normalizedName = normalizePlayerName(name);
+    if (!normalizedName) return;
+    if (!results.has(normalizedName) || !results.get(normalizedName)) {
+      results.set(normalizedName, teamCode);
+    }
+  });
+
+  return results;
+}
+
+function resolveTeamNameFromAbbreviation(teamCode) {
+  const code = String(teamCode || '').trim().toUpperCase();
+  return TEAM_ABBREVIATION_TO_NAME[code] || null;
+}
+
+function buildPositionLookup(csvText) {
+  const results = new Map();
+
+  parsePositionReferenceRows(csvText).forEach(({ name, teamCode, positions, source }) => {
+    if (!name) return;
+
+    const entry = results.get(name) || {
+      teamCode: null,
+      positions: new Set(),
+      source: null,
+    };
+
+    positions.forEach((position) => {
+      if (position) {
+        entry.positions.add(position);
+      }
+    });
+
+    if (!entry.teamCode && teamCode) {
+      entry.teamCode = teamCode;
+    }
+
+    if (!entry.source || source === 'positions') {
+      entry.source = source;
+    }
+
+    results.set(name, entry);
+  });
+
+  return results;
+}
+
+function normalizePositionEntry(entry) {
+  if (!entry) return null;
+
+  const position = normalizePositionDisplay([...(entry.positions || [])].join('/'));
+  return {
+    teamCode: entry.teamCode || null,
+    position: position || null,
+    source: entry.source || null,
+  };
+}
+
+function resolveLookupEntryForName(lookup, playerName) {
+  if (!lookup) return null;
+
+  const candidates = [normalizePlayerName(playerName), ...getPlayerAliasCandidates(playerName)]
+    .map((candidate) => normalizePlayerName(candidate))
+    .filter(Boolean);
+
+  for (const candidate of [...new Set(candidates)]) {
+    const entry = lookup.get(candidate);
+    if (entry) {
+      return { key: candidate, entry };
+    }
+  }
+
+  return null;
+}
+
+function resolveProspectIdentity(playerName) {
+  const normalizedName = normalizePlayerName(playerName);
+  if (!normalizedName) {
+    return {
+      normalizedName: '',
+      matchedName: null,
+      viaOverride: false,
+      overrideSource: null,
+      teamCode: null,
+      nhlTeam: null,
+      position: null,
+      positionSource: null,
+    };
+  }
+
+  const visited = new Set();
+  let searchName = playerName;
+  let viaOverride = false;
+  let overrideSource = null;
+
+  while (true) {
+    const normalizedSearch = normalizePlayerName(searchName);
+    if (!normalizedSearch || visited.has(normalizedSearch)) {
+      break;
+    }
+    visited.add(normalizedSearch);
+
+    const overrideTarget = state.playerManualOverrides?.[normalizedSearch];
+    if (!overrideTarget) {
+      break;
+    }
+
+    searchName = overrideTarget;
+    viaOverride = true;
+    overrideSource = normalizedSearch;
+  }
+
+  const referenceMatch = resolveLookupEntryForName(state.playerReferenceLookup, searchName);
+  const positionMatch = resolveLookupEntryForName(state.playerPositionLookup, searchName);
+  const positionEntry = normalizePositionEntry(positionMatch?.entry);
+  const fallbackTeamCode = PLAYER_REFERENCE_FALLBACK[normalizedName] || PLAYER_REFERENCE_FALLBACK[normalizePlayerName(searchName)] || null;
+  const teamCode = referenceMatch?.entry || positionEntry?.teamCode || fallbackTeamCode || null;
+
+  return {
+    normalizedName,
+    matchedName: referenceMatch?.key || positionMatch?.key || normalizedName,
+    viaOverride,
+    overrideSource,
+    teamCode,
+    nhlTeam: teamCode ? resolveTeamNameFromAbbreviation(teamCode) : null,
+    position: positionEntry?.position || null,
+    positionSource: positionEntry?.source || null,
+  };
+}
+
+function resolveProspectTeam(playerName) {
+  return resolveProspectIdentity(playerName).nhlTeam;
+}
+
+function resolveProspectPosition(player) {
+  const identity = resolveProspectIdentity(player?.name);
+  if (identity.position) {
+    return identity.position;
+  }
+
+  return normalizePositionDisplay(player?.position) || null;
+}
+
+function resolveTeamSchedule(teamName) {
+  const normalized = normalizeLeagueKey(teamName);
+
+  const directMatch = Object.keys(GAMES_PLAYED_BULATOR_DATA).find((teamLabel) => normalizeLeagueKey(teamLabel) === normalized);
+  if (directMatch) return GAMES_PLAYED_BULATOR_DATA[directMatch];
+
+  if (TEAM_SCHEDULE_ALIASES[normalized] && GAMES_PLAYED_BULATOR_DATA[TEAM_SCHEDULE_ALIASES[normalized]]) {
+    return GAMES_PLAYED_BULATOR_DATA[TEAM_SCHEDULE_ALIASES[normalized]];
+  }
+
+  const teamCode = Object.keys(TEAM_ABBREVIATION_TO_NAME).find((code) => normalizeLeagueKey(TEAM_ABBREVIATION_TO_NAME[code]) === normalized);
+  if (teamCode) {
+    const canonicalTeam = TEAM_ABBREVIATION_TO_NAME[teamCode];
+    return GAMES_PLAYED_BULATOR_DATA[canonicalTeam] || null;
+  }
+
+  return null;
+}
+
+function getRuntimeDataCandidates(relativePath) {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  const candidates = new Set();
+  const baseUrls = [
+    new URL('.', window.location.href),
+    new URL('..', window.location.href),
+    new URL('../..', window.location.href),
+    new URL('../../..', window.location.href),
+    new URL('/', window.location.href),
+  ];
+
+  baseUrls.forEach((baseUrl) => {
+    candidates.add(new URL(relativePath, baseUrl).href);
+  });
+
+  if (window.location.origin) {
+    candidates.add(new URL(relativePath, window.location.origin).href);
+  }
+
+  return [...candidates];
+}
+
+async function hydratePlayerReferenceData() {
+  const referenceUrls = [
+    ...new Set([
+      ...getRuntimeDataCandidates('Data/Reference/AHL Draft - Positions.csv'),
+      ...getRuntimeDataCandidates('Data/Reference/AHL Draft - Utility.csv'),
+    ]),
+  ];
+
+  const combined = new Map();
+  const combinedPositions = new Map();
+  const fetchPromises = referenceUrls.map(async (url) => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      return await response.text();
+    } catch (error) {
+      return null;
+    }
+  });
+
+  const csvTexts = (await Promise.all(fetchPromises)).filter(Boolean);
+  csvTexts.forEach((csvText) => {
+    const teamLookup = buildReferenceLookup(csvText);
+    teamLookup.forEach((teamCode, normalizedName) => {
+      if (!combined.has(normalizedName)) {
+        combined.set(normalizedName, teamCode);
+      }
+    });
+
+    const positionLookup = buildPositionLookup(csvText);
+    positionLookup.forEach((entry, normalizedName) => {
+      const existing = combinedPositions.get(normalizedName) || {
+        teamCode: null,
+        positions: new Set(),
+        source: null,
+      };
+
+      if (entry.teamCode && !existing.teamCode) {
+        existing.teamCode = entry.teamCode;
+      }
+
+      (entry.positions || new Set()).forEach((position) => existing.positions.add(position));
+
+      if (!existing.source || entry.source === 'positions') {
+        existing.source = entry.source;
+      }
+
+      combinedPositions.set(normalizedName, existing);
+    });
+  });
+
+  if (combined.size === 0) {
+    Object.entries(PLAYER_REFERENCE_FALLBACK).forEach(([playerName, teamCode]) => combined.set(normalizePlayerName(playerName), teamCode));
+  }
+
+  state.playerReferenceLookup = combined;
+  state.playerPositionLookup = combinedPositions;
+}
+
+function computeNameSimilarity(left, right) {
+  const a = String(left || '').toLowerCase();
+  const b = String(right || '').toLowerCase();
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const aWords = new Set(a.split(/\s+/));
+  const bWords = new Set(b.split(/\s+/));
+  const overlap = [...aWords].filter((word) => bWords.has(word)).length;
+  const total = Math.max(aWords.size, bWords.size);
+  return total ? overlap / total : 0;
+}
+
+function classifyUnmappedPlayer(playerName, referenceLookup = new Map(), duplicateCounts = new Map()) {
+  const normalizedName = normalizePlayerName(playerName);
+  const candidates = getPlayerAliasCandidates(playerName);
+  const candidateMap = Array.from(referenceLookup.keys());
+  let bestCandidate = null;
+  let bestScore = 0;
+
+  if ((duplicateCounts.get(normalizedName) || 0) > 1) {
+    return {
+      playerName,
+      closestCandidate: normalizedName || 'None',
+      confidence: 'Low',
+      status: 'unresolved',
+      reason: 'Duplicate Player',
+    };
+  }
+
+  candidateMap.forEach((entry) => {
+    const score = computeNameSimilarity(normalizedName, entry);
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = entry;
+    }
+  });
+
+  const aliasMatch = candidates.find((candidate) => referenceLookup.has(candidate));
+  if (aliasMatch) {
+    return {
+      playerName,
+      closestCandidate: aliasMatch,
+      confidence: 'High',
+      status: 'resolved',
+      reason: 'Alias Variation',
+    };
+  }
+
+  if (referenceLookup.has(normalizedName)) {
+    return {
+      playerName,
+      closestCandidate: normalizedName,
+      confidence: 'High',
+      status: 'resolved',
+      reason: 'Exact Match',
+    };
+  }
+
+  if (bestCandidate) {
+    const reason = normalizedName.includes('-') || normalizedName.includes('.') || playerName.includes('-') || playerName.includes('.')
+      ? 'Punctuation Variation'
+      : bestScore >= 0.6
+        ? 'Spelling Variation'
+        : 'No Candidate Found';
+
+    return {
+      playerName,
+      closestCandidate: bestCandidate,
+      confidence: bestScore >= 0.75 ? 'Medium' : 'Low',
+      status: 'unresolved',
+      reason,
+    };
+  }
+
+  const punctuationOnlyMatch = candidateMap.find((candidate) => candidate.replace(/[^a-z0-9]/g, '') === normalizedName.replace(/[^a-z0-9]/g, ''));
+  if (punctuationOnlyMatch) {
+    return {
+      playerName,
+      closestCandidate: punctuationOnlyMatch,
+      confidence: 'Low',
+      status: 'unresolved',
+      reason: 'Punctuation Variation',
+    };
+  }
+
+  return {
+    playerName,
+    closestCandidate: 'None',
+    confidence: 'Low',
+    status: 'unresolved',
+    reason: 'Missing Reference Coverage',
+  };
+}
+
+function getUnmappedPlayerDiagnostics(unifiedState, prospectRecords = null) {
+  const prospects = prospectRecords || Object.values(unifiedState?.datasets?.prospects?.prospects || {}).filter(Boolean);
+  const lookup = state.playerReferenceLookup || new Map();
+  const duplicateCounts = prospects.reduce((counts, player) => {
+    const key = normalizePlayerName(player?.name);
+    if (!key) return counts;
+    counts.set(key, (counts.get(key) || 0) + 1);
+    return counts;
+  }, new Map());
+
+  return prospects
+    .filter((player) => !resolveProspectTeam(player?.name))
+    .map((player) => classifyUnmappedPlayer(player.name, lookup, duplicateCounts));
+}
+
+function setManualOverride(source, target) {
+  const normalizedSource = normalizePlayerName(source);
+  const normalizedTarget = String(target || '').trim();
+
+  if (!normalizedSource || !normalizedTarget) {
+    return false;
+  }
+
+  state.playerManualOverrides = {
+    ...(state.playerManualOverrides || {}),
+    [normalizedSource]: normalizedTarget,
+  };
+  persistPlayerManualOverrides(state.playerManualOverrides);
+  return true;
+}
+
+function clearManualOverride(source) {
+  const normalizedSource = normalizePlayerName(source);
+  if (!normalizedSource || !state.playerManualOverrides?.[normalizedSource]) {
+    return false;
+  }
+
+  const next = { ...(state.playerManualOverrides || {}) };
+  delete next[normalizedSource];
+  state.playerManualOverrides = next;
+  persistPlayerManualOverrides(state.playerManualOverrides);
+  return true;
+}
+
+function enrichProspectWithSchedule(player) {
+  const identity = resolveProspectIdentity(player?.name);
+  const candidateTeam = identity.nhlTeam;
+  const schedule = candidateTeam ? resolveTeamSchedule(candidateTeam) : null;
+  const resolvedPosition = resolveProspectPosition(player);
+
+  return {
+    ...player,
+    position: resolvedPosition || normalizePositionDisplay(player?.position) || '—',
+    nhlTeam: candidateTeam || 'Unmapped',
+    resolutionStatus: candidateTeam ? 'resolved' : 'unresolved',
+    firstHalfEligibleGames: schedule ? Number(schedule.firstHalfEligibleGames) : null,
+    secondHalfEligibleGames: schedule ? Number(schedule.secondHalfEligibleGames) : null,
+    totalEligibleGames: schedule ? Number(schedule.totalEligibleGames) : null,
+    scheduleSource: schedule ? 'GamesPlayedBulator' : 'Unmapped',
+    positionSource: identity.positionSource || (player?.position ? 'import' : null),
+  };
+}
+
+function getEnrichedProspects(unifiedState) {
+  return Object.values(unifiedState?.datasets?.prospects?.prospects || {}).filter(Boolean).map((player) => enrichProspectWithSchedule(player));
+}
+
+function filterProspects(prospects, filters = {}) {
+  const activeFilters = { ...createDefaultProspectFilters(), ...(filters || {}) };
+  const ownerFilter = String(activeFilters.owner || 'all');
+  const farmFilter = String(activeFilters.farm || 'all');
+  const mrFilter = String(activeFilters.matchingRights || 'all');
+  const draftYearFilter = String(activeFilters.draftYear || 'all');
+  const rawCostMin = String(activeFilters.costMin ?? '').trim();
+  const rawCostMax = String(activeFilters.costMax ?? '').trim();
+  const costMin = rawCostMin !== '' && Number.isFinite(Number(rawCostMin)) ? Number(rawCostMin) : null;
+  const costMax = rawCostMax !== '' && Number.isFinite(Number(rawCostMax)) ? Number(rawCostMax) : null;
+  const search = String(activeFilters.search || '').trim().toLowerCase();
+
+  return prospects.filter((player) => {
+   if (ownerFilter !== 'all' && player.owner !== ownerFilter) return false;
+
+   const playerFarm = Boolean(player.farm);
+   if (farmFilter !== 'all') {
+     if (farmFilter === 'farm' && !playerFarm) return false;
+     if (farmFilter === 'non-farm' && playerFarm) return false;
+   }
+
+   const playerMR = Boolean(player.matchingRights);
+   if (mrFilter !== 'all') {
+     if (mrFilter === 'yes' && !playerMR) return false;
+     if (mrFilter === 'no' && playerMR) return false;
+   }
+
+   if (draftYearFilter !== 'all' && String(player.draftYear) !== String(draftYearFilter)) return false;
+
+   const price = normalizeProspectCost(player.cost);
+   if (costMin !== null && price < costMin) return false;
+   if (costMax !== null && price > costMax) return false;
+
+   if (search) {
+     const haystack = [player.name, player.owner, player.position, player.nhlTeam, String(player.draftYear || '')].join(' ').toLowerCase();
+     if (!haystack.includes(search)) return false;
+   }
+
+   return true;
+  });
+}
+
+function computeProspectSummary(prospects) {
+  const total = prospects.length;
+  const mappedCount = prospects.filter((player) => player.resolutionStatus === 'resolved').length;
+  const unmappedCount = total - mappedCount;
+  const coveragePercent = total ? (mappedCount / total) * 100 : 0;
+  const scheduleReadyCount = prospects.filter((player) => player.scheduleSource === 'GamesPlayedBulator').length;
+  const scheduleReadyGames = prospects
+   .filter((player) => player.totalEligibleGames !== null && player.totalEligibleGames !== undefined)
+   .map((player) => Number(player.totalEligibleGames))
+   .filter((value) => Number.isFinite(value));
+  const averageEligibleGames = scheduleReadyGames.length
+   ? scheduleReadyGames.reduce((sum, value) => sum + value, 0) / scheduleReadyGames.length
+   : 0;
+  const farmCount = prospects.filter((player) => player.farm).length;
+  const matchingRightsCount = prospects.filter((player) => player.matchingRights).length;
+
+  return {
+   total,
+   mappedCount,
+   unmappedCount,
+   coveragePercent,
+   scheduleReadyCount,
+   averageEligibleGames,
+   farmCount,
+   matchingRightsCount,
+   ownerCount: new Set(prospects.map((player) => player.owner).filter(Boolean)).size,
+  };
+}
+
+function renderProspectTableRows(prospects) {
+  if (!prospects.length) {
+   return '<tr><td colspan="12" class="prospect-empty">No prospects match the current filters.</td></tr>';
+  }
+
+  return prospects.map((player) => `
+   <tr>
+     <td>${escapeHtml(player.name || 'Unnamed Prospect')}</td>
+     <td>${escapeHtml(player.owner || 'Unknown')}</td>
+     <td>${escapeHtml(player.position || '—')}</td>
+     <td>${escapeHtml(player.nhlTeam || 'Unmapped')}</td>
+     <td class="schedule-cell">${escapeHtml(player.firstHalfEligibleGames ?? '—')}</td>
+     <td class="schedule-cell">${escapeHtml(player.secondHalfEligibleGames ?? '—')}</td>
+     <td class="schedule-cell">${escapeHtml(player.totalEligibleGames ?? '—')}</td>
+     <td>${escapeHtml(player.draftYear ?? '—')}</td>
+     <td>$${formatValue(normalizeProspectCost(player.cost))}</td>
+     <td><span class="prospect-tag ${player.farm ? 'is-true' : 'is-false'}">${player.farm ? 'Farm' : 'No'}</span></td>
+     <td><span class="prospect-tag ${player.matchingRights ? 'is-true' : 'is-false'}">${player.matchingRights ? 'Yes' : 'No'}</span></td>
+     <td>${escapeHtml(player.termRemaining ?? '—')}</td>
+   </tr>
+  `).join('');
+}
+
+function getProspectExplorerMarkup(unifiedState) {
+  const prospects = getProspectRecordsFromState(unifiedState);
+  const ownerOptions = getProspectOwnerOptions(prospects);
+  const yearOptions = getProspectDraftYearOptions(prospects);
+  const filtered = filterProspects(prospects, state.prospectFilters);
+  const visibleSummary = computeProspectSummary(filtered);
+  const overallSummary = computeProspectSummary(prospects);
+  const unmappedDiagnostics = getUnmappedPlayerDiagnostics(unifiedState, prospects);
+  const overrideEntries = Object.entries(state.playerManualOverrides || {}).sort(([left], [right]) => left.localeCompare(right));
+  const sourceValue = escapeHtml(state.manualOverrideDraft?.source || '');
+  const targetValue = escapeHtml(state.manualOverrideDraft?.target || '');
+
+  return `
+   <section class="panel prospect-explorer">
+     <div class="preview-header">
+       <h2>Prospect Explorer</h2>
+       <div class="preview-meta health-strip">
+         <span class="meta-pill">Prospects: ${overallSummary.total}</span>
+         <span class="meta-pill">Mapped: ${overallSummary.mappedCount}</span>
+         <span class="meta-pill">Unmapped: ${overallSummary.unmappedCount}</span>
+         <span class="meta-pill">Coverage: ${formatValue(overallSummary.coveragePercent)}%</span>
+         <span class="meta-pill">Owners: ${overallSummary.ownerCount}</span>
+       </div>
+     </div>
+
+     <div class="prospect-summary-grid">
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${visibleSummary.total}</div>
+         <div class="prospect-summary-label">Visible Prospects</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${overallSummary.scheduleReadyCount}</div>
+         <div class="prospect-summary-label">Schedule Ready</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${formatValue(overallSummary.averageEligibleGames)}</div>
+         <div class="prospect-summary-label">Avg Eligible Games</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${overallSummary.farmCount}</div>
+         <div class="prospect-summary-label">Farm Players</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${overallSummary.matchingRightsCount}</div>
+         <div class="prospect-summary-label">Matching Rights</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${overallSummary.ownerCount}</div>
+         <div class="prospect-summary-label">Owners</div>
+       </div>
+     </div>
+
+     <section class="panel filter-panel">
+       <div class="filter-grid">
+         <div class="field-group">
+           <label for="prospectOwnerFilter">Owner</label>
+           <select id="prospectOwnerFilter">
+             <option value="all">All owners</option>
+             ${ownerOptions.map((owner) => `<option value="${escapeHtml(owner)}" ${state.prospectFilters.owner === owner ? 'selected' : ''}>${escapeHtml(owner)}</option>`).join('')}
+           </select>
+         </div>
+
+         <div class="field-group">
+           <label for="prospectFarmFilter">Farm Status</label>
+           <select id="prospectFarmFilter">
+             <option value="all" ${state.prospectFilters.farm === 'all' ? 'selected' : ''}>All</option>
+             <option value="farm" ${state.prospectFilters.farm === 'farm' ? 'selected' : ''}>Farm only</option>
+             <option value="non-farm" ${state.prospectFilters.farm === 'non-farm' ? 'selected' : ''}>Non-farm only</option>
+           </select>
+         </div>
+
+         <div class="field-group">
+           <label for="prospectMatchingRightsFilter">Matching Rights</label>
+           <select id="prospectMatchingRightsFilter">
+             <option value="all" ${state.prospectFilters.matchingRights === 'all' ? 'selected' : ''}>All</option>
+             <option value="yes" ${state.prospectFilters.matchingRights === 'yes' ? 'selected' : ''}>Yes</option>
+             <option value="no" ${state.prospectFilters.matchingRights === 'no' ? 'selected' : ''}>No</option>
+           </select>
+         </div>
+
+         <div class="field-group">
+           <label for="prospectDraftYearFilter">Draft Year</label>
+           <select id="prospectDraftYearFilter">
+             <option value="all">All years</option>
+             ${yearOptions.map((year) => `<option value="${year}" ${state.prospectFilters.draftYear === String(year) ? 'selected' : ''}>${year}</option>`).join('')}
+           </select>
+         </div>
+
+         <div class="field-group">
+           <label for="prospectCostMin">Min Cost</label>
+           <input id="prospectCostMin" type="number" min="0" step="1" value="${escapeHtml(state.prospectFilters.costMin || '')}" placeholder="0" />
+         </div>
+
+         <div class="field-group">
+           <label for="prospectCostMax">Max Cost</label>
+           <input id="prospectCostMax" type="number" min="0" step="1" value="${escapeHtml(state.prospectFilters.costMax || '')}" placeholder="250" />
+         </div>
+
+         <div class="field-group" style="grid-column: 1 / -1;">
+           <label for="prospectSearchInput">Search prospects</label>
+           <input id="prospectSearchInput" type="search" value="${escapeHtml(state.prospectFilters.search || '')}" placeholder="Search by player, owner, or position" />
+         </div>
+       </div>
+     </section>
+
+     <section class="panel">
+       <div class="preview-header">
+         <h3>Prospect List</h3>
+         <span class="meta-pill">Showing ${visibleSummary.total} of ${prospects.length}</span>
+       </div>
+       <div class="prospect-table-wrap">
+         <table class="prospect-table">
+           <thead>
+             <tr>
+               <th>Player</th>
+               <th>Owner</th>
+               <th>Position</th>
+               <th>NHL Team</th>
+               <th class="schedule-head" colspan="3">Schedule Intelligence</th>
+               <th>Draft Year</th>
+               <th>Cost</th>
+               <th>Farm</th>
+               <th>Matching Rights</th>
+               <th>Term</th>
+             </tr>
+             <tr class="subhead">
+               <th></th>
+               <th></th>
+               <th></th>
+               <th></th>
+               <th class="schedule-subhead">1H</th>
+               <th class="schedule-subhead">2H</th>
+               <th class="schedule-subhead">Total</th>
+               <th></th>
+               <th></th>
+               <th></th>
+               <th></th>
+               <th></th>
+             </tr>
+           </thead>
+           <tbody>
+             ${renderProspectTableRows(filtered)}
+           </tbody>
+         </table>
+       </div>
+     </section>
+
+     <section class="panel">
+       <div class="preview-header">
+         <h3>Manual Match Overrides</h3>
+         <span class="meta-pill">${overrideEntries.length} saved</span>
+       </div>
+       <div class="override-form">
+         <div class="field-group">
+           <label for="overrideSourceInput">Unmapped Player</label>
+           <input id="overrideSourceInput" type="text" value="${sourceValue}" placeholder="Zane Parekh" />
+         </div>
+         <div class="field-group">
+           <label for="overrideTargetInput">Manual Match</label>
+           <input id="overrideTargetInput" type="text" value="${targetValue}" placeholder="Zayne Parekh" />
+         </div>
+         <div class="override-actions">
+           <button class="primary" id="saveOverrideBtn" type="button">Save Override</button>
+           <button class="secondary" id="clearOverrideBtn" type="button">Clear Form</button>
+         </div>
+       </div>
+     </section>
+
+     <section class="panel">
+       <div class="preview-header">
+         <h3>Unmapped Players</h3>
+         <span class="meta-pill">${unmappedDiagnostics.length} unresolved</span>
+       </div>
+       <div class="prospect-table-wrap">
+         <table class="prospect-table">
+           <thead>
+             <tr>
+               <th>Player Name</th>
+               <th>Reason</th>
+               <th>Closest Match</th>
+               <th>Confidence</th>
+               <th>Action</th>
+             </tr>
+           </thead>
+           <tbody>
+             ${unmappedDiagnostics.length ? unmappedDiagnostics.map((report) => `
+               <tr>
+                 <td>${escapeHtml(report.playerName || 'Unknown')}</td>
+                 <td>${escapeHtml(report.reason || 'Missing Reference Coverage')}</td>
+                 <td>${escapeHtml(report.closestCandidate || 'None')}</td>
+                 <td>${escapeHtml(report.confidence || 'Low')}</td>
+                 <td>
+                   <button
+                     class="secondary override-row-btn"
+                     type="button"
+                     data-source="${escapeHtml(report.playerName || '')}"
+                     data-target="${escapeHtml(report.closestCandidate && report.closestCandidate !== 'None' ? report.closestCandidate : '')}"
+                   >Use Match</button>
+                 </td>
+               </tr>
+             `).join('') : '<tr><td colspan="5" class="prospect-empty">No unmapped players detected.</td></tr>'}
+           </tbody>
+         </table>
+       </div>
+       <div class="override-list">
+         ${overrideEntries.length ? overrideEntries.map(([source, target]) => `
+           <div class="override-chip">
+             <span><strong>${escapeHtml(source)}</strong> → ${escapeHtml(target)}</span>
+             <button class="secondary override-remove-btn" type="button" data-source="${escapeHtml(source)}">Remove</button>
+           </div>
+         `).join('') : '<div class="empty-state">No manual overrides saved.</div>'}
+       </div>
+     </section>
+   </section>
+  `;
+}
+
+function renderProspectExplorer(unifiedState) {
+  const app = document.getElementById('app');
+  if (!app) return;
+
+  const title = document.getElementById('pageTitle');
+  if (title) title.textContent = 'Prospect Explorer';
+
+  app.innerHTML = getProspectExplorerMarkup(unifiedState);
+  renderViewToggle();
+
+  const ownerFilter = document.getElementById('prospectOwnerFilter');
+  const farmFilter = document.getElementById('prospectFarmFilter');
+  const matchingRightsFilter = document.getElementById('prospectMatchingRightsFilter');
+  const draftYearFilter = document.getElementById('prospectDraftYearFilter');
+  const costMinInput = document.getElementById('prospectCostMin');
+  const costMaxInput = document.getElementById('prospectCostMax');
+  const searchInput = document.getElementById('prospectSearchInput');
+  const overrideSourceInput = document.getElementById('overrideSourceInput');
+  const overrideTargetInput = document.getElementById('overrideTargetInput');
+  const saveOverrideBtn = document.getElementById('saveOverrideBtn');
+  const clearOverrideBtn = document.getElementById('clearOverrideBtn');
+
+  const updateFilterState = () => {
+   state.prospectFilters = {
+     ...state.prospectFilters,
+     owner: ownerFilter ? ownerFilter.value : 'all',
+     farm: farmFilter ? farmFilter.value : 'all',
+     matchingRights: matchingRightsFilter ? matchingRightsFilter.value : 'all',
+     draftYear: draftYearFilter ? draftYearFilter.value : 'all',
+     costMin: costMinInput ? costMinInput.value : '',
+     costMax: costMaxInput ? costMaxInput.value : '',
+     search: searchInput ? searchInput.value : '',
+   };
+   renderProspectExplorer(unifiedState);
+  };
+
+  ownerFilter?.addEventListener('change', updateFilterState);
+  farmFilter?.addEventListener('change', updateFilterState);
+  matchingRightsFilter?.addEventListener('change', updateFilterState);
+  draftYearFilter?.addEventListener('change', updateFilterState);
+  costMinInput?.addEventListener('input', updateFilterState);
+  costMaxInput?.addEventListener('input', updateFilterState);
+  searchInput?.addEventListener('input', updateFilterState);
+
+  saveOverrideBtn?.addEventListener('click', () => {
+    const source = overrideSourceInput ? overrideSourceInput.value : '';
+    const target = overrideTargetInput ? overrideTargetInput.value : '';
+    if (!setManualOverride(source, target)) {
+      return;
+    }
+
+    state.manualOverrideDraft = { source: '', target: '' };
+    renderProspectExplorer(unifiedState);
+  });
+
+  clearOverrideBtn?.addEventListener('click', () => {
+    state.manualOverrideDraft = { source: '', target: '' };
+    renderProspectExplorer(unifiedState);
+  });
+
+  document.querySelectorAll('.override-row-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.manualOverrideDraft = {
+        source: button.dataset.source || '',
+        target: button.dataset.target || '',
+      };
+      renderProspectExplorer(unifiedState);
+    });
+  });
+
+  document.querySelectorAll('.override-remove-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      clearManualOverride(button.dataset.source || '');
+      renderProspectExplorer(unifiedState);
+    });
+  });
+}
+
+function renderViewToggle() {
+  const toggle = document.getElementById('viewToggle');
+  const ownerBtn = document.getElementById('ownerViewBtn');
+  const prospectBtn = document.getElementById('prospectViewBtn');
+
+  if (!toggle || !ownerBtn || !prospectBtn) return;
+
+  const hasData = hasAnyDatasetLoaded(loadState());
+  toggle.classList.toggle('hidden', !hasData);
+  ownerBtn.classList.toggle('active', state.currentView === 'owner');
+  prospectBtn.classList.toggle('active', state.currentView === 'prospect');
+  ownerBtn.setAttribute('aria-pressed', String(state.currentView === 'owner'));
+  prospectBtn.setAttribute('aria-pressed', String(state.currentView === 'prospect'));
+}
+
+function renderCurrentView() {
+  const stored = loadState();
+  state.importedData = stored;
+
+  if (!hasAnyDatasetLoaded(stored)) {
+   renderImportScreen();
+   return;
+  }
+
+  if (state.currentView === 'prospect') {
+   renderProspectExplorer(stored);
+   return;
+  }
+
+  renderOwnerView(stored);
+}
 
 function parseCSVLine(line) {
   const result = [];
@@ -674,12 +1954,14 @@ function renderOwnerView(unifiedState) {
   const ownerListMarkup = renderOwnerList(ownerData);
   const ownerDetailMarkup = renderOwnerDetails(ownerData);
 
-  // compute aggregates once
   const aggregates = computeOwnerAggregates(unifiedState);
   const leagueHtml = renderLeagueIntelligence(aggregates);
   const dataQualityHtml = renderDataQualityPanel(unifiedState);
 
   const app = document.getElementById('app');
+  const title = document.getElementById('pageTitle');
+  if (title) title.textContent = 'Owner View';
+
   app.innerHTML = `
     ${summaryHtml}
     <div class="owner-layout">
@@ -692,9 +1974,9 @@ function renderOwnerView(unifiedState) {
     </div>
   `;
 
+  renderViewToggle();
   document.getElementById('backToImportBtn').classList.remove('hidden');
 
-  // owner click handlers
   document.querySelectorAll('.owner-item').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedOwner = button.dataset.owner;
@@ -702,22 +1984,18 @@ function renderOwnerView(unifiedState) {
     });
   });
 
-  // owner search handler
   const ownerSearchInput = document.getElementById('ownerSearchInput');
   if (ownerSearchInput) {
     ownerSearchInput.addEventListener('input', (e) => {
       state.ownerSearch = e.target.value || '';
-      // re-render with same unified state
       renderOwnerView(unifiedState);
     });
   }
 
-  // player search handler
   const playerSearchInput = document.getElementById('playerSearchInput');
   if (playerSearchInput) {
     playerSearchInput.addEventListener('input', (e) => {
       state.playerSearch = e.target.value || '';
-      // re-render to apply player filters but keep owner selection
       renderOwnerView(unifiedState);
     });
   }
@@ -725,6 +2003,8 @@ function renderOwnerView(unifiedState) {
 
 function renderImportScreen() {
   const app = document.getElementById('app');
+  const title = document.getElementById('pageTitle');
+  if (title) title.textContent = 'Owner View';
   app.innerHTML = `
     <section class="panel import-card">
       <div class="dropzone">
@@ -739,6 +2019,7 @@ function renderImportScreen() {
   `;
 
   document.getElementById('backToImportBtn').classList.add('hidden');
+  renderViewToggle();
 
   const fileInput = document.getElementById('csvFileInput');
   fileInput.addEventListener('change', async (event) => {
@@ -795,32 +2076,50 @@ function handleImport(csvText, fileName) {
 
   document.getElementById('cancelImportBtn').addEventListener('click', renderImportScreen);
   document.getElementById('confirmImportBtn').addEventListener('click', () => {
-    // Merge parsed dataset into the unified persisted state
     const current = loadState();
     const next = mergeDataset(current, datasetType, parsedData, fileName);
     persistState(next);
 
     state.importedData = next;
-    // render owner view with unified state
-    renderOwnerView(next);
+    renderCurrentView();
   });
 }
 
-function initialize() {
+async function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
   backToImportBtn.addEventListener('click', () => {
     state.selectedOwner = null;
+    state.currentView = 'owner';
     renderImportScreen();
+  });
+
+  const ownerViewBtn = document.getElementById('ownerViewBtn');
+  ownerViewBtn?.addEventListener('click', () => {
+    state.currentView = 'owner';
+    renderCurrentView();
+  });
+
+  const prospectViewBtn = document.getElementById('prospectViewBtn');
+  prospectViewBtn?.addEventListener('click', async () => {
+    state.currentView = 'prospect';
+    if (!state.playerReferenceLookup) {
+      await hydratePlayerReferenceData();
+    }
+    renderCurrentView();
   });
 
   const stored = loadState();
   state.importedData = stored;
   state.selectedOwner = null;
+  state.currentView = 'owner';
+  state.prospectFilters = createDefaultProspectFilters();
+  state.playerManualOverrides = loadPlayerManualOverrides();
+  state.manualOverrideDraft = { source: '', target: '' };
 
-  // if any dataset is present (status ok), show owner view
   const anyLoaded = ['prospects','veterans','roster','transactions'].some(k => stored?.metadata?.[k]?.status === 'ok');
   if (anyLoaded) {
-    renderOwnerView(stored);
+    await hydratePlayerReferenceData();
+    renderCurrentView();
   } else {
     renderImportScreen();
   }
