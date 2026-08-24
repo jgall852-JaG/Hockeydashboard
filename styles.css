@@ -548,7 +548,18 @@ button.secondary {
 .prospect-table th:nth-child(5),
 .prospect-table th:nth-child(6),
 .prospect-table th:nth-child(7),
-.prospect-table td.schedule-cell {
+.prospect-table th:nth-child(8),
+.prospect-table th:nth-child(9),
+.prospect-table th:nth-child(10),
+.prospect-table th:nth-child(11),
+.prospect-table th:nth-child(12),
+.prospect-table td.historical-cell {
+  background: rgba(103, 183, 255, 0.03);
+}
+
+.prospect-table td.schedule-cell,
+.prospect-table th.schedule-head,
+.prospect-table th.schedule-subhead {
   background: rgba(103, 183, 255, 0.03);
 }
 
@@ -615,4 +626,68 @@ button.secondary {
 .prospect-empty {
   color: var(--muted);
   font-style: italic;
+}
+
+.historical-profile {
+  display: grid;
+  gap: 16px;
+}
+
+.historical-profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.historical-metric-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.historical-source-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.historical-source-panel h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.historical-table {
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+
+.historical-table th,
+.historical-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.historical-table th {
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.historical-row {
+  cursor: pointer;
+}
+
+.historical-row:hover {
+  background: rgba(103, 183, 255, 0.05);
+}
+
+.historical-row.is-selected {
+  background: rgba(103, 183, 255, 0.10);
 }

@@ -64,49 +64,51 @@ The imported prospect record must remain stable. Future schedule and valuation d
 
 ---
 
-## 2. NHL Team Lookup
+## 2. Identity Layer
 
 ### Relationship problem
 
-GamesPlayedBulator is associated with NHL teams, not with fantasy owners. The project also treats owners as the primary league unit. Therefore, the relationship is not one-to-one at the raw record level.
+The dashboard needs stable player name, alias, position, and NHL team resolution before historical stats or schedule opportunity can be attached.
 
-### Required resolution layer
+### Source of truth
 
-A separate NHL team lookup layer is required to map league owners to NHL franchise identities.
+The identity layer is sourced from:
 
-Canonical relationship:
-- Prospect Record -> League Owner -> NHL Team
+- `Data/Reference/AHL Draft - Positions.csv`
+- `Data/Reference/AHL Draft - Utility.csv`
 
-This mapping is not a parser output and should not be embedded in the CSV import.
+### Canonical relationship
+
+Player record -> alias resolution -> identity layer -> position / NHL team
+
+This is not a parser output and should not be embedded in the CSV import.
 
 ### Canonical lookup model
 
-A team identity lookup should contain:
-- ownerName
-- franchiseName
-- nhlTeamId
-- franchiseAliasList
+The identity lookup should contain:
+
+- playerName
+- normalizedName
+- aliasList
+- position
+- nhlTeam
+- teamCode
 - optional confidence flag
 - optional source metadata
 
-Examples of concept-level mapping:
-- owner: "Boston" -> franchise: "Boston Bruins"
-- owner: "Montreal" -> franchise: "Montreal Canadiens"
-- owner: "Minnesota" -> franchise: "Minnesota Wild"
-- owner: "Utah" -> franchise: "Utah Hockey Club"
-
 ### Why this is necessary
 
-The league currently stores ownership and player records by owner, while schedule data is organized by NHL franchise. Without a lookup layer, the app cannot reliably tie schedule opportunity to players.
+The app needs one authoritative identity layer so player naming, position, and NHL team stay consistent across Prospect Explorer, historical stats, and schedule display.
 
 ### Design rule
 
-NHL team must be treated as a derived field, not a raw imported field.
+Position and NHL team must be treated as resolved identity fields, not raw imported fields.
 
 That means:
-- imported source data answers who owns the prospect
-- derived intelligence answers which NHL team context that owner is associated with
-- the derived result is used for schedule and valuation enrichment
+
+- imported league data answers ownership and league context
+- reference data answers player identity, position, and NHL team
+- the resolved result is used by historical and schedule enrichment
 
 ---
 
@@ -131,9 +133,8 @@ Each NHL team record carries:
 ### Relationship to prospects
 
 The correct relationship is:
-- prospect -> owner -> franchise -> GamesPlayedBulator team record
 
-This allows a prospect to inherit schedule opportunity based on the franchise of the owner mapping.
+- prospect -> identity layer -> resolved NHL team -> GamesPlayedBulator team record
 
 ### Derived enrichment fields
 
@@ -150,7 +151,7 @@ A prospect should not store schedule data as raw imported CSV content. Instead, 
 
 ### Example semantics
 
-If a prospect belongs to an owner whose team maps to a franchise with 68 total eligible games, the prospect view may show:
+If a prospect resolves to a franchise with 68 total eligible games, the prospect view may show:
 - NHL Team: Boston Bruins
 - Eligible Games: 68
 - 1st Half Games: 34
@@ -164,7 +165,7 @@ If no mapping exists:
 
 ### Design rule
 
-Schedule metrics must be attached via enrichment, never by modifying the imported prospect CSV contract.
+Schedule metrics must be attached via enrichment, never by modifying the imported league CSV contract.
 
 ---
 
@@ -285,7 +286,7 @@ This contract establishes the canonical player intelligence model required for v
 
 ### Derived intelligence record
 - Prospect derived view model
-- NHL team identity from owner-to-franchise mapping
+- NHL team identity from the identity layer
 - schedule metrics from GamesPlayedBulator
 - optional projected value and statistics from future sources
 
@@ -294,10 +295,10 @@ This contract establishes the canonical player intelligence model required for v
 The canonical player intelligence model is:
 
 Prospect Record
-  + Derived Owner-to-Team Mapping
+  + Derived Identity Layer
   + Derived Schedule Intelligence
-  + Future Projection and Performance Enrichment
-  = Valuation-Ready Player Intelligence View
+  + Historical Performance Enrichment
+  = V0.7 Player Intelligence View
 
 This model ensures:
 - parser outputs remain stable
@@ -310,9 +311,9 @@ This model ensures:
 ## 7. Decision Summary
 
 1. Current prospect data does not contain NHL team information.
-2. NHL team identity should be modeled as a separate enrichment/lookup layer, not as a parsed field.
-3. A future player intelligence database is recommended as the canonical enrichment model for richer schedule, projection, and valuation data.
-4. NHL team should be a derived field in the enrichment layer, calculated from owner-to-franchise mapping.
+2. NHL team identity should be modeled as a separate identity-layer resolution, not as a parsed field.
+3. Historical performance should come from `Data/Historical/`.
+4. Schedule opportunity should come from `GamesPlayedBulator`.
 5. Future enrichment sources should include schedule data, NHL/statistical feeds, projections, scouting data, and contextual valuation inputs.
 
 This document establishes the canonical architecture for player intelligence before schedule enrichment is implemented.

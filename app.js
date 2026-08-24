@@ -183,10 +183,15 @@ const PLAYER_ALIAS_REGISTRY = {
 };
 
 const PLAYER_MANUAL_OVERRIDES_KEY = 'hockey-dashboard-player-overrides';
+const HISTORICAL_SOURCE_FILES = [
+  'Data/Historical/skaters_2008_to_2024.csv',
+  'Data/Historical/skaters 2025 to 2026.csv',
+];
 
 const state = {
   importedData: null,
   selectedOwner: null,
+  selectedHistoricalPlayer: null,
   previewRows: [],
   ownerSearch: '',
   playerSearch: '',
@@ -202,6 +207,8 @@ const state = {
   },
   playerReferenceLookup: null,
   playerPositionLookup: null,
+  historicalLookup: null,
+  historicalRecords: null,
   playerManualOverrides: {},
   manualOverrideDraft: {
     source: '',
@@ -626,6 +633,196 @@ function resolveTeamSchedule(teamName) {
   return null;
 }
 
+function formatIceTimePerGame(totalSeconds, gamesPlayed) {
+  const seconds = Number(totalSeconds);
+  const games = Number(gamesPlayed);
+  if (!Number.isFinite(seconds) || !Number.isFinite(games) || games <= 0) return '—';
+
+  const perGameSeconds = seconds / games;
+  const minutes = Math.floor(perGameSeconds / 60);
+  const remainingSeconds = Math.round(perGameSeconds % 60);
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function parseHistoricalCsvRows(csvText) {
+  if (!csvText) return [];
+
+  const lines = csvText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 2) return [];
+
+  const headers = parseCSVLine(lines[0]).map((header) => header.trim());
+
+  return lines.slice(1).flatMap((line) => {
+    const cells = parseCSVLine(line);
+    if (!cells.length) return [];
+
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = cells[index] ?? '';
+    });
+
+    const playerId = String(row.playerId || '').trim();
+    const season = Number(row.season);
+    const normalizedName = normalizePlayerName(row.name);
+    const situation = String(row.situation || '').trim().toLowerCase();
+
+    if (!normalizedName || !Number.isFinite(season)) return [];
+
+    return [{
+      ...row,
+      playerId,
+      season,
+      name: String(row.name || '').trim(),
+      normalizedName,
+      team: String(row.team || '').trim(),
+      position: String(row.position || '').trim(),
+      situation,
+      games_played: Number(row.games_played) || 0,
+      icetime: Number(row.icetime) || 0,
+      shifts: Number(row.shifts) || 0,
+      gameScore: Number(row.gameScore) || 0,
+      I_F_points: Number(row.I_F_points) || 0,
+      I_F_goals: Number(row.I_F_goals) || 0,
+      I_F_primaryAssists: Number(row.I_F_primaryAssists) || 0,
+      I_F_secondaryAssists: Number(row.I_F_secondaryAssists) || 0,
+      I_F_shotsOnGoal: Number(row.I_F_shotsOnGoal) || 0,
+      sourceRecordId: `${playerId || normalizedName}:${season}:${situation || 'all'}`,
+    }];
+  });
+}
+
+function buildHistoricalLookup(csvTexts) {
+  const byName = new Map();
+  const byPlayerId = new Map();
+
+  csvTexts.forEach((csvText) => {
+    parseHistoricalCsvRows(csvText).forEach((row) => {
+      const nameBucket = byName.get(row.normalizedName) || [];
+      nameBucket.push(row);
+      byName.set(row.normalizedName, nameBucket);
+
+      if (row.playerId) {
+        const playerBucket = byPlayerId.get(String(row.playerId)) || [];
+        playerBucket.push(row);
+        byPlayerId.set(String(row.playerId), playerBucket);
+      }
+    });
+  });
+
+  const sortRows = (rows) => rows.slice().sort((left, right) => {
+    if (right.season !== left.season) return right.season - left.season;
+    if (left.situation === 'all' && right.situation !== 'all') return -1;
+    if (left.situation !== 'all' && right.situation === 'all') return 1;
+    return String(left.situation || '').localeCompare(String(right.situation || ''));
+  });
+
+  byName.forEach((rows, key) => {
+    byName.set(key, sortRows(rows));
+  });
+
+  byPlayerId.forEach((rows, key) => {
+    byPlayerId.set(key, sortRows(rows));
+  });
+
+  return { byName, byPlayerId };
+}
+
+function getHistoricalLookupCandidates(playerName) {
+  return [...new Set([normalizePlayerName(playerName), ...getPlayerAliasCandidates(playerName)].map((candidate) => normalizePlayerName(candidate)).filter(Boolean))];
+}
+
+function resolveHistoricalRecordsForPlayer(player) {
+  const lookup = state.historicalLookup;
+  if (!lookup) {
+    return {
+      sourceRecords: [],
+      seasonSummary: null,
+      latestAllRecord: null,
+      seasonHistory: [],
+      sourceRecordCount: 0,
+      sourceName: 'Historical CSVs',
+    };
+  }
+
+  const candidateKeys = getHistoricalLookupCandidates(player?.name);
+  const sourceRecords = [];
+  const seen = new Set();
+
+  candidateKeys.forEach((candidateKey) => {
+    (lookup.byName.get(candidateKey) || []).forEach((row) => {
+      if (!seen.has(row.sourceRecordId)) {
+        seen.add(row.sourceRecordId);
+        sourceRecords.push(row);
+      }
+    });
+  });
+
+  if (!sourceRecords.length && player?.playerId) {
+    (lookup.byPlayerId.get(String(player.playerId)) || []).forEach((row) => {
+      if (!seen.has(row.sourceRecordId)) {
+        seen.add(row.sourceRecordId);
+        sourceRecords.push(row);
+      }
+    });
+  }
+
+  const seasonHistory = sourceRecords
+    .filter((row) => row.situation === 'all')
+    .sort((left, right) => right.season - left.season);
+  const latestAllRecord = seasonHistory[0] || null;
+
+  return {
+    sourceRecords,
+    seasonSummary: latestAllRecord,
+    latestAllRecord,
+    seasonHistory,
+    sourceRecordCount: sourceRecords.length,
+    sourceName: 'Historical CSVs',
+  };
+}
+
+function enrichProspectWithHistoricalData(player) {
+  const historical = resolveHistoricalRecordsForPlayer(player);
+  const latest = historical.latestAllRecord;
+
+  return {
+    ...player,
+    historicalSourceCount: historical.sourceRecordCount,
+    historicalSeason: latest ? latest.season : null,
+    historicalGamesPlayed: latest ? latest.games_played : null,
+    historicalGoals: latest ? latest.I_F_goals : null,
+    historicalAssists: latest ? latest.I_F_primaryAssists + latest.I_F_secondaryAssists : null,
+    historicalPoints: latest ? latest.I_F_points : null,
+    historicalShots: latest ? latest.I_F_shotsOnGoal : null,
+    historicalGameScore: latest ? latest.gameScore : null,
+    historicalAverageIceTime: latest ? formatIceTimePerGame(latest.icetime, latest.games_played) : '—',
+    historicalSeasonHistory: historical.seasonHistory,
+    historicalSourceRecords: historical.sourceRecords,
+    historicalSourceName: historical.sourceName,
+  };
+}
+
+function getHistoricalPlayerSummary(prospect) {
+  const historical = prospect?.historicalSeasonHistory || [];
+  if (!historical.length) {
+    return {
+      latestSeason: null,
+      sourceCount: 0,
+      sourceRecords: [],
+    };
+  }
+
+  return {
+    latestSeason: historical[0] || null,
+    sourceCount: prospect?.historicalSourceCount || historical.length,
+    sourceRecords: prospect?.historicalSourceRecords || historical,
+  };
+}
+
 function getRuntimeDataCandidates(relativePath) {
   if (typeof window === 'undefined') {
     return [];
@@ -708,6 +905,32 @@ async function hydratePlayerReferenceData() {
 
   state.playerReferenceLookup = combined;
   state.playerPositionLookup = combinedPositions;
+}
+
+async function hydrateHistoricalData() {
+  const historicalUrls = [
+    ...new Set(HISTORICAL_SOURCE_FILES.flatMap((fileName) => getRuntimeDataCandidates(fileName))),
+  ];
+
+  const fetchPromises = historicalUrls.map(async (url) => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      return await response.text();
+    } catch (error) {
+      return null;
+    }
+  });
+
+  const csvTexts = (await Promise.all(fetchPromises)).filter(Boolean);
+  if (!csvTexts.length) {
+    state.historicalLookup = buildHistoricalLookup([]);
+    state.historicalRecords = [];
+    return;
+  }
+
+  state.historicalLookup = buildHistoricalLookup(csvTexts);
+  state.historicalRecords = csvTexts;
 }
 
 function computeNameSimilarity(left, right) {
@@ -868,7 +1091,9 @@ function enrichProspectWithSchedule(player) {
 }
 
 function getEnrichedProspects(unifiedState) {
-  return Object.values(unifiedState?.datasets?.prospects?.prospects || {}).filter(Boolean).map((player) => enrichProspectWithSchedule(player));
+  return Object.values(unifiedState?.datasets?.prospects?.prospects || {})
+    .filter(Boolean)
+    .map((player) => enrichProspectWithHistoricalData(enrichProspectWithSchedule(player)));
 }
 
 function filterProspects(prospects, filters = {}) {
@@ -919,12 +1144,19 @@ function computeProspectSummary(prospects) {
   const unmappedCount = total - mappedCount;
   const coveragePercent = total ? (mappedCount / total) * 100 : 0;
   const scheduleReadyCount = prospects.filter((player) => player.scheduleSource === 'GamesPlayedBulator').length;
+  const historicalReadyCount = prospects.filter((player) => player.historicalSeason !== null && player.historicalSeason !== undefined).length;
   const scheduleReadyGames = prospects
    .filter((player) => player.totalEligibleGames !== null && player.totalEligibleGames !== undefined)
    .map((player) => Number(player.totalEligibleGames))
    .filter((value) => Number.isFinite(value));
   const averageEligibleGames = scheduleReadyGames.length
    ? scheduleReadyGames.reduce((sum, value) => sum + value, 0) / scheduleReadyGames.length
+   : 0;
+  const historicalGames = prospects
+   .filter((player) => Number.isFinite(Number(player.historicalGamesPlayed)))
+   .map((player) => Number(player.historicalGamesPlayed));
+  const averageHistoricalGames = historicalGames.length
+   ? historicalGames.reduce((sum, value) => sum + value, 0) / historicalGames.length
    : 0;
   const farmCount = prospects.filter((player) => player.farm).length;
   const matchingRightsCount = prospects.filter((player) => player.matchingRights).length;
@@ -936,23 +1168,154 @@ function computeProspectSummary(prospects) {
    coveragePercent,
    scheduleReadyCount,
    averageEligibleGames,
+   historicalReadyCount,
+   averageHistoricalGames,
    farmCount,
    matchingRightsCount,
    ownerCount: new Set(prospects.map((player) => player.owner).filter(Boolean)).size,
   };
 }
 
-function renderProspectTableRows(prospects) {
-  if (!prospects.length) {
-   return '<tr><td colspan="12" class="prospect-empty">No prospects match the current filters.</td></tr>';
+function resolveSelectedHistoricalProspect(prospects) {
+  const selectedKey = normalizePlayerName(state.selectedHistoricalPlayer);
+  if (selectedKey) {
+   const matched = prospects.find((player) => {
+     const playerKey = normalizePlayerName(player?.name);
+     if (playerKey === selectedKey) return true;
+     return getHistoricalLookupCandidates(player?.name).includes(selectedKey);
+   });
+   if (matched) return matched;
   }
 
+  return prospects[0] || null;
+}
+
+function renderHistoricalSourceRows(player) {
+  const history = getHistoricalPlayerSummary(player);
+  const sourceRows = (history.sourceRecords || [])
+   .filter((row) => row.situation === 'all')
+   .sort((left, right) => right.season - left.season)
+   .slice(0, 3);
+
+  if (!sourceRows.length) {
+   return '<div class="empty-state">No historical source rows found.</div>';
+  }
+
+  return `
+   <table class="historical-table">
+     <thead>
+       <tr>
+         <th>Season</th>
+         <th>Team</th>
+         <th>GP</th>
+         <th>G</th>
+         <th>A</th>
+         <th>PTS</th>
+         <th>Shots</th>
+         <th>Game Score</th>
+         <th>Avg TOI</th>
+       </tr>
+     </thead>
+     <tbody>
+       ${sourceRows.map((row) => `
+         <tr>
+           <td>${escapeHtml(String(row.season || '—'))}</td>
+           <td>${escapeHtml(row.team || '—')}</td>
+           <td>${escapeHtml(String(row.games_played ?? '—'))}</td>
+           <td>${escapeHtml(String(row.I_F_goals ?? '—'))}</td>
+           <td>${escapeHtml(String((Number(row.I_F_primaryAssists) || 0) + (Number(row.I_F_secondaryAssists) || 0)))}</td>
+           <td>${escapeHtml(String(row.I_F_points ?? '—'))}</td>
+           <td>${escapeHtml(String(row.I_F_shotsOnGoal ?? '—'))}</td>
+           <td>${escapeHtml(String(row.gameScore ?? '—'))}</td>
+           <td>${escapeHtml(formatIceTimePerGame(row.icetime, row.games_played))}</td>
+         </tr>
+       `).join('')}
+     </tbody>
+   </table>
+  `;
+}
+
+function renderHistoricalPlayerProfile(player) {
+  if (!player) {
+   return `
+     <section class="panel historical-profile">
+       <div class="preview-header">
+         <h3>Historical Player Profile</h3>
+       </div>
+       <div class="empty-state">Click a player to view their historical profile.</div>
+     </section>
+   `;
+  }
+
+  const history = getHistoricalPlayerSummary(player);
+  const latest = history.latestSeason;
+  const sourceCount = history.sourceCount || 0;
+
+  return `
+   <section class="panel historical-profile">
+     <div class="preview-header">
+       <h3>Historical Player Profile</h3>
+       <span class="meta-pill">${sourceCount} source rows</span>
+     </div>
+
+     <div class="historical-profile-grid">
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${escapeHtml(player.name || '—')}</div>
+         <div class="prospect-summary-label">Player</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${escapeHtml(player.position || '—')}</div>
+         <div class="prospect-summary-label">Position</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${escapeHtml(player.nhlTeam || '—')}</div>
+         <div class="prospect-summary-label">NHL Team</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${escapeHtml(latest ? String(latest.season) : '—')}</div>
+         <div class="prospect-summary-label">Latest Season</div>
+       </div>
+     </div>
+
+     <div class="historical-metric-grid">
+       <div class="meta-pill">GP: ${escapeHtml(latest ? String(latest.games_played) : '—')}</div>
+       <div class="meta-pill">G: ${escapeHtml(latest ? String(latest.I_F_goals) : '—')}</div>
+       <div class="meta-pill">A: ${escapeHtml(latest ? String((Number(latest.I_F_primaryAssists) || 0) + (Number(latest.I_F_secondaryAssists) || 0)) : '—')}</div>
+       <div class="meta-pill">PTS: ${escapeHtml(latest ? String(latest.I_F_points) : '—')}</div>
+       <div class="meta-pill">Shots: ${escapeHtml(latest ? String(latest.I_F_shotsOnGoal) : '—')}</div>
+       <div class="meta-pill">Game Score: ${escapeHtml(latest ? String(latest.gameScore) : '—')}</div>
+       <div class="meta-pill">Avg TOI: ${escapeHtml(latest ? formatIceTimePerGame(latest.icetime, latest.games_played) : '—')}</div>
+     </div>
+
+     <div class="historical-source-panel">
+       <h4>Source Records</h4>
+       ${renderHistoricalSourceRows(player)}
+     </div>
+   </section>
+  `;
+}
+
+function renderProspectTableRows(prospects) {
+  if (!prospects.length) {
+   return '<tr><td colspan="20" class="prospect-empty">No prospects match the current filters.</td></tr>';
+  }
+
+  const selectedPlayerKey = normalizePlayerName(state.selectedHistoricalPlayer);
+
   return prospects.map((player) => `
-   <tr>
+   <tr data-player-name="${escapeHtml(player.name || '')}" class="historical-row ${selectedPlayerKey === normalizePlayerName(player.name) ? 'is-selected' : ''}">
      <td>${escapeHtml(player.name || 'Unnamed Prospect')}</td>
      <td>${escapeHtml(player.owner || 'Unknown')}</td>
      <td>${escapeHtml(player.position || '—')}</td>
      <td>${escapeHtml(player.nhlTeam || 'Unmapped')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalSeason ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalGamesPlayed ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalGoals ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalAssists ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalPoints ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalShots ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalGameScore ?? '—')}</td>
+     <td class="historical-cell">${escapeHtml(player.historicalAverageIceTime || '—')}</td>
      <td class="schedule-cell">${escapeHtml(player.firstHalfEligibleGames ?? '—')}</td>
      <td class="schedule-cell">${escapeHtml(player.secondHalfEligibleGames ?? '—')}</td>
      <td class="schedule-cell">${escapeHtml(player.totalEligibleGames ?? '—')}</td>
@@ -973,9 +1336,14 @@ function getProspectExplorerMarkup(unifiedState) {
   const visibleSummary = computeProspectSummary(filtered);
   const overallSummary = computeProspectSummary(prospects);
   const unmappedDiagnostics = getUnmappedPlayerDiagnostics(unifiedState, prospects);
+  const selectedPlayer = resolveSelectedHistoricalProspect(filtered.length ? filtered : prospects);
   const overrideEntries = Object.entries(state.playerManualOverrides || {}).sort(([left], [right]) => left.localeCompare(right));
   const sourceValue = escapeHtml(state.manualOverrideDraft?.source || '');
   const targetValue = escapeHtml(state.manualOverrideDraft?.target || '');
+
+  if (selectedPlayer && state.selectedHistoricalPlayer !== selectedPlayer.name) {
+   state.selectedHistoricalPlayer = selectedPlayer.name;
+  }
 
   return `
    <section class="panel prospect-explorer">
@@ -1004,6 +1372,14 @@ function getProspectExplorerMarkup(unifiedState) {
          <div class="prospect-summary-label">Avg Eligible Games</div>
        </div>
        <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${overallSummary.historicalReadyCount}</div>
+         <div class="prospect-summary-label">Historical Ready</div>
+       </div>
+       <div class="prospect-summary-card">
+         <div class="prospect-summary-value">${formatValue(overallSummary.averageHistoricalGames)}</div>
+         <div class="prospect-summary-label">Avg Historical GP</div>
+       </div>
+       <div class="prospect-summary-card">
          <div class="prospect-summary-value">${overallSummary.farmCount}</div>
          <div class="prospect-summary-label">Farm Players</div>
        </div>
@@ -1016,6 +1392,8 @@ function getProspectExplorerMarkup(unifiedState) {
          <div class="prospect-summary-label">Owners</div>
        </div>
      </div>
+
+     ${renderHistoricalPlayerProfile(selectedPlayer)}
 
      <section class="panel filter-panel">
        <div class="filter-grid">
@@ -1083,7 +1461,8 @@ function getProspectExplorerMarkup(unifiedState) {
                <th>Owner</th>
                <th>Position</th>
                <th>NHL Team</th>
-               <th class="schedule-head" colspan="3">Schedule Intelligence</th>
+               <th class="historical-head" colspan="8">Historical Performance</th>
+               <th class="schedule-head" colspan="3">Schedule Opportunity</th>
                <th>Draft Year</th>
                <th>Cost</th>
                <th>Farm</th>
@@ -1095,6 +1474,14 @@ function getProspectExplorerMarkup(unifiedState) {
                <th></th>
                <th></th>
                <th></th>
+               <th class="historical-subhead">Season</th>
+               <th class="historical-subhead">GP</th>
+               <th class="historical-subhead">G</th>
+               <th class="historical-subhead">A</th>
+               <th class="historical-subhead">PTS</th>
+               <th class="historical-subhead">Shots</th>
+               <th class="historical-subhead">Game Score</th>
+               <th class="historical-subhead">Avg TOI</th>
                <th class="schedule-subhead">1H</th>
                <th class="schedule-subhead">2H</th>
                <th class="schedule-subhead">Total</th>
@@ -1255,6 +1642,13 @@ function renderProspectExplorer(unifiedState) {
   document.querySelectorAll('.override-remove-btn').forEach((button) => {
     button.addEventListener('click', () => {
       clearManualOverride(button.dataset.source || '');
+      renderProspectExplorer(unifiedState);
+    });
+  });
+
+  document.querySelectorAll('.historical-row').forEach((row) => {
+    row.addEventListener('click', () => {
+      state.selectedHistoricalPlayer = row.dataset.playerName || null;
       renderProspectExplorer(unifiedState);
     });
   });
@@ -2152,6 +2546,9 @@ async function initialize() {
     if (!state.playerReferenceLookup) {
       await hydratePlayerReferenceData();
     }
+    if (!state.historicalLookup) {
+      await hydrateHistoricalData();
+    }
     renderCurrentView();
   });
 
@@ -2166,6 +2563,7 @@ async function initialize() {
   const anyLoaded = ['prospects','veterans','roster','transactions'].some(k => stored?.metadata?.[k]?.status === 'ok');
   if (anyLoaded) {
     await hydratePlayerReferenceData();
+    await hydrateHistoricalData();
     renderCurrentView();
     return;
   }
@@ -2173,6 +2571,7 @@ async function initialize() {
   const bootstrapped = await bootstrapDefaultData();
   if (bootstrapped) {
     await hydratePlayerReferenceData();
+    await hydrateHistoricalData();
     renderCurrentView();
     return;
   }

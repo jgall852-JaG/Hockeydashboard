@@ -236,35 +236,36 @@ This is especially important for:
 
 ### Whether NHL Team should be a core field
 
-NHL team should not be a raw imported field in the current data model. It should be a derived field in the canonical player model.
+NHL team should be a resolved identity field in the canonical player model.
 
 Reason:
 
-- current league records are owner-centric
+- the identity layer already resolves name, position, and NHL team from reference data
 - schedule data is team-centric
-- the project explicitly treats owners as the league unit
-- NHL team is a contextual intelligence field, not a CSV source field
+- the player record should stay stable across historical and schedule layers
+- NHL team is contextual intelligence, not a raw imported field
 
 ### Canonical rule
 
-The owner-to-franchise relationship is the bridge:
+The identity layer is the bridge:
 
-- player -> owner -> NHL team
+- player -> alias resolution -> identity layer -> NHL team
 
 This relationship is required because:
 
-- the imported league data identifies ownership
+- the reference files identify the player’s NHL team and position
 - GamesPlayedBulator identifies schedule by NHL team
-- the valuation model needs team-level opportunity data
+- the historical model needs team context for source records
 
 ### NHL Team mapping model
 
 A team relationship layer should include:
 
-- ownerName
-- mappedNhlTeamName
-- nhlTeamId
-- franchiseAliasList
+- playerName
+- normalizedName
+- nhlTeamName
+- teamCode
+- aliasList
 - mappingConfidence
 - source
 
@@ -272,21 +273,21 @@ A team relationship layer should include:
 
 A player is mapped to an NHL team by:
 
-1. reading the player’s league owner
-2. matching the owner to an NHL franchise mapping
-3. attaching the resolved franchise schedule context
+1. resolving the player through alias / reference data
+2. reading the resolved NHL team from the identity layer
+3. attaching the team schedule context
 
-This mapping is not a raw player property and should be treated as a derived intelligence relationship.
+This mapping is not a raw player property and should be treated as a resolved identity relationship.
 
 ### How GamesPlayedBulator attaches
 
-GamesPlayedBulator attaches at the franchise level, then flows down to the player record.
+GamesPlayedBulator attaches at the NHL team level, then flows down to the player record.
 
 Canonical flow:
 
 - player record
-- resolves to owner
-- resolves to NHL franchise
+- resolves through alias / identity layer
+- resolves to NHL team
 - franchise schedule dataset is looked up
 - schedule metrics are attached to player view
 
@@ -294,7 +295,7 @@ This preserves the correct semantics:
 
 - schedule opportunity belongs to the team
 - player value is affected by team context
-- league owner remains the central structure in the app
+- identity remains separate from schedule
 
 ---
 
@@ -513,15 +514,15 @@ Includes:
 - canonical player id generation
 - alias tracking
 - duplicate-name handling
-- owner-to-player identity mapping
+- position and NHL team resolution from reference data
 
 ### Layer 3: NHL Team Resolution
 
-This layer resolves league owners to NHL franchises.
+This layer resolves player identity to NHL franchises.
 
 Includes:
 
-- owner-to-franchise mapping
+- player-to-team mapping
 - NHL team metadata
 - team aliases
 - mapping confidence
@@ -577,10 +578,8 @@ This layer produces the player value output used by:
   - imported via prospect or veteran CSV
 - Player identity resolution
   - resolves aliases, duplicates, and canonical id
-- Owner context
-  - league owner and cost structure
-- NHL team lookup
-  - maps owner to NHL franchise
+- Identity layer
+  - resolves position and NHL team from reference data
 - Schedule intelligence
   - total eligible games and splits
 - Historical statistics
@@ -600,7 +599,7 @@ This creates a single canonical player intelligence model without damaging the c
 
 - stable import outputs from current parsers
 - consistent owner labels across datasets
-- stable owner-to-franchise mapping layer
+- stable identity layer sourced from reference data
 - team schedule dataset keyed by NHL team
 - player identity normalization strategy
 - projection source metadata and confidence model
@@ -621,11 +620,11 @@ This creates a single canonical player intelligence model without damaging the c
 
 - establish canonical player id strategy
 - define name normalization and alias handling
-- map league owners to NHL franchise identities
+- resolve player names, position, and NHL team from reference data
 
 ### Phase 2: Schedule enrichment
 
-- attach GamesPlayedBulator team metrics to each player through owner-to-franchise mapping
+- attach GamesPlayedBulator team metrics to each player through the resolved NHL team
 - add schedule columns to Prospect Explorer
 
 ### Phase 3: Historical statistics integration
@@ -654,9 +653,10 @@ This design keeps the project aligned with its current architecture:
 
 - imported data stays intact
 - identity is normalized across sources
-- NHL team is derived from owner mapping
-- GamesPlayedBulator attaches via franchise context
-- historical stats, projections, and valuation are layered on top
+- NHL team comes from the identity layer
+- historical stats come from Data/Historical
+- GamesPlayedBulator attaches via the resolved NHL team
+- schedule and historical layers are additive
 
 This is the correct foundation for:
 
