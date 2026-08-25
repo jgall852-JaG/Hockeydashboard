@@ -23,11 +23,13 @@ describe('prospectParser basic parsing', () => {
     expect(mcid.cost).toBe(12);
     expect(mcid.termRemaining).toBe(3);
     expect(mcid.matchingRights).toBe(true);
+    expect(mcid.poolPosition).toBe('LW');
 
     const jdoe = Object.values(prospects).find(p => p.name.includes('John Doe'));
     expect(jdoe).toBeDefined();
     expect(jdoe.farm).toBe(true);
     expect(jdoe.termRemaining).toBeNull();
+    expect(jdoe.poolPosition).toBe('D');
 
     const big = Object.values(prospects).find(p => p.name.includes('Big') && p.name.includes('Joe'));
     expect(big).toBeDefined();

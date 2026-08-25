@@ -74,17 +74,17 @@ v0.7 — Trade Analyzer
 - Priority
   - Medium-High — High value for users doing active roster management and negotiation.
 
-v0.8 — Salary Cap Dashboard
+v0.8 — Live Hockey Intelligence
 - Goal
-  - Provide deeper financial analysis of veteran costs and cap-like constraints for leagues that track money.
+  - Combine identity, historical performance, schedule opportunity, and current NHL information into a live player intelligence layer.
 - Features
-  - Veteran cost breakdowns by owner, projected totals, highest cost veterans, and aggregate veteran payroll.
-  - Alerts and visualizations for owners approaching configurable thresholds.
-  - Historical import snapshots (lightweight) to show trendlines if multiple import timestamps are available.
+  - Player profiles that merge local CSV data with optional NHL API enrichment.
+  - Identity, historical, schedule, and current-season sections in one profile view.
+  - Team intelligence panels with roster, standings, and upcoming schedule context.
 - Dependencies
-  - Veteran dataset with cost fields; optional light-weight snapshots feature to preserve past states (in-memory or localStorage as optional extension).
+  - Existing prospect, veteran, and roster imports; optional NHL API access for enrichment.
 - Priority
-  - Low-Medium — Specialized feature; high value for finance-focused leagues but depends on consistent cost data.
+  - High — Directly answers who a player is, how good they are, how much opportunity they have, and what is happening now.
 
 v0.9 — League Reports
 - Goal

@@ -68,12 +68,21 @@ function extractDraftYear(rawName) {
     return match ? Number(match[1]) : null;
 }
 
+function extractPoolPosition(rawName) {
+    if (!rawName) return "";
+
+    const name = String(rawName).trim();
+    const match = name.match(/\b(C|LW|RW|D|G|F|LD|RD)\b(?=\s*-\s*\d{4}\s*$|\s*$)/i);
+    return match ? match[1].toUpperCase() : "";
+}
+
 function parsePlayerRow(columns, owner) {
     const rawPlayer = columns[0];
     if (!rawPlayer) return null;
 
     const playerName = extractPlayerName(rawPlayer);
     const draftYear = extractDraftYear(rawPlayer);
+    const poolPosition = extractPoolPosition(rawPlayer);
 
     // Robust cost and term parsing: handle costs that may be split by commas (e.g., $1,200.50)
     // Try different lengths for the cost field (1..4 columns) and pick the one where the following column
@@ -145,6 +154,7 @@ function parsePlayerRow(columns, owner) {
         termRemaining,
         matchingRights,
         draftYear,
+        poolPosition,
     };
 }
 
