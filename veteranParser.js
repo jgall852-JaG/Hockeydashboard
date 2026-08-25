@@ -100,6 +100,13 @@ function extractRetentionYear(columns, rawName) {
   return null;
 }
 
+function extractPoolPosition(rawName) {
+  if (!rawName) return "";
+  const name = String(rawName).trim();
+  const match = name.match(/\b(C|LW|RW|D|G|F|LD|RD)\b(?=\s*-\s*\d{4}\s*$|\s*$)/i);
+  return match ? match[1].toUpperCase() : "";
+}
+
 export function parseVeterans(csvData) {
   const veterans = {};
   const owners = {};
@@ -133,6 +140,7 @@ export function parseVeterans(csvData) {
     const rawName = first;
     const name = extractPlayerName(rawName);
     const retentionYear = extractRetentionYear(cols, rawName);
+    const poolPosition = extractPoolPosition(rawName);
 
     const seasons = Array.from({ length: COST_COLUMNS }, (_, i) => START_SEASON + i);
     const retentionHistory = [];
@@ -163,6 +171,7 @@ export function parseVeterans(csvData) {
       retentionHistory,
       retentionYear,
       currentCost,
+      poolPosition,
     };
 
     veterans[playerId] = record;

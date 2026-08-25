@@ -1,18 +1,7 @@
 import { readFile, stat } from 'fs/promises';
-import { createRequire } from 'module';
 import { parseProspects } from './prospectParser.js';
 import { parseVeterans } from './veteranParser.js';
-
-const require = createRequire(import.meta.url);
-
-function loadCommonJSParser(modulePath, fnName) {
-  try {
-    const mod = require(modulePath);
-    return mod[fnName] || mod.default || mod;
-  } catch (err) {
-    throw new Error(`Failed to require ${modulePath}: ${err && err.message ? err.message : err}`);
-  }
-}
+import { parseRoster } from './rosterParser.js';
 
 // Centralized data files configuration — update this object weekly to point to new CSVs
 export const DATA_FILES = {
@@ -44,16 +33,6 @@ export async function loadLeagueData() {
   }
 
   // Load roster parser (CommonJS compatibility)
-  let parseRoster;
-  try {
-    parseRoster = loadCommonJSParser('./rosterParser.js', 'parseRoster');
-    if (typeof parseRoster !== 'function') {
-      throw new Error('parseRoster function not found in rosterParser.js');
-    }
-  } catch (err) {
-    throw new Error(`Unable to load roster parser: ${err.message}`);
-  }
-
   const results = {
     roster: null,
     prospects: null,

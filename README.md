@@ -1,17 +1,21 @@
-Hockey Dashboard v0.1 — Client UI
+Hockey Dashboard v0.8 — Live Hockey Intelligence
 
 Overview
 - This lightweight client is pure HTML/CSS/JavaScript (no frameworks).
-- It uses the existing parsers in app/:
+- It uses the existing parsers in the repo:
   - prospectParser.js (ESM — imported by app.js)
   - veteranParser.js (ESM — imported by app.js)
-  - rosterParser.js (CommonJS-style but also exposes globals when loaded as a classic script)
+  - rosterParser.js (ESM/CommonJS compatible)
+- liveNhlApi.js provides optional NHL API enrichment and local caching.
+- Pool Position and NHL Position are displayed separately in player intelligence.
+- Local NHL Team identity and live current team metadata are displayed separately.
 - loadLeagueData.js is a Node utility and is NOT used by the browser UI.
 
 Files added
 - index.html        — main UI
 - styles.css        — minimal styling
 - app.js            — main client logic (type="module")
+- liveNhlApi.js     — optional NHL API enrichment helpers
 - README.md         — this file
 
 Design notes
@@ -19,13 +23,12 @@ Design notes
 - Detection rules:
   - Prospects: header contains "TERM REMAINING", "MATCHING RIGHTS", or YR1/YR2/YR3 tokens
   - Veterans: header contains multiple year columns (e.g., 2022, 2023, 2024)
-  - Roster: header includes NAME + TEAM + POSITION
-  - Transactions: header includes DATE and MOVE/TRANSACTION/TYPE
+  - Roster: generic player rows parsed by rosterParser.js
 - If detection is ambiguous the user is prompted to pick the dataset type.
 - Once identified, exactly one parser is invoked:
   - parseProspects(csvText) — for prospects
   - parseVeterans(csvText)  — for veterans
-  - window.parseRoster(csvText) — rosterParser.js must be loaded as a classic script
+  - parseRoster(csvText) — rosterParser.js is imported as a module
   - transactions handled by built-in parseTransactions in app.js
 
 How to run locally (recommended)
@@ -54,11 +57,11 @@ Usage
 - Drag and drop a CSV or click to select.
 - App reads the header, identifies type, and calls the proper parser.
 - Preview shows dataset type, record count and the first 10 parsed records.
-- Click Confirm Import to finalize — a JSON download link will be offered to save parsed records.
+- Click Confirm Import to finalize — the data is persisted locally.
 - Click Upload Another to reset.
 
 Troubleshooting
-- If the roster parser does not appear to work, make sure app/rosterParser.js is present and not blocked by Content Security Policies.
+- If live NHL data fails, the dashboard falls back to local CSV data and shows the API error inline.
 - If you see parser errors, the file might not match expected CSV structure; try the chooser when the app reports ambiguous header detection.
 
 If you want changes to detection rules (make veteran detection stricter or add synonyms), tell me which additional header tokens to match and I'll update app.js accordingly.

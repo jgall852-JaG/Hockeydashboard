@@ -1,5 +1,13 @@
 import { parseProspects } from './prospectParser.js';
 import { parseVeterans } from './veteranParser.js';
+import { parseRoster } from './rosterParser.js';
+import {
+  loadLiveCache,
+  resolveLivePlayerProfile,
+  normalizeLookupKey,
+  pickRecordValue,
+  extractTeamAbbrev,
+} from './liveNhlApi.js';
 
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const MAX_PREVIEW_ROWS = 10;
@@ -10,6 +18,10 @@ const state = {
   previewRows: [],
   ownerSearch: '',
   playerSearch: '',
+  selectedPlayerKey: null,
+  liveCache: loadLiveCache(),
+  liveProfiles: {},
+  liveRequests: {},
 };
 
 function parseCSVLine(line) {
@@ -68,6 +80,11 @@ export function detectDatasetType(csvText) {
     return 'veterans';
   }
 
+  const rosterCandidate = parseRoster(text);
+  if (Object.keys(rosterCandidate?.players || {}).length > 0) {
+    return 'roster';
+  }
+
   const yearMatches = (normalized.match(/\b(20\d{2}|19\d{2})\b/g) || []).length;
   if (yearMatches >= 2) {
     return 'veterans';
@@ -120,8 +137,8 @@ export function buildOwnerViewData(rawState) {
   }
 
   // Extract arrays of players from datasets
-  const prospectsArr = Object.values(stateObj.datasets.prospects?.prospects || {});
-  const veteransArr = Object.values(stateObj.datasets.veterans?.veterans || {});
+  const prospectsArr = Object.values(stateObj.datasets.prospects?.prospects || {}).map((player) => decoratePlayer(player, 'prospect'));
+  const veteransArr = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
 
   const ownerSet = new Set();
   // derive owners from dataset owners maps if present
@@ -183,7 +200,78 @@ function getVisiblePreviewRows(parsedData) {
     Object.values(parsedData.veterans).forEach((player) => records.push(player));
   }
 
+  if (parsedData?.players) {
+    Object.values(parsedData.players).forEach((player) => records.push(player));
+  }
+
   return records.slice(0, MAX_PREVIEW_ROWS);
+}
+
+function getPreviewHeaders(parsedData, datasetType) {
+  if (datasetType === 'roster') {
+    const rows = Object.values(parsedData?.players || {});
+    const sample = rows[0] || {};
+    const preferred = [
+      'name',
+      'owner',
+      'team',
+      'nhlteam',
+      'position',
+      'cost',
+      'gamesplayed',
+      'goals',
+      'assists',
+      'points',
+      'shots',
+      'avgtoi',
+    ];
+    const available = preferred.filter((header) => {
+      const normalized = header.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(sample, normalized);
+    });
+    return available.length ? available : Object.keys(sample).slice(0, 8);
+  }
+
+  return ['name', 'owner', 'cost', 'termRemaining', 'matchingRights', 'farm'];
+}
+
+function buildPlayerKey(player, sourceType) {
+  const primary = player?.playerId || player?.name || player?.fullName || 'player';
+  return `${sourceType}:${normalizeLookupKey(primary)}`;
+}
+
+function decoratePlayer(player, sourceType) {
+  return {
+    ...player,
+    sourceType,
+    playerKey: buildPlayerKey(player, sourceType),
+  };
+}
+
+function buildRosterIndex(stateObj) {
+  const players = Object.values(stateObj.datasets.roster?.players || {});
+  const byName = new Map();
+
+  players.forEach((player) => {
+    const name = String(pickRecordValue(player, ['name', 'fullname', 'playername', 'displayname', 'player'])).trim();
+    const key = normalizeLookupKey(name);
+    if (key && !byName.has(key)) {
+      byName.set(key, player);
+    }
+  });
+
+  return {
+    players,
+    byName,
+  };
+}
+
+function findRosterMatchForPlayer(player, rosterIndex) {
+  const name = String(player?.name || player?.fullName || '').trim();
+  if (!name) return null;
+
+  const key = normalizeLookupKey(name);
+  return rosterIndex.byName.get(key) || null;
 }
 
 // Unified persistence helpers and migration
@@ -464,6 +552,208 @@ function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function renderKeyValueList(rows) {
+  if (!rows.length) {
+    return '<div class="empty-state">No data available.</div>';
+  }
+
+  return `
+    <dl class="kv-list">
+      ${rows.map(([label, value]) => `
+        <div class="kv-row">
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${escapeHtml(value)}</dd>
+        </div>
+      `).join('')}
+    </dl>
+  `;
+}
+
+function renderPlayerBadges(player) {
+  const badges = [];
+
+  if (player.sourceType === 'prospect') {
+    badges.push('Prospect');
+    if (player.poolPosition) badges.push(`Pool ${player.poolPosition}`);
+    if (player.cost !== undefined && player.cost !== null) badges.push(`$${formatValue(player.cost)}`);
+    if (player.termRemaining !== undefined && player.termRemaining !== null) badges.push(`${player.termRemaining}Y`);
+    if (player.farm) badges.push('Farm');
+    if (player.matchingRights) badges.push('Rights');
+  } else if (player.sourceType === 'veteran') {
+    badges.push('Veteran');
+    if (player.poolPosition) badges.push(`Pool ${player.poolPosition}`);
+    if (player.currentCost !== undefined && player.currentCost !== null) badges.push(`$${formatValue(player.currentCost)}`);
+    if (player.retentionYear) badges.push(`Ret ${player.retentionYear}`);
+  } else if (player.sourceType) {
+    badges.push(player.sourceType);
+  }
+
+  return badges.map((badge) => `<span class="player-chip">${escapeHtml(badge)}</span>`).join('');
+}
+
+function renderPlayerList(players, filter) {
+  const search = (filter || '').trim().toLowerCase();
+  const filtered = search
+    ? (players || []).filter((p) => (p.name || '').toLowerCase().includes(search))
+    : (players || []);
+
+  if (!filtered || !filtered.length) {
+    return '<div class="empty-state">No players.</div>';
+  }
+
+  return `
+    <ul class="player-list">
+      ${filtered.map((player) => {
+        const isActive = state.selectedPlayerKey === player.playerKey;
+        return `
+          <li>
+            <button class="player-item ${isActive ? 'active' : ''}" data-player-key="${player.playerKey}">
+              <div>
+                <div class="player-name">${escapeHtml(player.name || 'Unnamed Player')}</div>
+                <div class="player-meta">${renderPlayerBadges(player)}</div>
+              </div>
+              <div class="player-chevron">›</div>
+            </button>
+          </li>
+        `;
+      }).join('')}
+    </ul>
+  `;
+}
+
+function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
+  if (!player) return '';
+
+  const rosterTeam = String(pickRecordValue(rosterRecord, ['nhlteam', 'team', 'currentteam', 'club'])).trim();
+  const rosterPosition = String(pickRecordValue(rosterRecord, ['position', 'primaryposition', 'positioncode'])).trim();
+  const rosterStatus = String(pickRecordValue(rosterRecord, ['rosterstatus', 'status'])).trim();
+  const rosterGames = pickRecordValue(rosterRecord, ['gamesplayed', 'gp']);
+  const rosterGoals = pickRecordValue(rosterRecord, ['goals', 'g']);
+  const rosterAssists = pickRecordValue(rosterRecord, ['assists', 'a']);
+  const rosterPoints = pickRecordValue(rosterRecord, ['points', 'pts']);
+  const rosterShots = pickRecordValue(rosterRecord, ['shots']);
+  const rosterAvgToi = pickRecordValue(rosterRecord, ['avgtoi', 'avgtoi/60', 'avgtoi']);
+  const liveStatus = liveProfile?.status || (state.liveRequests[player.playerKey] ? 'loading' : 'offline');
+  const liveLine = liveStatus === 'loading'
+    ? 'Loading live NHL data...'
+    : liveStatus === 'ok'
+      ? 'Live NHL data ready'
+      : liveStatus === 'partial'
+        ? 'Live NHL data partial'
+        : 'Live NHL data unavailable';
+  const errorHtml = liveProfile?.errors?.length
+    ? `<div class="error-banner">${escapeHtml(liveProfile.errors.join(' | '))}</div>`
+    : '';
+
+  const identityRows = [
+    ['Name', liveProfile?.identity?.fullName || player.name || '—'],
+    ['Owner', player.owner || '—'],
+    ['NHL Team', rosterTeam || '—'],
+    ['Pool Position', player.poolPosition || rosterPosition || '—'],
+    ['NHL Position', liveProfile?.identity?.nhlPosition || '—'],
+    ['Roster Status', liveProfile?.identity?.rosterStatus || rosterStatus || '—'],
+    ['Shoots/Catches', liveProfile?.identity?.shootsCatches || '—'],
+    ['Sweater #', liveProfile?.identity?.sweaterNumber ?? '—'],
+    ['NHL Player ID', liveProfile?.identity?.playerId ?? '—'],
+  ];
+
+  const historicalRows = [];
+  if (player.sourceType === 'prospect') {
+    historicalRows.push(['Cost', `$${formatValue(player.cost)}`]);
+    historicalRows.push(['Term Remaining', player.termRemaining ?? '—']);
+    historicalRows.push(['Farm', player.farm ? 'Yes' : 'No']);
+    historicalRows.push(['Matching Rights', player.matchingRights ? 'Yes' : 'No']);
+    historicalRows.push(['Draft Year', player.draftYear ?? '—']);
+  } else if (player.sourceType === 'veteran') {
+    historicalRows.push(['Current Cost', `$${formatValue(player.currentCost)}`]);
+    historicalRows.push(['Retention Year', player.retentionYear ?? '—']);
+    historicalRows.push(['Latest Retention', player.retentionHistory?.length ? `$${formatValue(player.retentionHistory[player.retentionHistory.length - 1]?.cost)}` : '—']);
+  }
+  historicalRows.push(['Career GP', liveProfile?.historical?.gamesPlayed ?? '—']);
+  historicalRows.push(['Career G', liveProfile?.historical?.goals ?? '—']);
+  historicalRows.push(['Career A', liveProfile?.historical?.assists ?? '—']);
+  historicalRows.push(['Career PTS', liveProfile?.historical?.points ?? '—']);
+  historicalRows.push(['Career Shots', liveProfile?.historical?.shots ?? '—']);
+  historicalRows.push(['Career Avg TOI', liveProfile?.historical?.avgToi ?? '—']);
+
+  const currentSeasonRows = [
+    ['Season', liveProfile?.featuredSeason ?? '—'],
+    ['GP', liveProfile?.currentSeason?.gamesPlayed ?? rosterGames ?? '—'],
+    ['G', liveProfile?.currentSeason?.goals ?? rosterGoals ?? '—'],
+    ['A', liveProfile?.currentSeason?.assists ?? rosterAssists ?? '—'],
+    ['PTS', liveProfile?.currentSeason?.points ?? rosterPoints ?? '—'],
+    ['Shots', liveProfile?.currentSeason?.shots ?? rosterShots ?? '—'],
+    ['Roster Status', liveProfile?.identity?.rosterStatus || rosterStatus || '—'],
+  ];
+
+  const teamRows = [];
+  if (liveProfile?.team) {
+    teamRows.push(['Current Team', liveProfile?.identity?.currentTeamName || liveProfile?.identity?.currentTeamAbbrev || '—']);
+    teamRows.push(['Conference', liveProfile.team.standings?.conferenceName || '—']);
+    teamRows.push(['Division', liveProfile.team.standings?.divisionName || '—']);
+    teamRows.push(['Points', liveProfile.team.standings?.points ?? '—']);
+    teamRows.push(['Wins', liveProfile.team.standings?.wins ?? '—']);
+    teamRows.push(['Games Remaining', liveProfile.schedule?.gamesRemaining ?? '—']);
+    teamRows.push(['Next Game', liveProfile.schedule?.nextGame ? `${liveProfile.schedule.nextGame.gameDate} vs ${liveProfile.schedule.nextGame.opponentAbbrev} (${liveProfile.schedule.nextGame.homeRoad})` : '—']);
+    teamRows.push(['Roster Count', liveProfile.team.roster?.playerCount ?? '—']);
+  } else {
+    teamRows.push(['Live team context', liveStatus === 'loading' ? 'Loading...' : 'Unavailable']);
+  }
+
+  const scheduleRows = [
+    ['Next 7 Days', liveProfile?.schedule?.gamesNext7Days ?? '—'],
+    ['Next 14 Days', liveProfile?.schedule?.gamesNext14Days ?? '—'],
+    ['Next 30 Days', liveProfile?.schedule?.gamesNext30Days ?? '—'],
+    ['Total Remaining Games', liveProfile?.schedule?.gamesRemaining ?? '—'],
+  ];
+
+  const nextGames = liveProfile?.schedule?.nextGames || [];
+  const nextGamesHtml = nextGames.length
+    ? `
+      <ul class="schedule-list">
+        ${nextGames.map((game) => `<li>${escapeHtml(game.gameDate)} ${escapeHtml(game.homeRoad)} vs ${escapeHtml(game.opponentAbbrev)}${game.gameState ? ` (${escapeHtml(game.gameState)})` : ''}</li>`).join('')}
+      </ul>
+    `
+    : '<div class="empty-state">No live schedule data.</div>';
+
+  return `
+    <section class="panel player-intel">
+      <div class="preview-header">
+        <h3>Player Intelligence</h3>
+        <div class="preview-meta">
+          <span class="meta-pill">${escapeHtml(liveLine)}</span>
+          <span class="meta-pill">${escapeHtml(player.sourceType || 'player')}</span>
+        </div>
+      </div>
+      ${errorHtml}
+
+      <div class="detail-grid">
+        <article class="detail-card">
+          <h3>Identity</h3>
+          ${renderKeyValueList(identityRows)}
+        </article>
+        <article class="detail-card">
+          <h3>Historical</h3>
+          ${renderKeyValueList(historicalRows)}
+        </article>
+        <article class="detail-card">
+          <h3>Current Season</h3>
+          ${renderKeyValueList(currentSeasonRows)}
+        </article>
+        <article class="detail-card">
+          <h3>Schedule Opportunity</h3>
+          ${renderKeyValueList(scheduleRows)}
+          ${nextGamesHtml}
+        </article>
+        <article class="detail-card">
+          <h3>Team Intelligence</h3>
+          ${renderKeyValueList(teamRows)}
+        </article>
+      </div>
+    </section>
+  `;
+}
+
 function renderTable(headers, rows) {
   if (!rows.length) {
     return '<div class="empty-state">No records available.</div>';
@@ -485,7 +775,7 @@ function renderTable(headers, rows) {
 
 function renderPreviewSection(parsedData, datasetType) {
   const rows = getVisiblePreviewRows(parsedData);
-  const headers = ['name', 'owner', 'cost', 'termRemaining', 'matchingRights', 'farm'];
+  const headers = getPreviewHeaders(parsedData, datasetType);
   const tableHtml = renderTable(headers, rows);
 
   return `
@@ -566,23 +856,6 @@ function renderOwnerList(ownerData) {
   `;
 }
 
-function renderPlayerList(players, filter) {
-  const search = (filter || '').trim().toLowerCase();
-  const filtered = search
-    ? (players || []).filter((p) => (p.name || '').toLowerCase().includes(search))
-    : (players || []);
-
-  if (!filtered || !filtered.length) {
-    return '<div class="empty-state">No players.</div>';
-  }
-
-  return `
-    <ul class="player-list">
-      ${filtered.map((player) => `<li>${player.name || 'Unnamed Player'}</li>`).join('')}
-    </ul>
-  `;
-}
-
 function renderOwnerDetails(ownerData) {
   const selectedOwner = ownerData.owners.find((owner) => owner.name === state.selectedOwner) || ownerData.owners[0];
 
@@ -598,6 +871,16 @@ function renderOwnerDetails(ownerData) {
   const totalCostFmt = formatValue(stats.totalProspectCost);
   const avgCostFmt = stats.prospectCount ? formatValue(stats.averageProspectCost) : '—';
   const highest = stats.highestCostProspect ? `${stats.highestCostProspect.name} ($${stats.highestCostProspect.cost})` : '—';
+  const rosterIndex = buildRosterIndex(state.importedData || ownerData._rawState || {});
+  const ownerPlayers = [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || [])];
+
+  if (!state.selectedPlayerKey || !ownerPlayers.some((player) => player.playerKey === state.selectedPlayerKey)) {
+    state.selectedPlayerKey = ownerPlayers.length ? ownerPlayers[0].playerKey : null;
+  }
+
+  const selectedPlayer = ownerPlayers.find((player) => player.playerKey === state.selectedPlayerKey) || ownerPlayers[0] || null;
+  const rosterMatch = selectedPlayer ? findRosterMatchForPlayer(selectedPlayer, rosterIndex) : null;
+  const liveProfile = selectedPlayer ? state.liveProfiles[selectedPlayer.playerKey] : null;
 
   const ownerSummary = `
     <div class="owner-summary panel">
@@ -637,14 +920,17 @@ function renderOwnerDetails(ownerData) {
     </div>
   `;
 
+  const playerIntel = selectedPlayer ? renderPlayerIntelligenceSection(selectedPlayer, rosterMatch, liveProfile) : '';
+
   return `
-    <section class="panel details-panel">
-      <div class="details-header">
-        <h2>${selectedOwner.name}</h2>
-      </div>
-      ${ownerSummary}
-      ${cards}
-    </section>
+  <section class="panel details-panel">
+    <div class="details-header">
+      <h2>${selectedOwner.name}</h2>
+    </div>
+    ${ownerSummary}
+    ${cards}
+    ${playerIntel}
+  </section>
   `;
 }
 
@@ -673,6 +959,7 @@ function renderOwnerView(unifiedState) {
 
   const ownerListMarkup = renderOwnerList(ownerData);
   const ownerDetailMarkup = renderOwnerDetails(ownerData);
+  const rosterIndex = buildRosterIndex(unifiedState);
 
   // compute aggregates once
   const aggregates = computeOwnerAggregates(unifiedState);
@@ -698,6 +985,14 @@ function renderOwnerView(unifiedState) {
   document.querySelectorAll('.owner-item').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedOwner = button.dataset.owner;
+      state.selectedPlayerKey = null;
+      renderOwnerView(unifiedState);
+    });
+  });
+
+  document.querySelectorAll('.player-item').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedPlayerKey = button.dataset.playerKey;
       renderOwnerView(unifiedState);
     });
   });
@@ -721,6 +1016,58 @@ function renderOwnerView(unifiedState) {
       renderOwnerView(unifiedState);
     });
   }
+
+  const selectedOwner = ownerData.owners.find((owner) => owner.name === state.selectedOwner) || ownerData.owners[0];
+  const selectedPlayer = selectedOwner
+    ? [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || [])].find((player) => player.playerKey === state.selectedPlayerKey) || null
+    : null;
+
+  if (selectedPlayer) {
+    const rosterMatch = findRosterMatchForPlayer(selectedPlayer, rosterIndex);
+    queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterMatch);
+  }
+}
+
+async function queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterRecord) {
+  if (!selectedPlayer || !selectedPlayer.playerKey || state.liveRequests[selectedPlayer.playerKey]) {
+    return;
+  }
+
+  if (state.liveProfiles[selectedPlayer.playerKey]?.fetchedAt && state.liveProfiles[selectedPlayer.playerKey]?.status !== 'loading') {
+    return;
+  }
+
+  state.liveRequests[selectedPlayer.playerKey] = true;
+  state.liveProfiles[selectedPlayer.playerKey] = state.liveProfiles[selectedPlayer.playerKey] || {
+    status: 'loading',
+    playerKey: selectedPlayer.playerKey,
+  };
+
+  try {
+    const profile = await resolveLivePlayerProfile({
+      player: selectedPlayer,
+      rosterRecord,
+      cache: state.liveCache,
+    });
+    state.liveProfiles[selectedPlayer.playerKey] = profile;
+  } catch (err) {
+    state.liveProfiles[selectedPlayer.playerKey] = {
+      playerKey: selectedPlayer.playerKey,
+      status: 'offline',
+      fetchedAt: new Date().toISOString(),
+      errors: [err.message],
+      identity: {},
+      currentSeason: {},
+      historical: {},
+      team: null,
+      schedule: null,
+    };
+  } finally {
+    delete state.liveRequests[selectedPlayer.playerKey];
+    if (state.selectedPlayerKey === selectedPlayer.playerKey) {
+      renderOwnerView(unifiedState);
+    }
+  }
 }
 
 function renderImportScreen() {
@@ -729,7 +1076,7 @@ function renderImportScreen() {
     <section class="panel import-card">
       <div class="dropzone">
         <strong>Upload a CSV</strong>
-        <p>Import prospects or veterans data to build the owner dashboard.</p>
+        <p>Import prospects, veterans, or roster data to build the dashboard.</p>
         <div class="file-input-wrap">
           <input id="csvFileInput" type="file" accept=".csv,text/csv" />
           <span class="file-placeholder">Choose CSV File</span>
@@ -771,11 +1118,15 @@ function handleImport(csvText, fileName) {
 
   if (datasetType === 'prospects') {
     parsedData = parseProspects(csvText);
-  } else {
+  } else if (datasetType === 'veterans') {
     parsedData = parseVeterans(csvText);
+  } else if (datasetType === 'roster') {
+    parsedData = parseRoster(csvText);
+  } else {
+    parsedData = null;
   }
 
-  if (!parsedData || (!parsedData.prospects && !parsedData.veterans)) {
+  if (!parsedData || (!parsedData.prospects && !parsedData.veterans && !parsedData.players)) {
     const app = document.getElementById('app');
     app.innerHTML = `
       <section class="panel import-card">
@@ -810,12 +1161,15 @@ function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
   backToImportBtn.addEventListener('click', () => {
     state.selectedOwner = null;
+    state.selectedPlayerKey = null;
     renderImportScreen();
   });
 
   const stored = loadState();
   state.importedData = stored;
+  state.liveProfiles = state.liveCache?.players ? { ...state.liveCache.players } : {};
   state.selectedOwner = null;
+  state.selectedPlayerKey = null;
 
   // if any dataset is present (status ok), show owner view
   const anyLoaded = ['prospects','veterans','roster','transactions'].some(k => stored?.metadata?.[k]?.status === 'ok');

@@ -177,7 +177,21 @@ function groupByOwner(roster) {
   return grouped;
 }
 
-// Export functions for use in Node.js or module systems
+if (typeof window !== 'undefined') {
+  window.parseRoster = parseRoster;
+}
+
+export {
+  parseRoster,
+  parseCSVLine,
+  filterByPosition,
+  filterByNHLTeam,
+  filterByOwner,
+  filterByStatus,
+  sortByCost,
+  groupByOwner
+};
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     parseRoster,
