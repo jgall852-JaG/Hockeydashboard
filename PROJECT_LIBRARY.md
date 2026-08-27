@@ -37,6 +37,24 @@ V0.8 answers:
 - How much opportunity does this player have?
 - What is happening with this player right now?
 
+## V0.9 Summary
+V0.9 adds the intrinsic Asset Valuation Engine while preserving the existing layer contracts:
+- identity, historical, and schedule remain authoritative layers
+- live data remains enrichment-only
+- value remains downstream and does not overwrite upstream data
+- valuation categories remain independent (no universal value score)
+- no auction, market, budget, inflation, trade-engine, or draft-hub logic is introduced
+
+V0.9 answers:
+- What is this asset worth?
+
+V0.9 capabilities:
+- Prospect Value
+- Veteran Value
+- Contract Value
+- Rights Value
+- Explainability (value band, risk band, drivers, concerns, explanation)
+
 ## Architecture Decisions
 - Browser-first HTML/CSS/JavaScript app
 - no backend and no framework
