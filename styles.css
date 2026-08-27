@@ -280,6 +280,10 @@ button.secondary {
   min-width: 0;
 }
 
+.value-panel {
+  margin-top: 18px;
+}
+
 .details-header {
   display: flex;
   align-items: center;

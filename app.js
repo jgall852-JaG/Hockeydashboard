@@ -621,6 +621,519 @@ function renderPlayerList(players, filter) {
   `;
 }
 
+function toNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const cleaned = String(value).replace(/[^0-9.\-]/g, '').trim();
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function summarizeSignal({ name, impact, note }) {
+  return `${name}: ${impact}${note ? ` (${note})` : ''}`;
+}
+
+function summarizeSignals(signals) {
+  if (!signals.length) return 'None';
+  return signals.map((signal) => summarizeSignal(signal)).join(' | ');
+}
+
+function pickSignalWeight(impact) {
+  if (impact === 'High' || impact === 'Positive') return 3;
+  if (impact === 'Medium') return 2;
+  if (impact === 'Neutral') return 1;
+  if (impact === 'Limited') return -1;
+  if (impact === 'Negative') return -2;
+  return 0;
+}
+
+function classifyProductionSignal(player, rosterRecord, liveProfile) {
+  const currentPoints = toNumberOrNull(liveProfile?.currentSeason?.points ?? pickRecordValue(rosterRecord, ['points', 'pts']));
+  const currentGames = toNumberOrNull(liveProfile?.currentSeason?.gamesPlayed ?? pickRecordValue(rosterRecord, ['gamesplayed', 'gp']));
+  const careerPoints = toNumberOrNull(liveProfile?.historical?.points);
+
+  const isProspect = player?.sourceType === 'prospect';
+  const highBar = isProspect ? 40 : 70;
+  const mediumBar = isProspect ? 18 : 35;
+
+  if (currentPoints !== null && currentPoints >= highBar) {
+    return { impact: 'High', note: `${currentPoints} current-season points` };
+  }
+  if (currentPoints !== null && currentPoints >= mediumBar) {
+    return { impact: 'Medium', note: `${currentPoints} current-season points` };
+  }
+  if (careerPoints !== null && careerPoints >= highBar * 3) {
+    return { impact: 'Medium', note: `${careerPoints} career points` };
+  }
+  if (currentPoints !== null || careerPoints !== null || currentGames !== null) {
+    return { impact: 'Limited', note: 'Measurable production present, below impact threshold' };
+  }
+  return { impact: 'Unknown', note: 'Insufficient production data' };
+}
+
+function classifyOpportunitySignal(player, rosterRecord, liveProfile) {
+  const rosterStatus = String(
+    liveProfile?.identity?.rosterStatus || pickRecordValue(rosterRecord, ['rosterstatus', 'status']) || ''
+  ).toLowerCase();
+  const gamesRemaining = toNumberOrNull(liveProfile?.schedule?.gamesRemaining);
+  const active = rosterStatus.includes('active');
+
+  if (active && gamesRemaining !== null && gamesRemaining >= 25) {
+    return { impact: 'High', note: `Active roster status with ${gamesRemaining} games remaining` };
+  }
+  if (active) {
+    return { impact: 'Medium', note: 'Active roster status' };
+  }
+  if (rosterStatus) {
+    return { impact: 'Limited', note: `Roster status: ${rosterStatus}` };
+  }
+  if (gamesRemaining !== null && gamesRemaining >= 25) {
+    return { impact: 'Medium', note: `${gamesRemaining} games remaining` };
+  }
+  return { impact: 'Unknown', note: 'Opportunity context incomplete' };
+}
+
+function classifyAgeSignal(player) {
+  const draftYear = toNumberOrNull(player?.draftYear);
+  if (draftYear === null) {
+    return { impact: 'Unknown', note: 'Draft-year age proxy unavailable' };
+  }
+  const currentYear = new Date().getFullYear();
+  const yearsSinceDraft = currentYear - draftYear;
+
+  if (yearsSinceDraft <= 3) {
+    return { impact: 'High', note: `${yearsSinceDraft} years since draft` };
+  }
+  if (yearsSinceDraft <= 6) {
+    return { impact: 'Medium', note: `${yearsSinceDraft} years since draft` };
+  }
+  return { impact: 'Limited', note: `${yearsSinceDraft} years since draft` };
+}
+
+function classifyDraftPedigreeSignal(player) {
+  const draftYear = toNumberOrNull(player?.draftYear);
+  if (draftYear === null) {
+    return { impact: 'Unknown', note: 'No draft-year pedigree signal available' };
+  }
+  const currentYear = new Date().getFullYear();
+  const yearsSinceDraft = currentYear - draftYear;
+  if (yearsSinceDraft <= 2) {
+    return { impact: 'High', note: `Recent draft class (${draftYear})` };
+  }
+  if (yearsSinceDraft <= 5) {
+    return { impact: 'Medium', note: `Established pedigree window (${draftYear})` };
+  }
+  return { impact: 'Limited', note: `Older draft class (${draftYear})` };
+}
+
+function classifyHistoricalTrendSignal(liveProfile) {
+  const careerPoints = toNumberOrNull(liveProfile?.historical?.points);
+  const currentPoints = toNumberOrNull(liveProfile?.currentSeason?.points);
+  if (careerPoints !== null && currentPoints !== null) {
+    if (careerPoints >= 250 && currentPoints >= 35) {
+      return { impact: 'High', note: `Career ${careerPoints} pts and current ${currentPoints} pts` };
+    }
+    if (careerPoints >= 80 || currentPoints >= 18) {
+      return { impact: 'Medium', note: `Career ${careerPoints ?? '—'} pts, current ${currentPoints ?? '—'} pts` };
+    }
+    return { impact: 'Limited', note: 'Historical totals present but modest' };
+  }
+  if (careerPoints !== null || currentPoints !== null) {
+    return { impact: 'Limited', note: 'Partial production history available' };
+  }
+  return { impact: 'Unknown', note: 'Historical production trend unavailable' };
+}
+
+function classifyScarcitySignal(player, rosterRecord) {
+  const poolPosition = String(player?.poolPosition || pickRecordValue(rosterRecord, ['position', 'poolposition']) || '').toUpperCase();
+  const scarcityMap = {
+    G: { impact: 'High', note: 'Goalie scarcity premium' },
+    C: { impact: 'Medium', note: 'Center scarcity support' },
+    D: { impact: 'Medium', note: 'Defense scarcity support' },
+    LW: { impact: 'Limited', note: 'Wing depth usually deeper' },
+    RW: { impact: 'Limited', note: 'Wing depth usually deeper' },
+    F: { impact: 'Limited', note: 'Flexible forward slot' },
+    LD: { impact: 'Medium', note: 'Defense scarcity support' },
+    RD: { impact: 'Medium', note: 'Defense scarcity support' },
+  };
+
+  if (scarcityMap[poolPosition]) {
+    return scarcityMap[poolPosition];
+  }
+  return { impact: 'Unknown', note: 'Pool position unavailable' };
+}
+
+function classifyCostModifier(player) {
+  const cost = toNumberOrNull(player?.sourceType === 'veteran' ? player?.currentCost : player?.cost);
+  if (cost === null) {
+    return { impact: 'Neutral', note: 'Cost data unavailable' };
+  }
+  if (cost <= 3) {
+    return { impact: 'Positive', note: `Low cost (${cost})` };
+  }
+  if (cost <= 10) {
+    return { impact: 'Neutral', note: `Moderate cost (${cost})` };
+  }
+  return { impact: 'Negative', note: `High cost (${cost})` };
+}
+
+function classifyTermModifier(player) {
+  const term = toNumberOrNull(player?.termRemaining);
+  if (term === null) {
+    return { impact: 'Neutral', note: 'No term signal for this asset' };
+  }
+  if (term >= 3) {
+    return { impact: 'Positive', note: `${term} years of control` };
+  }
+  if (term >= 1) {
+    return { impact: 'Neutral', note: `${term} years of control` };
+  }
+  return { impact: 'Negative', note: 'No remaining term' };
+}
+
+function classifyRetentionModifier(player) {
+  const retentionCost = toNumberOrNull(player?.retentionHistory?.length
+    ? player.retentionHistory[player.retentionHistory.length - 1]?.cost
+    : null);
+  if (retentionCost === null) {
+    return { impact: 'Neutral', note: 'Retention data unavailable' };
+  }
+  if (retentionCost <= 3) {
+    return { impact: 'Positive', note: `Latest retained cost ${retentionCost}` };
+  }
+  if (retentionCost <= 10) {
+    return { impact: 'Neutral', note: `Latest retained cost ${retentionCost}` };
+  }
+  return { impact: 'Negative', note: `Latest retained cost ${retentionCost}` };
+}
+
+function classifyRightsModifier(player) {
+  if (player?.matchingRights) {
+    return { impact: 'Positive', note: 'Matching rights available' };
+  }
+  return { impact: 'Neutral', note: 'No matching rights' };
+}
+
+function classifyProspectValueBand(primary, secondary, modifiers) {
+  const upsideHigh = primary.upside.impact === 'High';
+  const ageStrong = primary.age.impact === 'High' || primary.age.impact === 'Medium';
+  const pedigreeStrong = primary.draftPedigree.impact === 'High' || primary.draftPedigree.impact === 'Medium';
+  const opportunityStrong = secondary.opportunity.impact === 'High' || secondary.opportunity.impact === 'Medium';
+  const productionStrong = secondary.historicalTrend.impact === 'High' || secondary.historicalTrend.impact === 'Medium';
+
+  if (upsideHigh && ageStrong && pedigreeStrong && opportunityStrong) return 'Elite Prospect';
+  if ((upsideHigh && (ageStrong || productionStrong)) || (opportunityStrong && pedigreeStrong)) return 'Strong Prospect';
+  if (upsideHigh || ageStrong || productionStrong || opportunityStrong) return 'Developing Prospect';
+  if (modifiers.rights.impact === 'Positive') return 'Developing Prospect';
+  return 'Speculative Prospect';
+}
+
+function classifyVeteranValueBand(primary, secondary) {
+  const production = primary.production.impact;
+  const opportunity = primary.opportunity.impact;
+  if (production === 'High' && (opportunity === 'High' || opportunity === 'Medium')) return 'Elite Veteran';
+  if (production === 'High' || (production === 'Medium' && opportunity === 'High')) return 'Core Asset';
+  if (production === 'Medium') return 'Quality Asset';
+  if (opportunity === 'Medium' || secondary.scarcity.impact === 'High') return 'Roster Asset';
+  return 'Depth Asset';
+}
+
+function classifyContractValueBand(primary, secondary, modifiers) {
+  const cost = primary.costEfficiency.impact;
+  const term = secondary.termControl.impact;
+  const retention = secondary.retention.impact;
+  const rights = modifiers.matchingRights.impact;
+
+  if (cost === 'Positive' && (term === 'Positive' || retention === 'Positive' || rights === 'Positive')) return 'Excellent Contract';
+  if (cost === 'Positive' || (cost === 'Neutral' && (term === 'Positive' || retention === 'Positive' || rights === 'Positive'))) return 'Good Contract';
+  if (cost === 'Negative' && term !== 'Positive' && retention !== 'Positive') return 'Poor Contract';
+  return 'Fair Contract';
+}
+
+function classifyRightsValueBand(primary, secondary) {
+  if (primary.rightsPresence.impact === 'Positive' && secondary.assetLinkage.impact === 'High') {
+    return 'Strong Rights Asset';
+  }
+  if (primary.rightsPresence.impact === 'Positive') return 'Moderate Rights Asset';
+  return 'Limited Rights Asset';
+}
+
+function classifyRiskBand(signalGroups) {
+  let positives = 0;
+  let negatives = 0;
+  signalGroups.forEach((signals) => {
+    (signals || []).forEach((signal) => {
+      const weight = pickSignalWeight(signal.impact);
+      if (weight >= 2) positives += 1;
+      if (weight <= -1 || signal.impact === 'Unknown') negatives += 1;
+    });
+  });
+
+  if (negatives >= positives + 2) return 'High';
+  if (negatives >= positives) return 'Medium';
+  return 'Low';
+}
+
+function buildDriversAndConcerns(signalGroups) {
+  const allSignals = signalGroups.flatMap((signals) => signals || []);
+  const drivers = allSignals
+    .filter((signal) => ['High', 'Positive', 'Medium'].includes(signal.impact))
+    .map((signal) => `${signal.name} (${signal.impact})`);
+  const concerns = allSignals
+    .filter((signal) => ['Limited', 'Negative', 'Unknown'].includes(signal.impact))
+    .map((signal) => `${signal.name} (${signal.impact})`);
+  return {
+    drivers: drivers.length ? drivers : ['No strong drivers identified yet'],
+    concerns: concerns.length ? concerns : ['No major concerns identified'],
+  };
+}
+
+function buildValueCategory({
+  title,
+  status,
+  valueBand,
+  primary,
+  secondary,
+  modifiers,
+  informational,
+  explanation,
+}) {
+  const { drivers, concerns } = buildDriversAndConcerns([primary, secondary, modifiers]);
+  const riskBand = classifyRiskBand([primary, secondary, modifiers]);
+  return {
+    title,
+    status,
+    valueBand,
+    riskBand,
+    primary,
+    secondary,
+    modifiers,
+    informational,
+    drivers,
+    concerns,
+    explanation,
+  };
+}
+
+function buildValueLayer(player, rosterRecord, liveProfile) {
+  const production = classifyProductionSignal(player, rosterRecord, liveProfile);
+  const opportunity = classifyOpportunitySignal(player, rosterRecord, liveProfile);
+  const age = classifyAgeSignal(player);
+  const draftPedigree = classifyDraftPedigreeSignal(player);
+  const historicalTrend = classifyHistoricalTrendSignal(liveProfile);
+  const scarcity = classifyScarcitySignal(player, rosterRecord);
+  const cost = classifyCostModifier(player);
+  const term = classifyTermModifier(player);
+  const retention = classifyRetentionModifier(player);
+  const rights = classifyRightsModifier(player);
+
+  const informational = [
+    { name: 'NHL Position', impact: 'Informational', note: liveProfile?.identity?.nhlPosition || 'Unavailable' },
+    { name: 'Sweater Number', impact: 'Informational', note: String(liveProfile?.identity?.sweaterNumber ?? 'Unavailable') },
+    { name: 'Shoots/Catches', impact: 'Informational', note: liveProfile?.identity?.shootsCatches || 'Unavailable' },
+  ];
+
+  const prospectApplicable = player?.sourceType === 'prospect';
+  const veteranApplicable = player?.sourceType === 'veteran';
+  const rightsApplicable = player?.sourceType === 'prospect' || player?.matchingRights;
+
+  const prospectPrimary = [
+    { name: 'Upside Trajectory', ...production },
+    { name: 'Age Window', ...age },
+    { name: 'Draft Pedigree', ...draftPedigree },
+  ];
+  const prospectSecondary = [
+    { name: 'Historical Production', ...historicalTrend },
+    { name: 'Opportunity Path', ...opportunity },
+    { name: 'Pool Position Scarcity', ...scarcity },
+  ];
+  const prospectModifiers = [
+    { name: 'Cost', ...cost },
+    { name: 'Term', ...term },
+    { name: 'Matching Rights', ...rights },
+    { name: 'Farm Status', impact: player?.farm ? 'Positive' : 'Neutral', note: player?.farm ? 'Farm control retained' : 'No farm flag' },
+  ];
+
+  const veteranPrimary = [
+    { name: 'Production', ...production },
+    { name: 'Opportunity', ...opportunity },
+  ];
+  const veteranSecondary = [
+    { name: 'Age Curve', ...age },
+    { name: 'Pool Position Scarcity', ...scarcity },
+    { name: 'Historical Consistency', ...historicalTrend },
+  ];
+  const veteranModifiers = [
+    { name: 'Cost', ...cost },
+    { name: 'Term', ...term },
+    { name: 'Retention', ...retention },
+  ];
+
+  const contractPrimary = [
+    { name: 'Cost Efficiency', ...cost },
+    { name: 'Contract Control', ...term },
+  ];
+  const contractSecondary = [
+    { name: 'Retention Quality', ...retention },
+    { name: 'Rights Control', ...rights },
+  ];
+  const contractModifiers = [
+    { name: 'Matching Rights', ...rights },
+  ];
+
+  const rightsPrimary = [
+    { name: 'Rights Presence', ...rights },
+    { name: 'Rights Enforceability', impact: rights.impact === 'Positive' ? 'Medium' : 'Limited', note: rights.impact === 'Positive' ? 'Rights flag present in source data' : 'No enforceable rights flag' },
+  ];
+  const rightsSecondary = [
+    { name: 'Asset Linkage', impact: player?.sourceType === 'prospect' ? 'High' : 'Limited', note: player?.sourceType === 'prospect' ? 'Prospect-linked rights context' : 'Non-prospect rights linkage is weaker' },
+    { name: 'Time Horizon', ...term },
+  ];
+  const rightsModifiers = [
+    { name: 'Cost Context', ...cost },
+    { name: 'Retention Context', ...retention },
+  ];
+
+  return {
+    prospectValue: buildValueCategory({
+      title: 'Prospect Value',
+      status: prospectApplicable ? 'Applicable' : 'Not Applicable',
+      valueBand: prospectApplicable
+        ? classifyProspectValueBand(
+          {
+            upside: prospectPrimary[0],
+            age: prospectPrimary[1],
+            draftPedigree: prospectPrimary[2],
+          },
+          {
+            historicalTrend: prospectSecondary[0],
+            opportunity: prospectSecondary[1],
+            scarcity: prospectSecondary[2],
+          },
+          {
+            cost: prospectModifiers[0],
+            term: prospectModifiers[1],
+            rights: prospectModifiers[2],
+          }
+        )
+        : 'Not Applicable',
+      primary: prospectPrimary,
+      secondary: prospectSecondary,
+      modifiers: prospectModifiers,
+      informational,
+      explanation: 'Prospect value emphasizes upside, age window, and draft pedigree first; production/opportunity refine confidence, and contract factors adjust the band.',
+    }),
+    veteranValue: buildValueCategory({
+      title: 'Veteran Value',
+      status: veteranApplicable ? 'Applicable' : 'Not Applicable',
+      valueBand: veteranApplicable
+        ? classifyVeteranValueBand(
+          { production: veteranPrimary[0], opportunity: veteranPrimary[1] },
+          { age: veteranSecondary[0], scarcity: veteranSecondary[1], historical: veteranSecondary[2] }
+        )
+        : 'Not Applicable',
+      primary: veteranPrimary,
+      secondary: veteranSecondary,
+      modifiers: veteranModifiers,
+      informational,
+      explanation: 'Veteran value is anchored to present production and role opportunity, with age/scarcity/history as context and contract factors as modifiers.',
+    }),
+    draftPickValue: {
+      title: 'Draft Pick Value',
+      status: 'Context Required',
+      valueBand: 'Pending Draft Pick Inputs',
+      riskBand: 'High',
+      explanation: 'Draft pick valuation is intentionally deferred until explicit pick-round, year, and condition metadata are provided.',
+      primary: [
+        { name: 'Round Tier', impact: 'Pending', note: 'Requires pick-round input' },
+        { name: 'Year Proximity', impact: 'Pending', note: 'Requires pick-year input' },
+      ],
+      secondary: [
+        { name: 'Conditionality', impact: 'Pending', note: 'Requires condition metadata' },
+      ],
+      modifiers: [
+        { name: 'Protection Rules', impact: 'Pending', note: 'Requires pick-protection metadata' },
+      ],
+      informational: [
+        { name: 'Player Profile Context', impact: 'Informational', note: 'No direct pick valuation from player-only context' },
+      ],
+      drivers: ['Draft pick-specific metadata not yet attached'],
+      concerns: ['Player profile context cannot infer pick value'],
+    },
+    contractValue: buildValueCategory({
+      title: 'Contract Value',
+      status: 'Applicable',
+      valueBand: classifyContractValueBand(
+        { costEfficiency: contractPrimary[0], contractControl: contractPrimary[1] },
+        { termControl: contractPrimary[1], retention: contractSecondary[0], rightsControl: contractSecondary[1] },
+        { matchingRights: contractModifiers[0] }
+      ),
+      primary: contractPrimary,
+      secondary: contractSecondary,
+      modifiers: contractModifiers,
+      informational,
+      explanation: 'Contract value evaluates intrinsic control efficiency: cost and term lead, while retention and rights adjust final contract quality.',
+    }),
+    rightsValue: buildValueCategory({
+      title: 'Matching Rights Value',
+      status: rightsApplicable ? 'Applicable' : 'Limited',
+      valueBand: classifyRightsValueBand(
+        { rightsPresence: rightsPrimary[0], enforceability: rightsPrimary[1] },
+        { assetLinkage: rightsSecondary[0], timeHorizon: rightsSecondary[1] }
+      ),
+      primary: rightsPrimary,
+      secondary: rightsSecondary,
+      modifiers: rightsModifiers,
+      informational,
+      explanation: 'Rights value reflects whether matching rights are present, enforceable, and linked to a meaningful underlying prospect-control path.',
+    }),
+  };
+}
+
+function renderValueCategoryCard(category) {
+  const rows = [
+    ['Status', category.status],
+    ['Value Band', category.valueBand || 'Pending'],
+    ['Risk Band', category.riskBand || 'Medium'],
+    ['Primary Factors', summarizeSignals(category.primary || [])],
+    ['Secondary Factors', summarizeSignals(category.secondary || [])],
+    ['Modifiers', summarizeSignals(category.modifiers || [])],
+    ['Informational Only', summarizeSignals(category.informational || [])],
+    ['Drivers', (category.drivers || []).join(' | ')],
+    ['Concerns', (category.concerns || []).join(' | ')],
+    ['Explanation', category.explanation || 'No explanation available'],
+  ];
+
+  return `
+    <article class="detail-card">
+      <h3>${escapeHtml(category.title)}</h3>
+      ${renderKeyValueList(rows)}
+    </article>
+  `;
+}
+
+function renderValueSection(valueLayer) {
+  return `
+    <section class="panel value-panel">
+      <div class="preview-header">
+        <h3>Value</h3>
+        <div class="preview-meta">
+          <span class="meta-pill">Intrinsic Asset Valuation</span>
+        </div>
+      </div>
+      <div class="detail-grid">
+        ${renderValueCategoryCard(valueLayer.prospectValue)}
+        ${renderValueCategoryCard(valueLayer.veteranValue)}
+        ${renderValueCategoryCard(valueLayer.contractValue)}
+        ${renderValueCategoryCard(valueLayer.rightsValue)}
+      </div>
+    </section>
+  `;
+}
+
 function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
   if (!player) return '';
 
@@ -716,6 +1229,8 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
     `
     : '<div class="empty-state">No live schedule data.</div>';
 
+  const valueLayer = buildValueLayer(player, rosterRecord, liveProfile);
+
   return `
     <section class="panel player-intel">
       <div class="preview-header">
@@ -750,6 +1265,7 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
           ${renderKeyValueList(teamRows)}
         </article>
       </div>
+      ${renderValueSection(valueLayer)}
     </section>
   `;
 }
@@ -1184,4 +1700,4 @@ if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', initialize);
 }
 
-export { STORAGE_KEY, state };
+export { STORAGE_KEY, state, buildValueLayer };
