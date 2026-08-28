@@ -90,3 +90,41 @@ The long-range strategic goal is not a new intelligence engine. It is dependable
 
 ## Final Position
 The project’s durable identity is a local-first, browser-based dashboard that remains useful when data sources are incomplete, delayed, or unavailable. The V0.75 session is about surviving the real-world conditions of draft day, laptop-only access, and fresh-machine startup without undermining the frozen architecture.
+
+## V1.0 Draft Hub
+
+### Question Answered
+Given everything the platform knows...
+
+WHAT SHOULD I DO?
+
+### Capabilities
+- Best Available
+- Draft Board
+- Draft Queue
+- Position Scarcity
+- Team Needs
+- Value Profile
+
+### Product definition
+The V1.0 Draft Hub is the smallest release-worthy draft-day command center. It is a single-screen workflow that helps a GM answer the critical draft questions without leaving the hub:
+- Who is available?
+- Who is best available?
+- What is scarce?
+- What is the asset value?
+- What fits my team needs?
+- What should I queue up next?
+
+### Scope boundaries
+This release intentionally does not include:
+- auction engine
+- commissioner dashboard
+- trade engine
+- league operations tooling
+- inflation or budget modeling
+- advanced multi-board analytics
+
+These belong to future releases. V1.0 is a focused operational decision-support tool designed to help the user draft successfully from a single screen.
+
+### Release status
+The V1.0 Draft Hub is an operational release candidate for a single-screen draft workflow. It is intentionally limited in scope so that it can ship successfully under real draft-day pressure while preserving the project’s local-first architecture and disciplined roadmap.

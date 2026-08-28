@@ -19,6 +19,11 @@ const state = {
   ownerSearch: '',
   playerSearch: '',
   selectedPlayerKey: null,
+  draftSelectedPlayerKey: null,
+  draftSearch: '',
+  draftPositionFilter: 'ALL',
+  draftValueFilter: 'ALL',
+  draftQueue: loadDraftQueue(),
   liveCache: loadLiveCache(),
   liveProfiles: {},
   liveRequests: {},
@@ -53,6 +58,115 @@ function parseCSVLine(line) {
 
   result.push(current.trim());
   return result;
+}
+
+const DRAFT_QUEUE_STORAGE_KEY = 'hockey-dashboard-draft-queue';
+
+function loadDraftQueue() {
+  try {
+    const raw = localStorage.getItem(DRAFT_QUEUE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function persistDraftQueue(queue) {
+  try {
+    localStorage.setItem(DRAFT_QUEUE_STORAGE_KEY, JSON.stringify(queue));
+  } catch (error) {
+    console.error('Failed to persist draft queue', error);
+  }
+}
+
+function getValueBand(value) {
+  const numeric = Number(value || 0);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 'Low';
+  if (numeric >= 220000) return 'Elite';
+  if (numeric >= 110000) return 'High';
+  if (numeric >= 50000) return 'Medium';
+  return 'Low';
+}
+
+function getRiskBand(player) {
+  const hasRights = Boolean(player.matchingRights);
+  const term = Number(player.termRemaining || 0);
+  const age = Number(player.age || 0);
+  if (hasRights || term >= 3 || age <= 22) return 'Low Risk';
+  if (term >= 1 || age <= 26) return 'Medium Risk';
+  return 'High Risk';
+}
+
+function getDraftHubPlayers(unifiedState) {
+  const rosterIndex = buildRosterIndex(unifiedState || {});
+  const players = [];
+
+  const addPlayersFromDataset = (dataset, sourceType) => {
+    const items = Array.isArray(dataset) ? dataset : Object.values(dataset || {});
+    items.forEach((player) => {
+      if (!player || (!player.name && !player.fullName)) return;
+      const record = { ...player };
+      const rosterMatch = findRosterMatchForPlayer(record, rosterIndex);
+      const value = Number(record.currentCost ?? record.cost ?? record.contractValue ?? record.value ?? 0) || 0;
+      const poolPosition = String(record.poolPosition || record.position || rosterMatch?.position || '—').trim();
+      const name = String(record.name || record.fullName || 'Unnamed Player').trim();
+      players.push({
+        ...record,
+        name,
+        sourceType,
+        key: buildPlayerKey(record, sourceType),
+        poolPosition: poolPosition || '—',
+        nhlTeam: String(pickRecordValue(rosterMatch, ['nhlteam', 'team', 'currentteam', 'club']) || record.team || record.nhlTeam || '—').trim() || '—',
+        value,
+        valueBand: getValueBand(value),
+        riskBand: getRiskBand(record),
+        owner: record.owner || 'Available',
+      });
+    });
+  };
+
+  addPlayersFromDataset(unifiedState?.datasets?.prospects?.prospects, 'Prospect');
+  addPlayersFromDataset(unifiedState?.datasets?.veterans?.veterans, 'Veteran');
+
+  return players.sort((a, b) => {
+    const valueDiff = (Number(b.value) || 0) - (Number(a.value) || 0);
+    if (valueDiff !== 0) return valueDiff;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+}
+
+function draftHubPositionCounts(players) {
+  const counts = { C: 0, LW: 0, RW: 0, D: 0, G: 0 };
+  players.forEach((player) => {
+    const pos = String(player.poolPosition || '').toUpperCase();
+    if (pos.includes('C')) counts.C += 1;
+    if (pos.includes('LW')) counts.LW += 1;
+    if (pos.includes('RW')) counts.RW += 1;
+    if (pos.includes('D')) counts.D += 1;
+    if (pos.includes('G')) counts.G += 1;
+  });
+  return counts;
+}
+
+function buildDraftHubData(unifiedState) {
+  const players = getDraftHubPlayers(unifiedState || {});
+  const counts = draftHubPositionCounts(players);
+  const queuePlayers = state.draftQueue
+    .map((queueKey) => players.find((player) => player.key === queueKey))
+    .filter(Boolean);
+
+  const selectedPlayer = players.find((player) => player.key === state.draftSelectedPlayerKey)
+    || players[0]
+    || null;
+
+  return {
+    players,
+    counts,
+    queuePlayers,
+    selectedPlayer,
+  };
 }
 
 export function detectDatasetType(csvText) {
@@ -934,6 +1048,353 @@ function renderOwnerDetails(ownerData) {
   `;
 }
 
+function renderDraftHubValueProfile(player) {
+  if (!player) {
+    return '<div class="empty-state">Select a player to view the value profile.</div>';
+  }
+
+  const valueRows = [
+    ['Prospect Value', player.sourceType === 'Prospect' && Number(player.value || 0) ? `$${formatValue(player.value)}` : '—'],
+    ['Veteran Value', player.sourceType === 'Veteran' && Number(player.value || 0) ? `$${formatValue(player.value)}` : '—'],
+    ['Contract Value', Number(player.currentCost ?? player.cost ?? 0) ? `$${formatValue(player.currentCost ?? player.cost ?? 0)}` : '—'],
+    ['Rights Value', player.matchingRights ? 'Active' : 'None'],
+    ['Value Band', player.valueBand || 'Low'],
+    ['Risk Band', player.riskBand || 'Medium Risk'],
+  ];
+
+  const drivers = [];
+  if (Number(player.value || 0)) drivers.push(`Value: $${formatValue(player.value)}`);
+  if (player.matchingRights) drivers.push('Matching rights');
+  if (player.termRemaining !== undefined && player.termRemaining !== null) drivers.push(`Term remaining: ${player.termRemaining}`);
+  if (player.age) drivers.push(`Age: ${player.age}`);
+
+  const explanation = drivers.length ? drivers.join(' • ') : 'No value drivers available yet.';
+
+  return `
+    <div class="detail-grid">
+      <article class="detail-card">
+        <h3>Value Profile</h3>
+        ${renderKeyValueList(valueRows)}
+      </article>
+      <article class="detail-card">
+        <h3>Drivers</h3>
+        <p class="muted-copy">${escapeHtml(explanation)}</p>
+      </article>
+    </div>
+  `;
+}
+
+function renderDraftHubQueue(queuePlayers, selectedKey) {
+  if (!queuePlayers.length) {
+    return '<div class="empty-state">Draft queue is empty.</div>';
+  }
+
+  return `
+    <div class="queue-list">
+      ${queuePlayers.map((player, index) => `
+        <div class="queue-item ${selectedKey === player.key ? 'selected' : ''}">
+          <div class="queue-main">
+            <button class="queue-select" data-draft-player-key="${player.key}">${escapeHtml(player.name)}</button>
+            <div class="queue-meta">${escapeHtml(player.poolPosition)} · ${escapeHtml(player.valueBand)} · ${escapeHtml(player.owner)}</div>
+          </div>
+          <div class="queue-actions">
+            <button data-queue-action="up" data-queue-index="${index}" aria-label="Move up">↑</button>
+            <button data-queue-action="down" data-queue-index="${index}" aria-label="Move down">↓</button>
+            <button data-queue-action="remove" data-queue-index="${index}" aria-label="Remove">×</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderDraftHubBoard(players, selectedKey) {
+  const search = (state.draftSearch || '').trim().toLowerCase();
+  const posFilter = state.draftPositionFilter || 'ALL';
+  const valueFilter = state.draftValueFilter || 'ALL';
+
+  const filtered = players.filter((player) => {
+    const matchesSearch = !search || (player.name || '').toLowerCase().includes(search);
+    const matchesPosition = posFilter === 'ALL' || String(player.poolPosition || '').toUpperCase() === posFilter;
+    const matchesValue = valueFilter === 'ALL' || player.valueBand === valueFilter;
+    return matchesSearch && matchesPosition && matchesValue;
+  });
+
+  if (!filtered.length) {
+    return '<div class="empty-state">No players match the current filters.</div>';
+  }
+
+  return `
+    <div class="board-table-wrap">
+      <table class="draft-board-table">
+        <thead>
+          <tr>
+            <th>Player</th>
+            <th>Pos</th>
+            <th>Team</th>
+            <th>Value</th>
+            <th>Risk</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.slice(0, 25).map((player) => `
+            <tr class="${selectedKey === player.key ? 'selected-row' : ''}">
+              <td>
+                <button class="board-player-name" data-draft-player-key="${player.key}">${escapeHtml(player.name)}</button>
+              </td>
+              <td>${escapeHtml(player.poolPosition || '—')}</td>
+              <td>${escapeHtml(player.nhlTeam || '—')}</td>
+              <td>${escapeHtml(player.valueBand || 'Low')}</td>
+              <td>${escapeHtml(player.riskBand || 'Medium Risk')}</td>
+              <td>
+                <button class="secondary add-queue-btn" data-add-to-queue="${player.key}">${state.draftQueue.includes(player.key) ? 'Queued' : 'Add to Queue'}</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderDraftHubScarcity(counts) {
+  const labels = ['C', 'LW', 'RW', 'D', 'G'];
+  const max = Math.max(...Object.values(counts), 1);
+
+  return `
+    <div class="scarcity-list">
+      ${labels.map((label) => {
+        const count = counts[label] || 0;
+        const width = Math.max(12, (count / max) * 100);
+        const tone = count <= 2 ? 'scarcity-high' : count <= 4 ? 'scarcity-medium' : 'scarcity-low';
+        return `
+          <div class="scarcity-row">
+            <div class="scarcity-label-row">
+              <strong>${label}</strong>
+              <span>${count} left</span>
+            </div>
+            <div class="scarcity-bar ${tone}">
+              <span style="width:${width}%"></span>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderDraftHubNeeds(players) {
+  const counts = draftHubPositionCounts(players);
+  const needs = [
+    { label: 'Need Center', metric: counts.C || 0, status: (counts.C || 0) <= 2 ? 'High' : 'Medium' },
+    { label: 'Need RW', metric: counts.RW || 0, status: (counts.RW || 0) <= 2 ? 'High' : 'Medium' },
+    { label: 'Need Defense', metric: counts.D || 0, status: (counts.D || 0) <= 2 ? 'High' : 'Medium' },
+    { label: 'Need Prospect Depth', metric: players.filter((p) => p.sourceType === 'Prospect').length, status: 'Monitor' },
+    { label: 'Need Cheap Assets', metric: players.filter((p) => Number(p.value || 0) <= 50000).length, status: 'Available' },
+    { label: 'Need Immediate Production', metric: players.filter((p) => p.sourceType === 'Veteran').length, status: 'Available' },
+  ];
+
+  return `
+    <div class="need-grid">
+      ${needs.map((need) => `
+        <div class="need-pill ${need.status === 'High' ? 'need-high' : need.status === 'Medium' ? 'need-medium' : 'need-low'}">
+          <div class="need-label">${escapeHtml(need.label)}</div>
+          <div class="need-strength">${escapeHtml(String(need.status))}</div>
+          <div class="need-metric">${escapeHtml(String(need.metric))}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderDraftHubView(unifiedState) {
+  const draftHubData = buildDraftHubData(unifiedState);
+  const players = draftHubData.players || [];
+  const selectedPlayer = draftHubData.selectedPlayer;
+  if (!state.draftSelectedPlayerKey && selectedPlayer) {
+    state.draftSelectedPlayerKey = selectedPlayer.key;
+  }
+
+  const filteredPlayers = players.filter((player) => {
+    const search = (state.draftSearch || '').trim().toLowerCase();
+    const matchesSearch = !search || (player.name || '').toLowerCase().includes(search);
+    const matchesPosition = state.draftPositionFilter === 'ALL' || String(player.poolPosition || '').toUpperCase() === state.draftPositionFilter;
+    const matchesValue = state.draftValueFilter === 'ALL' || player.valueBand === state.draftValueFilter;
+    return matchesSearch && matchesPosition && matchesValue;
+  });
+
+  const bestAvailable = filteredPlayers.slice(0, 6);
+  const boardHtml = renderDraftHubBoard(players, state.draftSelectedPlayerKey);
+  const queueHtml = renderDraftHubQueue(draftHubData.queuePlayers, state.draftSelectedPlayerKey);
+  const scarcityHtml = renderDraftHubScarcity(draftHubData.counts);
+  const needsHtml = renderDraftHubNeeds(players);
+  const valueProfileHtml = renderDraftHubValueProfile(selectedPlayer);
+
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <section class="panel draft-summary-grid">
+      <div class="summary-card"><div class="summary-value">${players.length}</div><div class="summary-label">Players in pool</div></div>
+      <div class="summary-card"><div class="summary-value">${bestAvailable.length}</div><div class="summary-label">Best available</div></div>
+      <div class="summary-card"><div class="summary-value">${draftHubData.queuePlayers.length}</div><div class="summary-label">Queue</div></div>
+      <div class="summary-card"><div class="summary-value">${Object.values(draftHubData.counts).filter(Boolean).length}</div><div class="summary-label">Positions tracked</div></div>
+    </section>
+
+    <div class="draft-grid">
+      <div class="draft-column-main">
+        <section class="panel draft-module">
+          <div class="preview-header">
+            <h2>Best Available</h2>
+            <span class="meta-pill">Top signals</span>
+          </div>
+          <div class="best-available-list">
+            ${bestAvailable.map((player) => `
+              <button class="best-player-card ${state.draftSelectedPlayerKey === player.key ? 'selected' : ''}" data-draft-player-key="${player.key}">
+                <div class="best-player-meta">
+                  <strong>${escapeHtml(player.name)}</strong>
+                  <span>${escapeHtml(player.poolPosition || '—')} · ${escapeHtml(player.nhlTeam || '—')}</span>
+                </div>
+                <div class="best-player-stats">
+                  <span>${escapeHtml(player.valueBand || 'Low')}</span>
+                  <span>${escapeHtml(player.riskBand || 'Medium Risk')}</span>
+                </div>
+              </button>
+            `).join('')}
+          </div>
+        </section>
+
+        <section class="panel draft-module">
+          <div class="preview-header">
+            <h2>Draft Board</h2>
+            <div class="board-controls">
+              <input id="draftSearchInput" placeholder="Search player..." value="${escapeHtml(state.draftSearch || '')}" />
+              <select id="draftPositionFilter">
+                <option value="ALL" ${state.draftPositionFilter === 'ALL' ? 'selected' : ''}>All positions</option>
+                <option value="C" ${state.draftPositionFilter === 'C' ? 'selected' : ''}>C</option>
+                <option value="LW" ${state.draftPositionFilter === 'LW' ? 'selected' : ''}>LW</option>
+                <option value="RW" ${state.draftPositionFilter === 'RW' ? 'selected' : ''}>RW</option>
+                <option value="D" ${state.draftPositionFilter === 'D' ? 'selected' : ''}>D</option>
+                <option value="G" ${state.draftPositionFilter === 'G' ? 'selected' : ''}>G</option>
+              </select>
+              <select id="draftValueFilter">
+                <option value="ALL" ${state.draftValueFilter === 'ALL' ? 'selected' : ''}>All values</option>
+                <option value="Elite" ${state.draftValueFilter === 'Elite' ? 'selected' : ''}>Elite</option>
+                <option value="High" ${state.draftValueFilter === 'High' ? 'selected' : ''}>High</option>
+                <option value="Medium" ${state.draftValueFilter === 'Medium' ? 'selected' : ''}>Medium</option>
+                <option value="Low" ${state.draftValueFilter === 'Low' ? 'selected' : ''}>Low</option>
+              </select>
+            </div>
+          </div>
+          ${boardHtml}
+        </section>
+      </div>
+
+      <aside class="draft-column-side">
+        <section class="panel draft-module">
+          <div class="preview-header">
+            <h2>Draft Queue</h2>
+            <span class="meta-pill">${draftHubData.queuePlayers.length} tracked</span>
+          </div>
+          ${queueHtml}
+        </section>
+
+        <section class="panel draft-module">
+          <div class="preview-header">
+            <h2>Position Scarcity</h2>
+          </div>
+          ${scarcityHtml}
+        </section>
+
+        <section class="panel draft-module">
+          <div class="preview-header">
+            <h2>Team Needs</h2>
+          </div>
+          ${needsHtml}
+        </section>
+      </aside>
+    </div>
+
+    <section class="panel draft-module">
+      <div class="preview-header">
+        <h2>Value Profile</h2>
+        <span class="meta-pill">${selectedPlayer ? escapeHtml(selectedPlayer.name) : 'No player selected'}</span>
+      </div>
+      ${valueProfileHtml}
+    </section>
+  `;
+
+  document.getElementById('backToImportBtn').classList.remove('hidden');
+
+  document.querySelectorAll('[data-draft-player-key]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.draftSelectedPlayerKey = button.dataset.draftPlayerKey;
+      renderDraftHubView(unifiedState);
+    });
+  });
+
+  document.querySelectorAll('[data-add-to-queue]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const key = button.dataset.addToQueue;
+      if (!state.draftQueue.includes(key)) {
+        state.draftQueue.push(key);
+        persistDraftQueue(state.draftQueue);
+      }
+      renderDraftHubView(unifiedState);
+    });
+  });
+
+  document.querySelectorAll('[data-queue-action]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const action = button.dataset.queueAction;
+      const index = Number(button.dataset.queueIndex);
+      if (Number.isNaN(index)) return;
+
+      if (action === 'remove') {
+        state.draftQueue.splice(index, 1);
+      }
+
+      if (action === 'up' && index > 0) {
+        const [item] = state.draftQueue.splice(index, 1);
+        state.draftQueue.splice(index - 1, 0, item);
+      }
+
+      if (action === 'down' && index < state.draftQueue.length - 1) {
+        const [item] = state.draftQueue.splice(index, 1);
+        state.draftQueue.splice(index + 1, 0, item);
+      }
+
+      persistDraftQueue(state.draftQueue);
+      renderDraftHubView(unifiedState);
+    });
+  });
+
+  const searchInput = document.getElementById('draftSearchInput');
+  if (searchInput) {
+    searchInput.addEventListener('input', (event) => {
+      state.draftSearch = event.target.value || '';
+      renderDraftHubView(unifiedState);
+    });
+  }
+
+  const positionFilter = document.getElementById('draftPositionFilter');
+  if (positionFilter) {
+    positionFilter.addEventListener('change', (event) => {
+      state.draftPositionFilter = event.target.value || 'ALL';
+      renderDraftHubView(unifiedState);
+    });
+  }
+
+  const valueFilter = document.getElementById('draftValueFilter');
+  if (valueFilter) {
+    valueFilter.addEventListener('change', (event) => {
+      state.draftValueFilter = event.target.value || 'ALL';
+      renderDraftHubView(unifiedState);
+    });
+  }
+}
+
 function renderOwnerView(unifiedState) {
   const ownerData = buildOwnerViewData(unifiedState);
 
@@ -1152,8 +1613,7 @@ function handleImport(csvText, fileName) {
     persistState(next);
 
     state.importedData = next;
-    // render owner view with unified state
-    renderOwnerView(next);
+    renderDraftHubView(next);
   });
 }
 
@@ -1162,6 +1622,10 @@ function initialize() {
   backToImportBtn.addEventListener('click', () => {
     state.selectedOwner = null;
     state.selectedPlayerKey = null;
+    state.draftSelectedPlayerKey = null;
+    state.draftSearch = '';
+    state.draftPositionFilter = 'ALL';
+    state.draftValueFilter = 'ALL';
     renderImportScreen();
   });
 
@@ -1170,11 +1634,14 @@ function initialize() {
   state.liveProfiles = state.liveCache?.players ? { ...state.liveCache.players } : {};
   state.selectedOwner = null;
   state.selectedPlayerKey = null;
+  state.draftSelectedPlayerKey = null;
+  state.draftSearch = '';
+  state.draftPositionFilter = 'ALL';
+  state.draftValueFilter = 'ALL';
 
-  // if any dataset is present (status ok), show owner view
   const anyLoaded = ['prospects','veterans','roster','transactions'].some(k => stored?.metadata?.[k]?.status === 'ok');
   if (anyLoaded) {
-    renderOwnerView(stored);
+    renderDraftHubView(stored);
   } else {
     renderImportScreen();
   }
@@ -1184,4 +1651,4 @@ if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', initialize);
 }
 
-export { STORAGE_KEY, state };
+export { STORAGE_KEY, state, buildDraftHubData, getDraftHubPlayers };
