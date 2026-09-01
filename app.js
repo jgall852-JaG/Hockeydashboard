@@ -16,6 +16,7 @@ const state = {
   importedData: null,
   selectedOwner: null,
   previewRows: [],
+  activeTab: 'league',
   ownerSearch: '',
   playerSearch: '',
   selectedPlayerKey: null,
@@ -23,6 +24,7 @@ const state = {
   draftSearch: '',
   draftPositionFilter: 'ALL',
   draftValueFilter: 'ALL',
+  draftComparisonKey: null,
   draftQueue: loadDraftQueue(),
   liveCache: loadLiveCache(),
   liveProfiles: {},
@@ -641,19 +643,47 @@ function renderDataQualityPanel(stateObj) {
     return `<div class="dq-row">${status} <strong>${d.charAt(0).toUpperCase()+d.slice(1)}</strong> ${records} <div class="dq-meta">${when}</div></div>`;
   }).join('');
 
-  const lastUpdated = (() => {
-    const times = datasets.map(d => md[d]?.importedAt).filter(Boolean).map(t => new Date(t).getTime());
-    if (!times.length) return 'Never';
-    return new Date(Math.max(...times)).toLocaleString();
-  })();
+  const snapshot = getSnapshotRefreshStatus(stateObj);
 
   return `
     <section class="panel data-quality">
       <h3>Data Quality</h3>
       <div style="margin-top:10px;">${rows}</div>
-      <div style="margin-top:8px;color:var(--muted);font-size:0.9rem;">Last updated: ${escapeHtml(lastUpdated)}</div>
+      <div style="margin-top:8px;color:var(--muted);font-size:0.9rem;">Snapshot: ${escapeHtml(snapshot.completenessLabel)} · Last updated: ${escapeHtml(snapshot.lastUpdatedLabel)}</div>
+      <div style="margin-top:4px;color:var(--muted);font-size:0.9rem;">Latest source: ${escapeHtml(snapshot.latestSourceLabel)}</div>
     </section>
   `;
+}
+
+function getSnapshotRefreshStatus(stateObj) {
+  const md = stateObj?.metadata || {};
+  const datasets = ['prospects', 'veterans', 'roster', 'transactions'];
+  const snapshots = datasets.map((dataset) => {
+    const meta = md[dataset] || {};
+    const importedAt = meta.importedAt || null;
+    return {
+      dataset,
+      status: meta.status || 'empty',
+      importedAt,
+      sourceName: meta.sourceName || null,
+      importedAtMs: importedAt ? new Date(importedAt).getTime() : null,
+    };
+  });
+
+  const loaded = snapshots.filter((entry) => entry.status === 'ok' && entry.importedAtMs !== null && !Number.isNaN(entry.importedAtMs));
+  const latest = loaded.reduce((best, entry) => {
+    if (!best || entry.importedAtMs > best.importedAtMs) return entry;
+    return best;
+  }, null);
+
+  return {
+    datasetsLoaded: loaded.length,
+    totalDatasets: datasets.length,
+    completenessLabel: `${loaded.length}/${datasets.length} tabs loaded`,
+    lastUpdatedIso: latest ? latest.importedAt : null,
+    lastUpdatedLabel: latest ? new Date(latest.importedAtMs).toLocaleString() : 'Never',
+    latestSourceLabel: latest?.sourceName || '—',
+  };
 }
 
 function formatValue(value) {
@@ -664,6 +694,476 @@ function formatValue(value) {
 
 function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+const DASHBOARD_TABS = [
+  { key: 'league', label: 'League' },
+  { key: 'teams', label: 'Teams' },
+  { key: 'players', label: 'Players' },
+  { key: 'draft', label: 'Draft Hub' },
+];
+
+function captureActiveInputState(inputId) {
+  const activeElement = document.activeElement;
+  if (!activeElement || activeElement.id !== inputId) return null;
+
+  return {
+    value: activeElement.value || '',
+    selectionStart: activeElement.selectionStart ?? activeElement.value.length,
+    selectionEnd: activeElement.selectionEnd ?? activeElement.value.length,
+  };
+}
+
+function restoreActiveInputState(inputId, inputState) {
+  if (!inputState) return;
+
+  const input = document.getElementById(inputId);
+  if (!input) return;
+
+  input.focus();
+  const selectionStart = Math.min(inputState.selectionStart, input.value.length);
+  const selectionEnd = Math.min(inputState.selectionEnd, input.value.length);
+  input.setSelectionRange(selectionStart, selectionEnd);
+}
+
+function renderDashboardFrame(activeTab, unifiedState, bodyHtml) {
+  state.activeTab = activeTab;
+
+  const dashboardHtml = `
+    <div class="dashboard-shell">
+      <nav class="dashboard-tabs panel" aria-label="Dashboard tabs">
+        ${DASHBOARD_TABS.map((tab) => `
+          <button
+            class="dashboard-tab ${tab.key === activeTab ? 'active' : ''}"
+            data-dashboard-tab="${tab.key}"
+            type="button"
+          >
+            ${tab.label}
+          </button>
+        `).join('')}
+      </nav>
+      <div class="dashboard-content">
+        ${bodyHtml}
+      </div>
+    </div>
+  `;
+
+  const app = document.getElementById('app');
+  app.innerHTML = dashboardHtml;
+
+  const backButton = document.getElementById('backToImportBtn');
+  if (backButton) {
+    backButton.classList.remove('hidden');
+  }
+
+  document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextTab = button.dataset.dashboardTab;
+      if (!nextTab || nextTab === state.activeTab) return;
+      state.activeTab = nextTab;
+      renderActiveDashboardView(unifiedState);
+    });
+  });
+}
+
+function renderPlaceholderTab(unifiedState, title, description) {
+  const bodyHtml = `
+    <section class="panel import-card">
+      <div class="preview-header">
+        <h2>${escapeHtml(title)}</h2>
+        <span class="meta-pill">Phase 1 placeholder</span>
+      </div>
+      <p class="muted-copy">${escapeHtml(description)}</p>
+    </section>
+  `;
+
+  renderDashboardFrame(title.toLowerCase(), unifiedState, bodyHtml);
+}
+
+function getLeaguePlayerDirectory(unifiedState) {
+  const ownerData = buildOwnerViewData(unifiedState);
+  const rosterIndex = buildRosterIndex(unifiedState || ownerData._rawState || {});
+  const players = [];
+  const seen = new Set();
+
+  ownerData.owners.forEach((owner) => {
+    [...(owner.prospects || []), ...(owner.veterans || [])].forEach((player) => {
+      if (!player || !player.playerKey || seen.has(player.playerKey)) return;
+      seen.add(player.playerKey);
+      players.push(player);
+    });
+  });
+
+  players.sort((a, b) => {
+    const ownerDiff = String(a.owner || '').localeCompare(String(b.owner || ''));
+    if (ownerDiff !== 0) return ownerDiff;
+    return String(a.name || '').localeCompare(String(b.name || ''));
+  });
+
+  return { ownerData, rosterIndex, players };
+}
+
+function buildPlayerContextRows(player) {
+  if (!player) return [];
+
+  const rows = [
+    ['Owner', player.owner || '—'],
+    ['Source', player.sourceType || '—'],
+    ['Contract Value', Number(player.currentCost ?? player.cost ?? 0) ? `$${formatValue(player.currentCost ?? player.cost ?? 0)}` : '—'],
+    ['Term Remaining', player.termRemaining ?? '—'],
+    ['Matching Rights', player.matchingRights ? 'Yes' : 'No'],
+    ['Retention Status', player.sourceType === 'Veteran' ? `Retention year ${player.retentionYear ?? '—'}` : player.farm ? 'Farm' : 'Prospect'],
+  ];
+
+  return rows;
+}
+
+function renderLeagueView(unifiedState) {
+  const summary = computeDashboardSummary(unifiedState);
+  const ownerData = buildOwnerViewData(unifiedState);
+  const aggregates = computeOwnerAggregates(unifiedState);
+  const summaryCards = `
+    <section class="panel summary-grid">
+      <div class="summary-card"><div class="summary-value">${summary.totalOwners}</div><div class="summary-label">Total Owners</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalProspects}</div><div class="summary-label">Total Prospects</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalVeterans}</div><div class="summary-label">Total Veterans</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalFarmPlayers}</div><div class="summary-label">Total Farm Players</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalMatchingRights}</div><div class="summary-label">Total Matching Rights</div></div>
+    </section>
+  `;
+
+  const coverageRows = [
+    ['Prospects Loaded', ownerData.metadata?.prospects?.status === 'ok' ? 'Yes' : 'No'],
+    ['Veterans Loaded', ownerData.metadata?.veterans?.status === 'ok' ? 'Yes' : 'No'],
+    ['Roster Loaded', ownerData.metadata?.roster?.status === 'ok' ? 'Yes' : 'No'],
+    ['Transactions Loaded', ownerData.metadata?.transactions?.status === 'ok' ? 'Yes' : 'No'],
+  ];
+
+  const bodyHtml = `
+    ${summaryCards}
+    <div class="league-layout">
+      <section class="panel league-overview">
+        <div class="preview-header">
+          <h2>League Overview</h2>
+          <span class="meta-pill">League-wide context</span>
+        </div>
+        <p class="muted-copy">Use this tab to orient yourself before moving into Teams, Players, or Draft Hub.</p>
+        ${renderKeyValueList(coverageRows)}
+      </section>
+      ${renderLeagueIntelligence(aggregates)}
+      ${renderDataQualityPanel(unifiedState)}
+    </div>
+  `;
+
+  renderDashboardFrame('league', unifiedState, bodyHtml);
+}
+
+function computeTeamContext(ownerEntry) {
+  const prospects = ownerEntry?.prospects || [];
+  const veterans = ownerEntry?.veterans || [];
+  const farmPlayers = ownerEntry?.farmPlayers || [];
+  const matchingRights = ownerEntry?.matchingRights || [];
+
+  const teamSpend = [
+    ...prospects.map((player) => Number(player.cost) || 0),
+    ...veterans.map((player) => Number(player.currentCost) || 0),
+  ].reduce((sum, value) => sum + value, 0);
+
+  const rosterCounts = { C: 0, LW: 0, RW: 0, D: 0, G: 0 };
+  const allPlayers = [...prospects, ...veterans];
+
+  allPlayers.forEach((player) => {
+    const pos = String(player.poolPosition || '').toUpperCase();
+    if (pos.includes('C')) rosterCounts.C += 1;
+    if (pos.includes('LW')) rosterCounts.LW += 1;
+    if (pos.includes('RW')) rosterCounts.RW += 1;
+    if (pos.includes('D')) rosterCounts.D += 1;
+    if (pos.includes('G')) rosterCounts.G += 1;
+  });
+
+  const termBuckets = { short: 0, medium: 0, long: 0 };
+  prospects.forEach((player) => {
+    if (player.farm) return;
+    const term = Number(player.termRemaining);
+    if (term <= 1) termBuckets.short += 1;
+    else if (term === 2) termBuckets.medium += 1;
+    else if (term >= 3) termBuckets.long += 1;
+  });
+
+  const retentionYears = veterans
+    .map((player) => player.retentionYear)
+    .filter((value) => value !== null && value !== undefined && value !== '');
+
+  const keyContracts = [...allPlayers]
+    .map((player) => ({
+      name: player.name,
+      owner: player.owner,
+      amount: Number(player.currentCost ?? player.cost ?? 0) || 0,
+      sourceType: player.sourceType,
+    }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, 3);
+
+  const needs = [
+    { label: 'Need RW', metric: rosterCounts.RW || 0, status: (rosterCounts.RW || 0) <= 2 ? 'High' : 'Medium' },
+    { label: 'Need D', metric: rosterCounts.D || 0, status: (rosterCounts.D || 0) <= 2 ? 'High' : 'Medium' },
+    { label: 'Need Prospect Depth', metric: prospects.length, status: prospects.length <= 4 ? 'High' : 'Monitor' },
+    { label: 'Need Veteran Depth', metric: veterans.length, status: veterans.length === 0 ? 'High' : 'Available' },
+  ];
+
+  return {
+    prospects,
+    veterans,
+    farmPlayers,
+    matchingRights,
+    teamSpend,
+    moneyRemaining: null,
+    rosterCounts,
+    termBuckets,
+    retentionYears,
+    keyContracts,
+    needs,
+  };
+}
+
+function renderTeamsContextPanel(ownerEntry) {
+  const stats = computeOwnerStatistics(ownerEntry);
+  const context = computeTeamContext(ownerEntry);
+  const moneyRemainingValue = 'Not tracked in source data';
+  const retentionSummaryValue = `Prospect terms: ${context.termBuckets.short} short / ${context.termBuckets.medium} medium / ${context.termBuckets.long} long · Veteran retention years: ${context.retentionYears.length || 0}`;
+
+  const summaryCards = `
+    <section class="summary-grid">
+      <div class="summary-card"><div class="summary-value">${stats.prospectCount}</div><div class="summary-label">Prospects</div></div>
+      <div class="summary-card"><div class="summary-value">${stats.veteranCount}</div><div class="summary-label">Veterans</div></div>
+      <div class="summary-card"><div class="summary-value">${stats.farmCount}</div><div class="summary-label">Farm</div></div>
+      <div class="summary-card"><div class="summary-value">${stats.matchingRightsCount}</div><div class="summary-label">Matching Rights</div></div>
+      <div class="summary-card"><div class="summary-value">$${formatValue(context.teamSpend)}</div><div class="summary-label">Team Spend</div></div>
+      <div class="summary-card"><div class="summary-value">${moneyRemainingValue}</div><div class="summary-label">Money Remaining</div></div>
+    </section>
+  `;
+
+  const budgetRows = [
+    ['Team Spend', `$${formatValue(context.teamSpend)}`],
+    ['Money Remaining', moneyRemainingValue],
+    ['Retention Summary', retentionSummaryValue],
+  ];
+
+  const rosterRows = [
+    ['Prospects', String(stats.prospectCount)],
+    ['Veterans', String(stats.veteranCount)],
+    ['Farm Players', String(stats.farmCount)],
+    ['Matching Rights', String(stats.matchingRightsCount)],
+  ];
+
+  const keyContractRows = context.keyContracts.map((contract, index) => [
+    `Key Contract ${index + 1}`,
+    `${contract.name || '—'} (${contract.sourceType || 'player'}) $${formatValue(contract.amount)}`,
+  ]);
+
+  return `
+    <section class="panel">
+      <div class="preview-header">
+        <h2>Team Context Center</h2>
+        <span class="meta-pill">${escapeHtml(ownerEntry.name || 'Selected Team')}</span>
+      </div>
+      ${summaryCards}
+      <div class="detail-grid" style="margin-top:18px;">
+        <article class="detail-card">
+          <h3>Budget Context</h3>
+          ${renderKeyValueList(budgetRows)}
+        </article>
+        <article class="detail-card">
+          <h3>Roster Counts</h3>
+          ${renderKeyValueList(rosterRows)}
+        </article>
+        <article class="detail-card">
+          <h3>Needs Summary</h3>
+          ${renderDraftHubNeeds([...context.prospects, ...context.veterans])}
+        </article>
+        <article class="detail-card">
+          <h3>Key Contracts</h3>
+          ${renderKeyValueList(keyContractRows)}
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function renderPlayersView(unifiedState) {
+  const directory = getLeaguePlayerDirectory(unifiedState);
+  const players = directory.players || [];
+  const searchState = captureActiveInputState('playerSearchInput');
+
+  if (!state.selectedPlayerKey || !players.some((player) => player.playerKey === state.selectedPlayerKey)) {
+    state.selectedPlayerKey = players.length ? players[0].playerKey : null;
+  }
+
+  const search = (state.playerSearch || '').trim().toLowerCase();
+  const filteredPlayers = search
+    ? players.filter((player) => (player.name || '').toLowerCase().includes(search))
+    : players;
+
+  const selectedPlayer = players.find((player) => player.playerKey === state.selectedPlayerKey) || filteredPlayers[0] || players[0] || null;
+  const rosterMatch = selectedPlayer ? findRosterMatchForPlayer(selectedPlayer, directory.rosterIndex) : null;
+  const liveProfile = selectedPlayer ? state.liveProfiles[selectedPlayer.playerKey] : null;
+
+  if (selectedPlayer) {
+    queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterMatch);
+  }
+
+  const summaryCards = `
+    <section class="panel draft-summary-grid">
+      <div class="summary-card"><div class="summary-value">${players.length}</div><div class="summary-label">Players</div></div>
+      <div class="summary-card"><div class="summary-value">${directory.ownerData.totalOwners}</div><div class="summary-label">Owners</div></div>
+      <div class="summary-card"><div class="summary-value">${directory.ownerData.metadata?.prospects?.records || 0}</div><div class="summary-label">Prospects</div></div>
+      <div class="summary-card"><div class="summary-value">${directory.ownerData.metadata?.veterans?.records || 0}</div><div class="summary-label">Veterans</div></div>
+    </section>
+  `;
+
+  const bodyHtml = `
+    ${summaryCards}
+    <div class="player-layout owner-layout">
+      <aside class="panel owner-list">
+        <div class="preview-header">
+          <h2>Players</h2>
+          <span class="meta-pill">${players.length}</span>
+        </div>
+        <div style="margin:10px 0 12px;">
+          <input id="playerSearchInput" placeholder="Search players..." value="${escapeHtml(state.playerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
+        </div>
+        <div class="muted-copy" style="margin-bottom:12px;">Search across prospects and veterans, then open one player for full league context.</div>
+        ${renderPlayerList(filteredPlayers, state.playerSearch)}
+      </aside>
+
+      <section class="panel details-panel">
+        <div class="details-header">
+          <h2>${selectedPlayer ? escapeHtml(selectedPlayer.name || 'Selected Player') : 'No Player Selected'}</h2>
+          <span class="meta-pill">${selectedPlayer ? escapeHtml(selectedPlayer.sourceType || 'player') : '—'}</span>
+        </div>
+        ${selectedPlayer ? `
+          <div class="owner-summary panel">
+            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
+              ${renderPlayerBadges(selectedPlayer)}
+            </div>
+          </div>
+          <div class="detail-grid" style="margin-bottom:18px;">
+            <article class="detail-card">
+              <h3>League Context</h3>
+              ${renderKeyValueList(buildPlayerContextRows(selectedPlayer))}
+            </article>
+          </div>
+          ${renderPlayerIntelligenceSection(selectedPlayer, rosterMatch, liveProfile)}
+        ` : '<div class="empty-state">Select a player to view details.</div>'}
+      </section>
+    </div>
+  `;
+
+  renderDashboardFrame('players', unifiedState, bodyHtml);
+
+  document.querySelectorAll('.player-item').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedPlayerKey = button.dataset.playerKey;
+      renderPlayersView(unifiedState);
+    });
+  });
+
+  const playerSearchInput = document.getElementById('playerSearchInput');
+  if (playerSearchInput) {
+    playerSearchInput.addEventListener('input', (event) => {
+      state.playerSearch = event.target.value || '';
+      renderPlayersView(unifiedState);
+    });
+  }
+
+  restoreActiveInputState('playerSearchInput', searchState);
+}
+
+function renderTeamsView(unifiedState) {
+  const ownerData = buildOwnerViewData(unifiedState);
+
+  if (!ownerData.owners.length) {
+    renderImportScreen();
+    return;
+  }
+
+  if (!state.selectedOwner || !ownerData.owners.some((owner) => owner.name === state.selectedOwner)) {
+    state.selectedOwner = ownerData.owners[0].name;
+  }
+
+  const ownerSearchState = captureActiveInputState('ownerSearchInput');
+  const playerSearchState = captureActiveInputState('playerSearchInput');
+  const selectedOwner = ownerData.owners.find((owner) => owner.name === state.selectedOwner) || ownerData.owners[0];
+  const ownerListMarkup = renderOwnerList(ownerData);
+  const ownerDetailMarkup = renderOwnerDetails(ownerData);
+  const teamContextMarkup = selectedOwner ? renderTeamsContextPanel(selectedOwner) : '';
+
+  const bodyHtml = `
+    <div class="owner-layout">
+      ${ownerListMarkup}
+      <div class="teams-stack">
+        ${teamContextMarkup}
+        ${ownerDetailMarkup}
+      </div>
+    </div>
+  `;
+
+  renderDashboardFrame('teams', unifiedState, bodyHtml);
+
+  const ownerItems = document.querySelectorAll('.owner-item');
+  ownerItems.forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedOwner = button.dataset.owner;
+      state.selectedPlayerKey = null;
+      renderTeamsView(unifiedState);
+    });
+  });
+
+  const playerItems = document.querySelectorAll('.player-item');
+  playerItems.forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedPlayerKey = button.dataset.playerKey;
+      renderTeamsView(unifiedState);
+    });
+  });
+
+  const ownerSearchInput = document.getElementById('ownerSearchInput');
+  if (ownerSearchInput) {
+    ownerSearchInput.addEventListener('input', (event) => {
+      state.ownerSearch = event.target.value || '';
+      renderTeamsView(unifiedState);
+    });
+  }
+
+  const playerSearchInput = document.getElementById('playerSearchInput');
+  if (playerSearchInput) {
+    playerSearchInput.addEventListener('input', (event) => {
+      state.playerSearch = event.target.value || '';
+      renderTeamsView(unifiedState);
+    });
+  }
+
+  restoreActiveInputState('ownerSearchInput', ownerSearchState);
+  restoreActiveInputState('playerSearchInput', playerSearchState);
+}
+
+function renderActiveDashboardView(unifiedState) {
+  if (state.activeTab === 'teams') {
+    renderTeamsView(unifiedState);
+    return;
+  }
+
+  if (state.activeTab === 'players') {
+    renderPlayersView(unifiedState);
+    return;
+  }
+
+  if (state.activeTab === 'draft') {
+    renderDraftHubView(unifiedState);
+    return;
+  }
+
+  renderOwnerView(unifiedState);
 }
 
 function renderKeyValueList(rows) {
@@ -1048,37 +1548,221 @@ function renderOwnerDetails(ownerData) {
   `;
 }
 
-function renderDraftHubValueProfile(player) {
-  if (!player) {
-    return '<div class="empty-state">Select a player to view the value profile.</div>';
+function getNormalizedPosition(position) {
+  const value = String(position || '').trim().toUpperCase();
+  if (!value) return 'UNKNOWN';
+  if (value.includes('LW')) return 'LW';
+  if (value.includes('RW')) return 'RW';
+  if (value.includes('C')) return 'C';
+  if (value.includes('D')) return 'D';
+  if (value.includes('G')) return 'G';
+  return value;
+}
+
+function buildDecisionConfidence(player, comparisonPlayer, players) {
+  if (!player) return { label: 'No pick', tone: 'neutral', summary: 'Select a player for decision support.' };
+
+  const comparisonValue = Number(comparisonPlayer?.value || 0);
+  const currentValue = Number(player.value || 0);
+  const scarcityScore = (() => {
+    const counts = draftHubPositionCounts(players || []);
+    const pos = getNormalizedPosition(player.poolPosition);
+    const remaining = counts[pos] || 0;
+    if (remaining <= 2) return 2;
+    if (remaining <= 4) return 1;
+    return 0;
+  })();
+
+  let score = 0;
+  if (player.valueBand === 'Elite') score += 3;
+  if (player.valueBand === 'High') score += 2;
+  if (player.valueBand === 'Medium') score += 1;
+  if (player.riskBand === 'Low Risk') score += 2;
+  if (player.riskBand === 'High Risk') score -= 2;
+  if (player.matchingRights) score += 1;
+  if (comparisonPlayer && currentValue >= comparisonValue) score += 1;
+  if (scarcityScore >= 2) score += 2;
+
+  if (score >= 7) {
+    return { label: 'Strong Pick', tone: 'strong', summary: 'The value, fit, and scarcity support this selection.' };
+  }
+  if (score >= 4) {
+    return { label: 'Good Pick', tone: 'good', summary: 'This is a reasonable decision with minor trade-offs.' };
+  }
+  if (score >= 1) {
+    return { label: 'Reach', tone: 'reach', summary: 'The player is acceptable, but the timing or fit is less compelling.' };
+  }
+  return { label: 'High Risk Pick', tone: 'risk', summary: 'The value or roster fit is weak enough to warrant caution.' };
+}
+
+function buildFitSummary(player) {
+  if (!player) return 'No fit analysis yet.';
+
+  const pos = getNormalizedPosition(player.poolPosition);
+  const value = Number(player.value || 0);
+  const risk = player.riskBand || 'Medium Risk';
+  let summary = `This ${pos} profile is`;
+
+  if (value >= 110000) summary += ' high-value';
+  else if (value >= 50000) summary += ' mid-tier';
+  else summary += ' lower-priority';
+
+  if (player.matchingRights) summary += ' and carries matching rights';
+  if (risk.includes('Low')) summary += ', with a low-risk profile';
+  else if (risk.includes('High')) summary += ', but the risk profile is elevated';
+
+  summary += '.';
+  return summary;
+}
+
+function buildScarcityShiftSummary(player, players) {
+  if (!player) return 'No scarcity analysis yet.';
+
+  const counts = draftHubPositionCounts(players || []);
+  const pos = getNormalizedPosition(player.poolPosition);
+  const remaining = counts[pos] || 0;
+
+  if (remaining <= 2) {
+    return `Waiting is risky: ${pos} is thinning quickly and the drop-off is likely steep.`;
+  }
+  if (remaining <= 4) {
+    return `The ${pos} pool is tightening. Waiting may still be viable, but the next tier is getting thin.`;
+  }
+  return `The ${pos} position is still deep enough to justify waiting if roster needs are flexible.`;
+}
+
+function buildValueRationale(player) {
+  if (!player) return 'Select a player to see the rationale behind the rating.';
+
+  const reasons = [];
+  const value = Number(player.value || 0);
+  const pos = getNormalizedPosition(player.poolPosition);
+
+  if (value >= 220000) reasons.push('elite valuation and clear top-end upside');
+  else if (value >= 110000) reasons.push('strong current value and a premium draft profile');
+  else if (value >= 50000) reasons.push('solid value relative to the current board');
+  else reasons.push('value is still reasonable but less differentiated');
+
+  if (player.matchingRights) reasons.push('matching rights improve the long-term case');
+  if (pos === 'D' || pos === 'G' || pos === 'C') reasons.push(`${pos} scarcity supports the current rating`);
+  if (player.age && Number(player.age) <= 23) reasons.push('younger age profile increases upside');
+  if (player.riskBand === 'Low Risk') reasons.push('low-risk profile supports a more confident selection');
+
+  return reasons.slice(0, 3).map((sentence) => sentence.charAt(0).toUpperCase() + sentence.slice(1)).join(' • ');
+}
+
+function buildComparisonSummary(player, comparisonPlayer) {
+  if (!player || !comparisonPlayer || player.key === comparisonPlayer.key) {
+    return 'Select a comparison target to assess the trade-off.';
   }
 
-  const valueRows = [
-    ['Prospect Value', player.sourceType === 'Prospect' && Number(player.value || 0) ? `$${formatValue(player.value)}` : '—'],
-    ['Veteran Value', player.sourceType === 'Veteran' && Number(player.value || 0) ? `$${formatValue(player.value)}` : '—'],
-    ['Contract Value', Number(player.currentCost ?? player.cost ?? 0) ? `$${formatValue(player.currentCost ?? player.cost ?? 0)}` : '—'],
-    ['Rights Value', player.matchingRights ? 'Active' : 'None'],
-    ['Value Band', player.valueBand || 'Low'],
-    ['Risk Band', player.riskBand || 'Medium Risk'],
+  const playerValue = Number(player.value || 0);
+  const comparisonValue = Number(comparisonPlayer.value || 0);
+  const playerPos = getNormalizedPosition(player.poolPosition);
+  const comparisonPos = getNormalizedPosition(comparisonPlayer.poolPosition);
+
+  if (playerValue > comparisonValue) {
+    return `${player.name} has the stronger value edge, while ${comparisonPlayer.name} is more of a fit-based alternative.`;
+  }
+  if (playerValue < comparisonValue) {
+    return `${comparisonPlayer.name} has the stronger value edge, but ${player.name} may fit the roster better at ${playerPos}.`;
+  }
+  if (playerPos === comparisonPos) {
+    return `Both players are similar in value, so the selection should prioritize roster fit and timing.`;
+  }
+  return `${player.name} and ${comparisonPlayer.name} are close enough that fit and scarcity should decide the pick.`;
+}
+
+function formatCompactCost(player) {
+  const cost = Number(player?.currentCost ?? player?.cost ?? player?.value ?? 0) || 0;
+  return cost ? `$${formatValue(cost)}` : '—';
+}
+
+function formatCompactTerm(player) {
+  const term = player?.termRemaining;
+  if (term === null || term === undefined || term === '') return '—';
+  return `${term}Y`;
+}
+
+function formatCompactRetention(player) {
+  const sourceType = String(player?.sourceType || '').toLowerCase();
+  if (sourceType === 'veteran') {
+    return player?.retentionYear ? `Ret ${player.retentionYear}` : 'Retained';
+  }
+  if (player?.farm) return 'Farm';
+  return 'Prospect';
+}
+
+function buildCompactLeagueContext(player) {
+  if (!player) return [];
+
+  return [
+    { label: 'Owner', value: player.owner || 'Available' },
+    { label: 'Cost', value: formatCompactCost(player) },
+    { label: 'Term', value: formatCompactTerm(player) },
+    { label: 'Rights', value: player.matchingRights ? 'Yes' : 'No' },
+    { label: 'Ret', value: formatCompactRetention(player) },
   ];
+}
 
-  const drivers = [];
-  if (Number(player.value || 0)) drivers.push(`Value: $${formatValue(player.value)}`);
-  if (player.matchingRights) drivers.push('Matching rights');
-  if (player.termRemaining !== undefined && player.termRemaining !== null) drivers.push(`Term remaining: ${player.termRemaining}`);
-  if (player.age) drivers.push(`Age: ${player.age}`);
+function renderCompactLeagueContext(player, title) {
+  const fields = buildCompactLeagueContext(player);
+  if (!fields.length) return '<div class="empty-state">No context available.</div>';
 
-  const explanation = drivers.length ? drivers.join(' • ') : 'No value drivers available yet.';
+  return `
+    <div class="compact-context">
+      ${title ? `<div class="compact-context-title">${escapeHtml(title)}</div>` : ''}
+      <div class="compact-context-row">
+        ${fields.map((field) => `
+          <span class="context-pill" title="${escapeHtml(field.label)}">${escapeHtml(field.label)}: ${escapeHtml(field.value)}</span>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderComparisonContext(player, comparisonPlayer) {
+  if (!player || !comparisonPlayer) return '';
+
+  return `
+    <div class="comparison-context-grid">
+      <div class="comparison-context-card">
+        <div class="comparison-context-name">${escapeHtml(player.name || 'Selected Player')}</div>
+        ${renderCompactLeagueContext(player)}
+      </div>
+      <div class="comparison-context-card">
+        <div class="comparison-context-name">${escapeHtml(comparisonPlayer.name || 'Comparison Player')}</div>
+        ${renderCompactLeagueContext(comparisonPlayer)}
+      </div>
+    </div>
+  `;
+}
+
+function renderDraftHubDecisionStrip(player, comparisonPlayer, players) {
+  if (!player) {
+    return '<div class="empty-state">Select a player to view the decision summary.</div>';
+  }
+
+  const comparisonTarget = comparisonPlayer && comparisonPlayer.key !== player.key ? comparisonPlayer : null;
+  const confidence = buildDecisionConfidence(player, comparisonTarget, players || []);
+  const fitSummary = buildFitSummary(player);
+  const comparisonSummary = buildComparisonSummary(player, comparisonTarget);
 
   return `
     <div class="detail-grid">
       <article class="detail-card">
-        <h3>Value Profile</h3>
-        ${renderKeyValueList(valueRows)}
+        <h3>Comparison</h3>
+        <p class="muted-copy">${escapeHtml(comparisonSummary)}</p>
+        ${renderComparisonContext(player, comparisonTarget)}
       </article>
       <article class="detail-card">
-        <h3>Drivers</h3>
-        <p class="muted-copy">${escapeHtml(explanation)}</p>
+        <h3>Team Fit</h3>
+        <p class="muted-copy">${escapeHtml(fitSummary)}</p>
+      </article>
+      <article class="detail-card confidence-card">
+        <h3>Confidence</h3>
+        <div class="decision-badge ${confidence.tone}">${escapeHtml(confidence.label)}</div>
+        <p class="muted-copy">${escapeHtml(confidence.summary)}</p>
       </article>
     </div>
   `;
@@ -1141,14 +1825,20 @@ function renderDraftHubBoard(players, selectedKey) {
           ${filtered.slice(0, 25).map((player) => `
             <tr class="${selectedKey === player.key ? 'selected-row' : ''}">
               <td>
-                <button class="board-player-name" data-draft-player-key="${player.key}">${escapeHtml(player.name)}</button>
+                <div class="board-player-cell">
+                  <button class="board-player-name" data-draft-player-key="${player.key}">${escapeHtml(player.name)}</button>
+                  ${renderCompactLeagueContext(player)}
+                </div>
               </td>
               <td>${escapeHtml(player.poolPosition || '—')}</td>
               <td>${escapeHtml(player.nhlTeam || '—')}</td>
               <td>${escapeHtml(player.valueBand || 'Low')}</td>
               <td>${escapeHtml(player.riskBand || 'Medium Risk')}</td>
               <td>
-                <button class="secondary add-queue-btn" data-add-to-queue="${player.key}">${state.draftQueue.includes(player.key) ? 'Queued' : 'Add to Queue'}</button>
+                <div class="board-action-stack">
+                  <button class="secondary add-queue-btn" data-add-to-queue="${player.key}">${state.draftQueue.includes(player.key) ? 'Queued' : 'Add to Queue'}</button>
+                  <button class="secondary compare-btn" data-compare-player-key="${player.key}">Compare</button>
+                </div>
               </td>
             </tr>
           `).join('')}
@@ -1209,12 +1899,30 @@ function renderDraftHubNeeds(players) {
 }
 
 function renderDraftHubView(unifiedState) {
+  const activeSearchState = (() => {
+    const activeElement = document.activeElement;
+    if (!activeElement || activeElement.id !== 'draftSearchInput') return null;
+    return {
+      value: activeElement.value || '',
+      selectionStart: activeElement.selectionStart ?? activeElement.value.length,
+      selectionEnd: activeElement.selectionEnd ?? activeElement.value.length,
+    };
+  })();
+
   const draftHubData = buildDraftHubData(unifiedState);
   const players = draftHubData.players || [];
   const selectedPlayer = draftHubData.selectedPlayer;
+
   if (!state.draftSelectedPlayerKey && selectedPlayer) {
     state.draftSelectedPlayerKey = selectedPlayer.key;
   }
+
+  if (!state.draftComparisonKey || !players.some((player) => player.key === state.draftComparisonKey) || state.draftComparisonKey === state.draftSelectedPlayerKey) {
+    const alternative = players.find((player) => player.key !== state.draftSelectedPlayerKey) || selectedPlayer;
+    state.draftComparisonKey = alternative ? alternative.key : null;
+  }
+
+  const comparisonPlayer = players.find((player) => player.key === state.draftComparisonKey) || null;
 
   const filteredPlayers = players.filter((player) => {
     const search = (state.draftSearch || '').trim().toLowerCase();
@@ -1228,18 +1936,9 @@ function renderDraftHubView(unifiedState) {
   const boardHtml = renderDraftHubBoard(players, state.draftSelectedPlayerKey);
   const queueHtml = renderDraftHubQueue(draftHubData.queuePlayers, state.draftSelectedPlayerKey);
   const scarcityHtml = renderDraftHubScarcity(draftHubData.counts);
-  const needsHtml = renderDraftHubNeeds(players);
-  const valueProfileHtml = renderDraftHubValueProfile(selectedPlayer);
+  const decisionStripHtml = renderDraftHubDecisionStrip(selectedPlayer, comparisonPlayer, players);
 
-  const app = document.getElementById('app');
-  app.innerHTML = `
-    <section class="panel draft-summary-grid">
-      <div class="summary-card"><div class="summary-value">${players.length}</div><div class="summary-label">Players in pool</div></div>
-      <div class="summary-card"><div class="summary-value">${bestAvailable.length}</div><div class="summary-label">Best available</div></div>
-      <div class="summary-card"><div class="summary-value">${draftHubData.queuePlayers.length}</div><div class="summary-label">Queue</div></div>
-      <div class="summary-card"><div class="summary-value">${Object.values(draftHubData.counts).filter(Boolean).length}</div><div class="summary-label">Positions tracked</div></div>
-    </section>
-
+  const bodyHtml = `
     <div class="draft-grid">
       <div class="draft-column-main">
         <section class="panel draft-module">
@@ -1249,16 +1948,22 @@ function renderDraftHubView(unifiedState) {
           </div>
           <div class="best-available-list">
             ${bestAvailable.map((player) => `
-              <button class="best-player-card ${state.draftSelectedPlayerKey === player.key ? 'selected' : ''}" data-draft-player-key="${player.key}">
-                <div class="best-player-meta">
-                  <strong>${escapeHtml(player.name)}</strong>
-                  <span>${escapeHtml(player.poolPosition || '—')} · ${escapeHtml(player.nhlTeam || '—')}</span>
-                </div>
-                <div class="best-player-stats">
-                  <span>${escapeHtml(player.valueBand || 'Low')}</span>
-                  <span>${escapeHtml(player.riskBand || 'Medium Risk')}</span>
-                </div>
-              </button>
+              <div class="best-player-card ${state.draftSelectedPlayerKey === player.key ? 'selected' : ''}">
+                <button class="best-player-button" data-draft-player-key="${player.key}">
+                  <div class="best-player-meta">
+                    <strong>${escapeHtml(player.name)}</strong>
+                    <span>${escapeHtml(player.poolPosition || '—')} · ${escapeHtml(player.nhlTeam || '—')}</span>
+                  </div>
+                  <div class="best-player-stack">
+                    <div class="best-player-stats">
+                      <span>${escapeHtml(player.valueBand || 'Low')}</span>
+                      <span>${escapeHtml(player.riskBand || 'Medium Risk')}</span>
+                    </div>
+                    ${renderCompactLeagueContext(player)}
+                  </div>
+                </button>
+                <button class="secondary compare-mini" data-compare-player-key="${player.key}">Compare</button>
+              </div>
             `).join('')}
           </div>
         </section>
@@ -1304,30 +2009,43 @@ function renderDraftHubView(unifiedState) {
           </div>
           ${scarcityHtml}
         </section>
-
-        <section class="panel draft-module">
-          <div class="preview-header">
-            <h2>Team Needs</h2>
-          </div>
-          ${needsHtml}
-        </section>
       </aside>
     </div>
 
     <section class="panel draft-module">
       <div class="preview-header">
-        <h2>Value Profile</h2>
-        <span class="meta-pill">${selectedPlayer ? escapeHtml(selectedPlayer.name) : 'No player selected'}</span>
+        <h2>Decision Summary</h2>
+        <span class="meta-pill">${selectedPlayer ? escapeHtml(selectedPlayer.name) : 'No player selected'}${comparisonPlayer && comparisonPlayer.key !== selectedPlayer?.key ? ` vs ${escapeHtml(comparisonPlayer.name)}` : ''}</span>
       </div>
-      ${valueProfileHtml}
+      ${decisionStripHtml}
     </section>
   `;
 
+  renderDashboardFrame('draft', unifiedState, bodyHtml);
+
   document.getElementById('backToImportBtn').classList.remove('hidden');
+
+  const searchInputAfterRender = document.getElementById('draftSearchInput');
+  if (searchInputAfterRender && activeSearchState) {
+    searchInputAfterRender.focus();
+    const selectionStart = Math.min(activeSearchState.selectionStart, searchInputAfterRender.value.length);
+    const selectionEnd = Math.min(activeSearchState.selectionEnd, searchInputAfterRender.value.length);
+    searchInputAfterRender.setSelectionRange(selectionStart, selectionEnd);
+  }
 
   document.querySelectorAll('[data-draft-player-key]').forEach((button) => {
     button.addEventListener('click', () => {
       state.draftSelectedPlayerKey = button.dataset.draftPlayerKey;
+      renderDraftHubView(unifiedState);
+    });
+  });
+
+  document.querySelectorAll('[data-compare-player-key]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const nextKey = button.dataset.comparePlayerKey;
+      if (!nextKey) return;
+      state.draftComparisonKey = nextKey;
       renderDraftHubView(unifiedState);
     });
   });
@@ -1407,6 +2125,8 @@ function renderOwnerView(unifiedState) {
     state.selectedOwner = ownerData.owners[0].name;
   }
 
+  const ownerSearchState = captureActiveInputState('ownerSearchInput');
+  const playerSearchState = captureActiveInputState('playerSearchInput');
   const summary = computeDashboardSummary(unifiedState);
   const summaryHtml = `
     <section class="panel summary-grid">
@@ -1427,8 +2147,7 @@ function renderOwnerView(unifiedState) {
   const leagueHtml = renderLeagueIntelligence(aggregates);
   const dataQualityHtml = renderDataQualityPanel(unifiedState);
 
-  const app = document.getElementById('app');
-  app.innerHTML = `
+  const bodyHtml = `
     ${summaryHtml}
     <div class="owner-layout">
       ${ownerListMarkup}
@@ -1439,6 +2158,8 @@ function renderOwnerView(unifiedState) {
       </div>
     </div>
   `;
+
+  renderDashboardFrame('league', unifiedState, bodyHtml);
 
   document.getElementById('backToImportBtn').classList.remove('hidden');
 
@@ -1487,6 +2208,12 @@ function renderOwnerView(unifiedState) {
     const rosterMatch = findRosterMatchForPlayer(selectedPlayer, rosterIndex);
     queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterMatch);
   }
+
+  restoreActiveInputState('ownerSearchInput', ownerSearchState);
+  restoreActiveInputState('playerSearchInput', playerSearchState);
+
+  restoreActiveInputState('ownerSearchInput', ownerSearchState);
+  restoreActiveInputState('playerSearchInput', playerSearchState);
 }
 
 async function queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterRecord) {
@@ -1526,27 +2253,35 @@ async function queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterR
   } finally {
     delete state.liveRequests[selectedPlayer.playerKey];
     if (state.selectedPlayerKey === selectedPlayer.playerKey) {
-      renderOwnerView(unifiedState);
+      renderActiveDashboardView(unifiedState);
     }
   }
 }
 
 function renderImportScreen() {
-  const app = document.getElementById('app');
-  app.innerHTML = `
+  const bodyHtml = `
     <section class="panel import-card">
+      <div class="preview-header">
+        <h2>Refresh Snapshot</h2>
+        <span class="meta-pill">Sheet export</span>
+      </div>
       <div class="dropzone">
-        <strong>Upload a CSV</strong>
-        <p>Import prospects, veterans, or roster data to build the dashboard.</p>
+        <strong>Upload the latest Google Sheet CSV snapshot</strong>
+        <p>Use the current league export to refresh the dashboard before the next decision window.</p>
         <div class="file-input-wrap">
           <input id="csvFileInput" type="file" accept=".csv,text/csv" />
-          <span class="file-placeholder">Choose CSV File</span>
+          <span class="file-placeholder">Choose Snapshot CSV</span>
         </div>
       </div>
     </section>
   `;
 
-  document.getElementById('backToImportBtn').classList.add('hidden');
+  renderDashboardFrame('league', loadState(), bodyHtml);
+
+  const backButton = document.getElementById('backToImportBtn');
+  if (backButton) {
+    backButton.classList.add('hidden');
+  }
 
   const fileInput = document.getElementById('csvFileInput');
   fileInput.addEventListener('change', async (event) => {
@@ -1562,14 +2297,18 @@ function handleImport(csvText, fileName) {
   const datasetType = detectDatasetType(csvText);
 
   if (datasetType === 'unknown') {
-    const app = document.getElementById('app');
-    app.innerHTML = `
+    const bodyHtml = `
       <section class="panel import-card">
         <h2>Unable to detect dataset type</h2>
         <p>The uploaded CSV does not match the expected prospect or veteran structure.</p>
         <button class="primary" id="retryImportBtn">Try Another File</button>
       </section>
     `;
+    renderDashboardFrame('league', loadState(), bodyHtml);
+    const backButton = document.getElementById('backToImportBtn');
+    if (backButton) {
+      backButton.classList.add('hidden');
+    }
 
     document.getElementById('retryImportBtn').addEventListener('click', renderImportScreen);
     return;
@@ -1588,22 +2327,29 @@ function handleImport(csvText, fileName) {
   }
 
   if (!parsedData || (!parsedData.prospects && !parsedData.veterans && !parsedData.players)) {
-    const app = document.getElementById('app');
-    app.innerHTML = `
+    const bodyHtml = `
       <section class="panel import-card">
         <h2>Import Failed</h2>
         <p>The file was uploaded but could not be parsed.</p>
         <button class="primary" id="retryImportBtn">Try Another File</button>
       </section>
     `;
+    renderDashboardFrame('league', loadState(), bodyHtml);
+    const backButton = document.getElementById('backToImportBtn');
+    if (backButton) {
+      backButton.classList.add('hidden');
+    }
 
     document.getElementById('retryImportBtn').addEventListener('click', renderImportScreen);
     return;
   }
 
   state.previewRows = getVisiblePreviewRows(parsedData);
-  const app = document.getElementById('app');
-  app.innerHTML = renderPreviewSection(parsedData, datasetType);
+  renderDashboardFrame('league', loadState(), renderPreviewSection(parsedData, datasetType));
+  const backButton = document.getElementById('backToImportBtn');
+  if (backButton) {
+    backButton.classList.add('hidden');
+  }
 
   document.getElementById('cancelImportBtn').addEventListener('click', renderImportScreen);
   document.getElementById('confirmImportBtn').addEventListener('click', () => {
@@ -1613,7 +2359,8 @@ function handleImport(csvText, fileName) {
     persistState(next);
 
     state.importedData = next;
-    renderDraftHubView(next);
+    state.activeTab = 'league';
+    renderActiveDashboardView(next);
   });
 }
 
@@ -1626,6 +2373,7 @@ function initialize() {
     state.draftSearch = '';
     state.draftPositionFilter = 'ALL';
     state.draftValueFilter = 'ALL';
+    state.activeTab = 'league';
     renderImportScreen();
   });
 
@@ -1638,10 +2386,11 @@ function initialize() {
   state.draftSearch = '';
   state.draftPositionFilter = 'ALL';
   state.draftValueFilter = 'ALL';
+  state.activeTab = 'league';
 
   const anyLoaded = ['prospects','veterans','roster','transactions'].some(k => stored?.metadata?.[k]?.status === 'ok');
   if (anyLoaded) {
-    renderDraftHubView(stored);
+    renderActiveDashboardView(stored);
   } else {
     renderImportScreen();
   }
@@ -1651,4 +2400,5 @@ if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', initialize);
 }
 
-export { STORAGE_KEY, state, buildDraftHubData, getDraftHubPlayers };
+export { STORAGE_KEY, state, buildDraftHubData, getDraftHubPlayers, buildCompactLeagueContext, renderCompactLeagueContext };
+export { getSnapshotRefreshStatus };
