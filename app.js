@@ -10,6 +10,7 @@ import {
 } from './liveNhlApi.js';
 
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
+const APP_STATE_VERSION = 2;
 const MAX_PREVIEW_ROWS = 10;
 
 const state = {
@@ -18,6 +19,8 @@ const state = {
   previewRows: [],
   ownerSearch: '',
   playerSearch: '',
+  availablePlayerSearch: '',
+  manualOverrides: [],
   selectedPlayerKey: null,
   liveCache: loadLiveCache(),
   liveProfiles: {},
@@ -186,6 +189,12 @@ function countParsedRecords(parsed, type) {
     return Object.keys(parsed).length;
   }
 
+  if (type === 'roster' || type === 'transactions') {
+    if (parsed.players && typeof parsed.players === 'object') return Object.keys(parsed.players).length;
+    if (Array.isArray(parsed)) return parsed.length;
+    return Object.keys(parsed).length;
+  }
+
   return 0;
 }
 
@@ -276,7 +285,7 @@ function findRosterMatchForPlayer(player, rosterIndex) {
 
 // Unified persistence helpers and migration
 const DEFAULT_STATE = {
-  version: 1,
+  version: APP_STATE_VERSION,
   datasets: { prospects: null, veterans: null, roster: null, transactions: null },
   metadata: {
     prospects: { status: 'empty' },
@@ -284,6 +293,7 @@ const DEFAULT_STATE = {
     roster: { status: 'empty' },
     transactions: { status: 'empty' },
   },
+  manualOverrides: [],
 };
 
 function loadState() {
@@ -292,9 +302,13 @@ function loadState() {
 
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.version === 1 && parsed.datasets) {
+    if (parsed && parsed.version === APP_STATE_VERSION && parsed.datasets) {
       // Already new shape
-      return parsed;
+      return normalizeState(parsed);
+    }
+
+    if (parsed && parsed.version === 1 && parsed.datasets) {
+      return normalizeState({ ...parsed, version: APP_STATE_VERSION });
     }
 
     // Migrate old shape
@@ -328,6 +342,10 @@ function migrateOldState(oldObj) {
     newState.metadata.veterans = { status: 'ok', importedAt: oldObj.importedAt || new Date().toISOString(), sourceName: oldObj.sourceName || null, records: countParsedRecords(oldObj.veterans, 'veterans') };
   }
 
+  if (Array.isArray(oldObj.manualOverrides)) {
+    newState.manualOverrides = oldObj.manualOverrides;
+  }
+
   // Some older shapes stored both datasets at top-level; detect owners-only objects? Ignore owners-only
 
   return newState;
@@ -342,10 +360,381 @@ function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
     status: (parsedData ? 'ok' : 'empty'),
     sourceName: sourceName || null,
     importedAt: parsedData ? new Date().toISOString() : null,
-    records: parsedData ? (datasetType === 'prospects' ? countParsedRecords(parsedData, 'prospects') : datasetType === 'veterans' ? countParsedRecords(parsedData, 'veterans') : 0) : 0,
+    records: parsedData ? countParsedRecords(parsedData, datasetType) : 0,
   };
-  next.version = 1;
+  next.manualOverrides = Array.isArray(next.manualOverrides) ? next.manualOverrides : [];
+  next.version = APP_STATE_VERSION;
+  return normalizeState(next);
+}
+
+function normalizeState(stateObj) {
+  const next = JSON.parse(JSON.stringify(DEFAULT_STATE));
+  if (!stateObj) {
+    return next;
+  }
+
+  next.version = APP_STATE_VERSION;
+  next.datasets = stateObj.datasets || next.datasets;
+  next.metadata = stateObj.metadata || next.metadata;
+  next.manualOverrides = Array.isArray(stateObj.manualOverrides) ? stateObj.manualOverrides : [];
   return next;
+}
+
+function getSnapshotAgeInfo(stateObj) {
+  const datasets = ['prospects', 'veterans', 'roster', 'transactions'];
+  const importedTimes = datasets
+    .map((dataset) => stateObj?.metadata?.[dataset]?.importedAt)
+    .filter(Boolean)
+    .map((value) => new Date(value).getTime())
+    .filter((value) => Number.isFinite(value));
+
+  if (!importedTimes.length) {
+    return {
+      ageMinutes: null,
+      label: 'No snapshot loaded',
+      status: 'warning',
+      details: 'Upload the latest CSV snapshot to refresh the league state.',
+    };
+  }
+
+  const latest = Math.max(...importedTimes);
+  const ageMinutes = Math.max(0, Math.round((Date.now() - latest) / 60000));
+  let status = 'valid';
+  let label = 'Snapshot Current';
+
+  if (ageMinutes > 180) {
+    status = 'error';
+    label = `Snapshot ${Math.round(ageMinutes / 60)} Hours Old`;
+  } else if (ageMinutes > 60) {
+    status = 'warning';
+    label = `Snapshot ${Math.round(ageMinutes / 60)} Hours Old`;
+  } else if (ageMinutes > 5) {
+    status = 'warning';
+    label = `Snapshot ${ageMinutes} Minutes Old`;
+  }
+
+  return {
+    ageMinutes,
+    label,
+    status,
+    details: `Latest refresh ${ageMinutes} minute${ageMinutes === 1 ? '' : 's'} ago`,
+  };
+}
+
+function normalizeClassification(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  if (text === 'veteran') return 'Veteran';
+  if (text === 'rookie' || text === 'prospect') return 'Rookie';
+  if (text === 'farm') return 'Farm';
+  return String(value).trim();
+}
+
+function isTruthyRecordValue(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return text === 'y' || text === 'yes' || text === 'true' || text === '1' || text === 'available';
+}
+
+function isFalsyRecordValue(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return text === 'n' || text === 'no' || text === 'false' || text === '0';
+}
+
+function getRecordName(record) {
+  return String(pickRecordValue(record, ['name', 'fullname', 'playername', 'displayname', 'player'])).trim();
+}
+
+function getRecordOwner(record) {
+  return String(pickRecordValue(record, ['owner', 'team', 'currentteam', 'club'])).trim();
+}
+
+function getRecordPosition(record) {
+  return String(pickRecordValue(record, ['position', 'primaryposition', 'positioncode'])).trim();
+}
+
+function getRecordType(record) {
+  const explicit = normalizeClassification(pickRecordValue(record, ['classification', 'type']));
+  if (explicit) return explicit;
+  if (isTruthyRecordValue(pickRecordValue(record, ['farm']))) return 'Farm';
+  if (isTruthyRecordValue(pickRecordValue(record, ['veteran']))) return 'Veteran';
+  if (isTruthyRecordValue(pickRecordValue(record, ['rookie', 'prospect']))) return 'Rookie';
+  return '';
+}
+
+function getAvailableStatus(record) {
+  const owner = getRecordOwner(record);
+  const draftedField = pickRecordValue(record, ['drafted', 'draftstatus', 'draft_status']);
+  const retainedField = pickRecordValue(record, ['retained', 'retention', 'kept']);
+  const availableField = pickRecordValue(record, ['available', 'isavailable', 'undrafted']);
+  const drafted = isTruthyRecordValue(draftedField);
+  const retained = isTruthyRecordValue(retainedField);
+  const explicitlyAvailable = isTruthyRecordValue(availableField) || isFalsyRecordValue(draftedField);
+
+  if (owner && explicitlyAvailable) {
+    return { status: 'conflict', label: 'Assigned but marked available' };
+  }
+
+  if (!owner && (retained || drafted)) {
+    return { status: 'conflict', label: retained ? 'Retained but unowned' : 'Drafted but unowned' };
+  }
+
+  if (owner || retained || drafted) {
+    return {
+      status: retained ? 'retained' : drafted ? 'drafted' : 'owned',
+      label: retained ? 'Retained' : drafted ? 'Drafted' : 'Owned',
+    };
+  }
+
+  if (explicitlyAvailable || !owner) {
+    return { status: 'available', label: 'Available' };
+  }
+
+  return { status: 'unknown', label: 'Unknown' };
+}
+
+function createManualOverrideDraft(data) {
+  const name = String(data?.name || '').trim();
+  const position = String(data?.position || '').trim();
+  const classification = normalizeClassification(data?.classification);
+  const notes = String(data?.notes || '').trim();
+  if (!name || !position || !classification) {
+    return null;
+  }
+
+  const createdAt = new Date().toISOString();
+  const idSeed = `${name}-${classification}-${createdAt}`;
+  const overrideId = `manual-${normalizeLookupKey(idSeed).replace(/\s+/g, '-')}`;
+
+  return {
+    id: overrideId,
+    name,
+    position,
+    classification,
+    notes,
+    createdAt,
+    addedBy: 'Local User',
+    manualOverride: true,
+  };
+}
+
+function updateManualOverrides(stateObj, nextOverrides) {
+  const next = normalizeState(stateObj);
+  next.manualOverrides = Array.isArray(nextOverrides) ? nextOverrides : [];
+  persistState(next);
+  return next;
+}
+
+function removeManualOverrideById(stateObj, overrideId) {
+  const nextOverrides = (stateObj.manualOverrides || []).filter((entry) => entry.id !== overrideId);
+  return updateManualOverrides(stateObj, nextOverrides);
+}
+
+function addManualOverrideEntry(stateObj, draft) {
+  const entry = createManualOverrideDraft(draft);
+  if (!entry) {
+    return { state: normalizeState(stateObj), error: 'Name, position, and classification are required.' };
+  }
+
+  const next = normalizeState(stateObj);
+  next.manualOverrides = [...(next.manualOverrides || []), entry];
+  persistState(next);
+  return { state: next, entry };
+}
+
+function buildDraftValidationReport(stateObj) {
+  const nextState = normalizeState(stateObj);
+  const rosterPlayers = Object.values(nextState.datasets.roster?.players || {});
+  const prospects = Object.values(nextState.datasets.prospects?.prospects || {});
+  const veterans = Object.values(nextState.datasets.veterans?.veterans || {});
+  const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+  const snapshot = getSnapshotAgeInfo(nextState);
+
+  const rosterByKey = new Map();
+  rosterPlayers.forEach((player) => {
+    const key = normalizeLookupKey(getRecordName(player));
+    if (key) {
+      rosterByKey.set(key, player);
+    }
+  });
+
+  const occurrencesByKey = new Map();
+  const addOccurrence = (record, sourceType) => {
+    const name = getRecordName(record);
+    const key = normalizeLookupKey(name);
+    if (!key) return;
+    if (!occurrencesByKey.has(key)) {
+      occurrencesByKey.set(key, []);
+    }
+    occurrencesByKey.get(key).push({
+      sourceType,
+      name,
+      owner: getRecordOwner(record),
+      record,
+    });
+  };
+
+  prospects.forEach((record) => addOccurrence(record, 'prospect'));
+  veterans.forEach((record) => addOccurrence(record, 'veteran'));
+  rosterPlayers.forEach((record) => addOccurrence(record, 'roster'));
+
+  const duplicateOwnershipIssues = [];
+  const missingOwnershipIssues = [];
+  const ownershipMismatches = [];
+  const missingClassificationIssues = [];
+  const retentionIssues = [];
+  const availableIntegrityIssues = [];
+  const availablePlayers = [];
+
+  occurrencesByKey.forEach((entries, key) => {
+    const owners = [...new Set(entries.map((entry) => entry.owner).filter(Boolean))];
+    if (owners.length > 1) {
+      duplicateOwnershipIssues.push(`${entries[0].name}: ${owners.join(' / ')}`);
+    }
+
+    const rosterEntry = entries.find((entry) => entry.sourceType === 'roster')?.record || rosterByKey.get(key) || null;
+    const rosterOwner = getRecordOwner(rosterEntry);
+    const rosterAvailableState = rosterEntry ? getAvailableStatus(rosterEntry) : null;
+
+    if (entries.some((entry) => entry.sourceType !== 'roster' && !entry.owner)) {
+      missingOwnershipIssues.push(entries[0].name);
+    } else if (rosterEntry && !rosterOwner && rosterAvailableState?.status !== 'available') {
+      missingOwnershipIssues.push(entries[0].name);
+    }
+
+    entries.forEach((entry) => {
+      const classification = getRecordType(entry.record) || (entry.sourceType === 'veteran' ? 'Veteran' : entry.sourceType === 'prospect' ? 'Rookie' : '');
+      if (entry.sourceType !== 'roster' && !classification) {
+        missingClassificationIssues.push(entry.name);
+      }
+
+      if (entry.sourceType === 'veteran') {
+        const retentionYear = pickRecordValue(entry.record, ['retentionyear', 'retention_year']);
+        if (!String(retentionYear || '').trim()) {
+          retentionIssues.push(`${entry.name} is missing retention year`);
+        }
+      }
+
+    });
+
+    if (rosterEntry) {
+      const availableState = rosterAvailableState || getAvailableStatus(rosterEntry);
+      if (availableState.status === 'conflict') {
+        availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: ${availableState.label}`);
+      }
+      if (owners.length && rosterOwner && !owners.includes(rosterOwner)) {
+        ownershipMismatches.push(`${getRecordName(rosterEntry) || key}: roster=${rosterOwner}, sheet=${owners.join(' / ')}`);
+      }
+      if (availableState.status === 'available') {
+        const recordType = getRecordType(rosterEntry) || 'Unknown';
+        availablePlayers.push({
+          key,
+          name: getRecordName(rosterEntry) || key,
+          position: getRecordPosition(rosterEntry) || '—',
+          type: recordType,
+          owner: rosterOwner || '—',
+          status: 'Available',
+          manualOverride: false,
+        });
+      }
+    }
+  });
+
+  manualOverrides.forEach((override) => {
+    const key = normalizeLookupKey(override.name);
+    if (!key) return;
+    availablePlayers.push({
+      key: override.id || `manual-${key}`,
+      name: override.name,
+      position: override.position || '—',
+      type: normalizeClassification(override.classification) || 'Manual',
+      owner: '—',
+      status: 'MANUAL OVERRIDE',
+      manualOverride: true,
+      notes: override.notes || '',
+      createdAt: override.createdAt || null,
+    });
+  });
+
+  const validationRows = [
+    {
+      key: 'ownership-integrity',
+      label: 'Ownership Integrity',
+      status: ownershipMismatches.length ? 'error' : missingOwnershipIssues.length ? 'warning' : 'valid',
+      message: ownershipMismatches.length
+        ? `${ownershipMismatches.length} roster ownership mismatch${ownershipMismatches.length === 1 ? '' : 'es'}`
+        : missingOwnershipIssues.length
+          ? `${missingOwnershipIssues.length} player${missingOwnershipIssues.length === 1 ? '' : 's'} missing ownership`
+          : 'Ownership matches across sources',
+      count: ownershipMismatches.length || missingOwnershipIssues.length,
+    },
+    {
+      key: 'duplicate-ownership',
+      label: 'Duplicate Ownership',
+      status: duplicateOwnershipIssues.length ? 'error' : 'valid',
+      message: duplicateOwnershipIssues.length
+        ? `${duplicateOwnershipIssues.length} duplicate ownership issue${duplicateOwnershipIssues.length === 1 ? '' : 's'}`
+        : 'No duplicate ownership detected',
+      count: duplicateOwnershipIssues.length,
+    },
+    {
+      key: 'missing-classification',
+      label: 'Missing Classification',
+      status: missingClassificationIssues.length ? 'warning' : 'valid',
+      message: missingClassificationIssues.length
+        ? `${missingClassificationIssues.length} record${missingClassificationIssues.length === 1 ? '' : 's'} need classification`
+        : 'All records classified',
+      count: missingClassificationIssues.length,
+    },
+    {
+      key: 'retention-integrity',
+      label: 'Retention Integrity',
+      status: retentionIssues.length ? 'warning' : 'valid',
+      message: retentionIssues.length
+        ? `${retentionIssues.length} veteran record${retentionIssues.length === 1 ? '' : 's'} need retention data`
+        : 'Retention data is present',
+      count: retentionIssues.length,
+    },
+    {
+      key: 'available-player-integrity',
+      label: 'Available Player Integrity',
+      status: availableIntegrityIssues.length ? 'error' : 'valid',
+      message: availableIntegrityIssues.length
+        ? `${availableIntegrityIssues.length} available-player conflict${availableIntegrityIssues.length === 1 ? '' : 's'}`
+        : 'Available pool is internally consistent',
+      count: availableIntegrityIssues.length,
+    },
+  ];
+
+  const hasErrors = validationRows.some((check) => check.status === 'error');
+  const hasWarnings = validationRows.some((check) => check.status === 'warning');
+
+  return {
+    snapshot,
+    validationRows,
+    validationHealth: hasErrors ? 'error' : hasWarnings ? 'warning' : 'valid',
+    retentionListLoaded: veterans.length > 0,
+    counts: {
+      ownershipCount: prospects.filter((player) => getRecordOwner(player)).length + veterans.filter((player) => getRecordOwner(player)).length,
+      rosterCount: rosterPlayers.length,
+      availableCount: availablePlayers.filter((player) => !player.manualOverride).length,
+      manualOverrideCount: manualOverrides.length,
+      duplicateOwnershipCount: duplicateOwnershipIssues.length,
+      missingOwnershipCount: missingOwnershipIssues.length,
+      missingClassificationCount: missingClassificationIssues.length,
+      retentionIssuesCount: retentionIssues.length,
+      availableIntegrityCount: availableIntegrityIssues.length,
+    },
+    details: {
+      duplicateOwnershipIssues,
+      missingOwnershipIssues,
+      ownershipMismatches,
+      missingClassificationIssues,
+      retentionIssues,
+      availableIntegrityIssues,
+    },
+    availablePlayers,
+    manualOverrides,
+  };
 }
 
 // ----------------------------
@@ -538,6 +927,200 @@ function renderDataQualityPanel(stateObj) {
       <h3>Data Quality</h3>
       <div style="margin-top:10px;">${rows}</div>
       <div style="margin-top:8px;color:var(--muted);font-size:0.9rem;">Last updated: ${escapeHtml(lastUpdated)}</div>
+    </section>
+  `;
+}
+
+function renderValidationStatusText(status) {
+  if (status === 'error') return '❌ Error';
+  if (status === 'warning') return '⚠ Warning';
+  return '✅ Valid';
+}
+
+function renderDraftValidationCenter(report) {
+  const rows = report.validationRows.map((row) => `
+    <div class="validation-row validation-${row.status}">
+      <div>
+        <div class="validation-label">${escapeHtml(row.label)}</div>
+        <div class="validation-message">${escapeHtml(row.message)}</div>
+      </div>
+      <div class="validation-pill">${renderValidationStatusText(row.status)}</div>
+    </div>
+  `).join('');
+
+  return `
+    <section class="panel validation-panel">
+      <div class="preview-header">
+        <div>
+          <h3>League Validation Center</h3>
+          <div class="panel-subtitle">Refresh, validate, and trust the sheet-backed retention list before draft decisions.</div>
+        </div>
+        <div class="preview-meta">
+          <span class="meta-pill">${renderValidationStatusText(report.validationHealth)}</span>
+          <span class="meta-pill">${escapeHtml(report.snapshot.label)}</span>
+          <span class="meta-pill">${report.retentionListLoaded ? 'Retention list loaded' : 'Retention list missing'}</span>
+          <span class="meta-pill">Overrides ${report.counts.manualOverrideCount}</span>
+        </div>
+      </div>
+      <div class="validation-summary">
+        <div class="meta-pill">${escapeHtml(report.snapshot.details)}</div>
+        <div class="meta-pill">Roster records ${report.counts.rosterCount}</div>
+        <div class="meta-pill">Available ${report.counts.availableCount}</div>
+        <div class="meta-pill">Owned ${report.counts.ownershipCount}</div>
+        <div class="meta-pill">${report.retentionListLoaded ? 'Retention list ready' : 'Retention list not loaded'}</div>
+      </div>
+      <div class="validation-list">${rows}</div>
+    </section>
+  `;
+}
+
+function renderAvailablePlayerCenter(report) {
+  const search = String(state.availablePlayerSearch || '').trim().toLowerCase();
+  const players = report.availablePlayers
+    .filter((player) => !search || player.name.toLowerCase().includes(search) || player.position.toLowerCase().includes(search) || player.type.toLowerCase().includes(search))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const officialPlayers = players.filter((player) => !player.manualOverride);
+  const manualPlayers = players.filter((player) => player.manualOverride);
+
+  const renderRows = (rows) => rows.length
+    ? rows.map((player) => `
+        <tr class="${player.manualOverride ? 'manual-override-row' : ''}">
+          <td>
+            <div class="table-player-name">${escapeHtml(player.name)}</div>
+            ${player.manualOverride ? '<div class="manual-override-tag">MANUAL OVERRIDE</div>' : ''}
+          </td>
+          <td>${escapeHtml(player.position)}</td>
+          <td>${escapeHtml(player.type)}</td>
+          <td>${escapeHtml(player.status)}</td>
+          <td>${escapeHtml(player.owner || '—')}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="5" class="empty-state">No players match this filter.</td></tr>';
+
+  return `
+    <section class="panel validation-panel">
+      <div class="preview-header">
+        <div>
+          <h3>Available Player Center</h3>
+          <div class="panel-subtitle">Trust the pool, spot mismatches, and keep missing players visible.</div>
+        </div>
+        <div class="preview-meta">
+          <span class="meta-pill">Official ${officialPlayers.length}</span>
+          <span class="meta-pill">Manual ${manualPlayers.length}</span>
+          <span class="meta-pill">Conflicts ${report.counts.availableIntegrityCount}</span>
+        </div>
+      </div>
+      <div style="margin:12px 0;">
+        <input id="availablePlayerSearchInput" placeholder="Search available players..." value="${escapeHtml(state.availablePlayerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
+      </div>
+      <div class="table-wrap">
+        <table class="validation-table">
+          <thead>
+            <tr>
+              <th>Player</th>
+              <th>Position</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Owner</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${renderRows(officialPlayers)}
+          </tbody>
+        </table>
+      </div>
+      <div class="manual-override-section">
+        <h4>Manual Override Players</h4>
+        <div class="table-wrap">
+          <table class="validation-table">
+            <thead>
+              <tr>
+                <th>Player</th>
+                <th>Position</th>
+                <th>Classification</th>
+                <th>Created</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${manualPlayers.length ? manualPlayers.map((player) => `
+                <tr class="manual-override-row">
+                  <td><div class="table-player-name">${escapeHtml(player.name)}</div><div class="manual-override-tag">MANUAL OVERRIDE</div></td>
+                  <td>${escapeHtml(player.position)}</td>
+                  <td>${escapeHtml(player.type)}</td>
+                  <td>${escapeHtml(player.createdAt ? new Date(player.createdAt).toLocaleString() : '—')}</td>
+                  <td>${escapeHtml(player.notes || '—')}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="5" class="empty-state">No manual override players yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderManualOverridePanel(report, stateObj) {
+  const overrides = report.manualOverrides || [];
+  const rows = overrides.length ? overrides.map((override) => `
+    <div class="override-card">
+      <div class="override-card-header">
+        <div>
+          <div class="override-player-name">${escapeHtml(override.name)}</div>
+          <div class="manual-override-tag">MANUAL OVERRIDE</div>
+        </div>
+        <button class="secondary remove-override-btn" data-override-id="${escapeHtml(override.id)}">Remove</button>
+      </div>
+      <div class="override-meta">
+        <span class="meta-pill">${escapeHtml(override.position || '—')}</span>
+        <span class="meta-pill">${escapeHtml(override.classification || '—')}</span>
+        <span class="meta-pill">${escapeHtml(override.createdAt ? new Date(override.createdAt).toLocaleString() : '—')}</span>
+      </div>
+      <div class="override-notes">${escapeHtml(override.notes || 'No notes provided.')}</div>
+    </div>
+  `).join('') : '<div class="empty-state">No manual overrides have been added.</div>';
+
+  return `
+    <section class="panel validation-panel">
+      <div class="preview-header">
+        <div>
+          <h3>Manual Override Audit</h3>
+          <div class="panel-subtitle">Temporary players only. Keep the sheet authoritative.</div>
+        </div>
+        <div class="preview-meta">
+          <span class="meta-pill">Overrides ${overrides.length}</span>
+        </div>
+      </div>
+      <form id="manualOverrideForm" class="manual-override-form">
+        <div class="manual-grid">
+          <label>
+            <span>Name</span>
+            <input name="name" type="text" required />
+          </label>
+          <label>
+            <span>Position</span>
+            <input name="position" type="text" required />
+          </label>
+          <label>
+            <span>Classification</span>
+            <select name="classification" required>
+              <option value="">Select</option>
+              <option value="Veteran">Veteran</option>
+              <option value="Rookie">Rookie</option>
+              <option value="Farm">Farm</option>
+            </select>
+          </label>
+          <label class="manual-notes">
+            <span>Notes</span>
+            <textarea name="notes" rows="3" placeholder="Why this override is needed"></textarea>
+          </label>
+        </div>
+        <button type="submit" class="primary">Add Manual Override</button>
+      </form>
+      <div class="override-list">
+        ${rows}
+      </div>
     </section>
   `;
 }
@@ -960,11 +1543,15 @@ function renderOwnerView(unifiedState) {
   const ownerListMarkup = renderOwnerList(ownerData);
   const ownerDetailMarkup = renderOwnerDetails(ownerData);
   const rosterIndex = buildRosterIndex(unifiedState);
+  const draftValidationReport = buildDraftValidationReport(unifiedState);
 
   // compute aggregates once
   const aggregates = computeOwnerAggregates(unifiedState);
   const leagueHtml = renderLeagueIntelligence(aggregates);
   const dataQualityHtml = renderDataQualityPanel(unifiedState);
+  const validationCenterHtml = renderDraftValidationCenter(draftValidationReport);
+  const availablePlayerHtml = renderAvailablePlayerCenter(draftValidationReport);
+  const overrideAuditHtml = renderManualOverridePanel(draftValidationReport, unifiedState);
 
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -974,12 +1561,17 @@ function renderOwnerView(unifiedState) {
       <div>
         ${leagueHtml}
         ${dataQualityHtml}
+        ${validationCenterHtml}
+        ${availablePlayerHtml}
+        ${overrideAuditHtml}
         ${ownerDetailMarkup}
       </div>
     </div>
   `;
 
-  document.getElementById('backToImportBtn').classList.remove('hidden');
+  const backToImportBtn = document.getElementById('backToImportBtn');
+  backToImportBtn.textContent = 'Refresh Snapshot';
+  backToImportBtn.classList.remove('hidden');
 
   // owner click handlers
   document.querySelectorAll('.owner-item').forEach((button) => {
@@ -1016,6 +1608,52 @@ function renderOwnerView(unifiedState) {
       renderOwnerView(unifiedState);
     });
   }
+
+  const availablePlayerSearchInput = document.getElementById('availablePlayerSearchInput');
+  if (availablePlayerSearchInput) {
+    availablePlayerSearchInput.addEventListener('input', (e) => {
+      state.availablePlayerSearch = e.target.value || '';
+      renderOwnerView(unifiedState);
+    });
+  }
+
+  const manualOverrideForm = document.getElementById('manualOverrideForm');
+  if (manualOverrideForm) {
+    manualOverrideForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!manualOverrideForm.checkValidity()) {
+        manualOverrideForm.reportValidity();
+        return;
+      }
+
+      const formData = new FormData(manualOverrideForm);
+      const nextDraft = {
+        name: formData.get('name'),
+        position: formData.get('position'),
+        classification: formData.get('classification'),
+        notes: formData.get('notes'),
+      };
+
+      const result = addManualOverrideEntry(unifiedState, nextDraft);
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
+
+      state.importedData = result.state;
+      state.manualOverrides = Array.isArray(result.state.manualOverrides) ? result.state.manualOverrides : [];
+      renderOwnerView(result.state);
+    });
+  }
+
+  document.querySelectorAll('.remove-override-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextState = removeManualOverrideById(unifiedState, button.dataset.overrideId);
+      state.importedData = nextState;
+      state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+      renderOwnerView(nextState);
+    });
+  });
 
   const selectedOwner = ownerData.owners.find((owner) => owner.name === state.selectedOwner) || ownerData.owners[0];
   const selectedPlayer = selectedOwner
@@ -1075,8 +1713,8 @@ function renderImportScreen() {
   app.innerHTML = `
     <section class="panel import-card">
       <div class="dropzone">
-        <strong>Upload a CSV</strong>
-        <p>Import prospects, veterans, or roster data to build the dashboard.</p>
+        <strong>Upload a CSV Snapshot</strong>
+        <p>Import prospects, veterans, roster, or transactions data to refresh the league state.</p>
         <div class="file-input-wrap">
           <input id="csvFileInput" type="file" accept=".csv,text/csv" />
           <span class="file-placeholder">Choose CSV File</span>
@@ -1167,6 +1805,7 @@ function initialize() {
 
   const stored = loadState();
   state.importedData = stored;
+  state.manualOverrides = Array.isArray(stored.manualOverrides) ? stored.manualOverrides : [];
   state.liveProfiles = state.liveCache?.players ? { ...state.liveCache.players } : {};
   state.selectedOwner = null;
   state.selectedPlayerKey = null;
@@ -1184,4 +1823,12 @@ if (typeof document !== 'undefined') {
   document.addEventListener('DOMContentLoaded', initialize);
 }
 
-export { STORAGE_KEY, state };
+export {
+  STORAGE_KEY,
+  state,
+  addManualOverrideEntry,
+  removeManualOverrideById,
+  buildDraftValidationReport,
+  createManualOverrideDraft,
+  getSnapshotAgeInfo,
+};
