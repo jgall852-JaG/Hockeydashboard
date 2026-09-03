@@ -1174,6 +1174,37 @@ function renderPlayerBadges(player) {
   return badges.map((badge) => `<span class="player-chip">${escapeHtml(badge)}</span>`).join('');
 }
 
+function renderLeagueContextBadges(player) {
+  const pills = [];
+
+  if (player?.sourceType === 'prospect') {
+    const cost = player.cost ?? null;
+    const term = player.termRemaining ?? null;
+    const rights = player.matchingRights ?? null;
+    const retention = player.retentionYear ?? null;
+
+    if (cost !== null && cost !== undefined && cost !== '') pills.push(`Cost $${formatValue(cost)}`);
+    if (term !== null && term !== undefined && term !== '') pills.push(`Term ${term}Y`);
+    if (rights !== null && rights !== undefined && rights !== '') pills.push(rights ? 'Rights' : 'No Rights');
+    if (retention !== null && retention !== undefined && retention !== '') pills.push(`Ret ${retention}`);
+    if (player.farm) pills.push('Farm');
+  } else if (player?.sourceType === 'veteran') {
+    const cost = player.currentCost ?? null;
+    const retention = player.retentionYear ?? null;
+    const rights = player.matchingRights ?? null;
+
+    if (cost !== null && cost !== undefined && cost !== '') pills.push(`Cost $${formatValue(cost)}`);
+    if (retention !== null && retention !== undefined && retention !== '') pills.push(`Ret ${retention}`);
+    if (rights !== null && rights !== undefined && rights !== '') pills.push(rights ? 'Rights' : 'No Rights');
+  }
+
+  if (!pills.length) {
+    return '';
+  }
+
+  return `<div class="player-context-strip">${pills.map((pill) => `<span class="player-context-pill">${escapeHtml(pill)}</span>`).join('')}</div>`;
+}
+
 function renderPlayerList(players, filter) {
   const search = (filter || '').trim().toLowerCase();
   const filtered = search
@@ -1191,9 +1222,10 @@ function renderPlayerList(players, filter) {
         return `
           <li>
             <button class="player-item ${isActive ? 'active' : ''}" data-player-key="${player.playerKey}">
-              <div>
+              <div class="player-info-wrap">
                 <div class="player-name">${escapeHtml(player.name || 'Unnamed Player')}</div>
                 <div class="player-meta">${renderPlayerBadges(player)}</div>
+                ${renderLeagueContextBadges(player)}
               </div>
               <div class="player-chevron">›</div>
             </button>

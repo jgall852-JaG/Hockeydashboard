@@ -342,11 +342,38 @@ button.secondary {
   font-weight: 700;
 }
 
+.player-info-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+}
+
 .player-meta {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   margin-top: 6px;
+}
+
+.player-context-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.player-context-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(103, 183, 255, 0.18);
+  background: rgba(103, 183, 255, 0.08);
+  color: var(--text);
+  font-size: 0.68rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .player-chip {
