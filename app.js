@@ -1236,6 +1236,88 @@ function renderPlayerList(players, filter) {
   `;
 }
 
+function buildComparablePlayers(selectedPlayer, ownerData) {
+  const allPlayers = (ownerData?.owners || []).flatMap((owner) => [...(owner.prospects || []), ...(owner.veterans || [])]);
+  if (!selectedPlayer || !allPlayers.length) return [];
+
+  const selectedKey = selectedPlayer.playerKey;
+  const selectedCost = Number(selectedPlayer.cost ?? selectedPlayer.currentCost ?? 0) || 0;
+  const selectedTerm = Number(selectedPlayer.termRemaining ?? selectedPlayer.retentionYear ?? 0) || 0;
+  const selectedPosition = (selectedPlayer.poolPosition || selectedPlayer.position || '').toLowerCase();
+
+  const comparable = allPlayers
+    .filter((player) => player.playerKey !== selectedKey)
+    .map((player) => {
+      const playerCost = Number(player.cost ?? player.currentCost ?? 0) || 0;
+      const playerTerm = Number(player.termRemaining ?? player.retentionYear ?? 0) || 0;
+      const sameType = selectedPlayer.sourceType === player.sourceType;
+      const samePosition = !selectedPosition || !player.poolPosition || (String(player.poolPosition).toLowerCase() === selectedPosition);
+      const costDelta = Math.abs(playerCost - selectedCost);
+      const termDelta = Math.abs(playerTerm - selectedTerm);
+      const rightsDelta = Number(Boolean(player.matchingRights)) !== Number(Boolean(selectedPlayer.matchingRights));
+      const score = costDelta * 1.5 + termDelta * 2 + (rightsDelta ? 1 : 0) + (sameType ? 0 : 5) + (samePosition ? 0 : 2);
+      return { player, score };
+    })
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 3)
+    .map((entry) => entry.player);
+
+  return comparable;
+}
+
+function renderDecisionDelta(player, comparable) {
+  if (!player || !comparable) return '';
+
+  const selectedCost = Number(player.cost ?? player.currentCost ?? 0) || 0;
+  const selectedTerm = Number(player.termRemaining ?? 0) || 0;
+  const selectedRights = Boolean(player.matchingRights);
+  const comparableCost = Number(comparable.cost ?? comparable.currentCost ?? 0) || 0;
+  const comparableTerm = Number(comparable.termRemaining ?? 0) || 0;
+  const comparableRights = Boolean(comparable.matchingRights);
+  const costDelta = selectedCost - comparableCost;
+  const termDelta = selectedTerm - comparableTerm;
+
+  const costLine = costDelta > 0
+    ? `Costs $${formatValue(Math.abs(costDelta))} more`
+    : costDelta < 0
+      ? `Costs $${formatValue(Math.abs(costDelta))} less`
+      : 'Costs the same';
+
+  const termLine = termDelta > 0
+    ? `Longer by ${termDelta}Y`
+    : termDelta < 0
+      ? `Shorter by ${Math.abs(termDelta)}Y`
+      : 'Same term';
+
+  const rightsLine = selectedRights === comparableRights
+    ? 'Similar rights profile'
+    : selectedRights
+      ? 'Stronger rights profile'
+      : 'Weaker rights profile';
+
+  const retentionLine = comparable.retentionYear || player.retentionYear
+    ? `Retention: ${player.retentionYear || '—'} vs ${comparable.retentionYear || '—'}`
+    : 'Retention not specified';
+
+  return `
+    <div class="compare-card">
+      <div class="compare-head">
+        <div>
+          <div class="compare-title">Decision Delta</div>
+          <div class="compare-target">vs ${escapeHtml(comparable.name || 'Comparable')}</div>
+        </div>
+        <span class="meta-pill">${escapeHtml(player.name || 'Selected')}</span>
+      </div>
+      <div class="compare-breakdown">
+        <span>${escapeHtml(costLine)}</span>
+        <span>${escapeHtml(termLine)}</span>
+        <span>${escapeHtml(rightsLine)}</span>
+        <span>${escapeHtml(retentionLine)}</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
   if (!player) return '';
 
@@ -1536,6 +1618,10 @@ function renderOwnerDetails(ownerData) {
   `;
 
   const playerIntel = selectedPlayer ? renderPlayerIntelligenceSection(selectedPlayer, rosterMatch, liveProfile) : '';
+  const comparablePlayers = selectedPlayer ? buildComparablePlayers(selectedPlayer, ownerData) : [];
+  const comparisonHtml = comparablePlayers.length
+    ? renderDecisionDelta(selectedPlayer, comparablePlayers[0])
+    : '';
 
   return `
   <section class="panel details-panel">
@@ -1545,6 +1631,7 @@ function renderOwnerDetails(ownerData) {
     ${ownerSummary}
     ${cards}
     ${playerIntel}
+    ${comparisonHtml}
   </section>
   `;
 }
