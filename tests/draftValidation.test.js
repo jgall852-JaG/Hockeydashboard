@@ -285,7 +285,7 @@ describe('draft validation report', () => {
     state = mergeDataset(state, 'prospects', {
       isRightsList: true,
       prospects: {
-        howard: { name: 'Issac Howard', owner: 'TEAM A', prospect: true, farm: false },
+        howard: { name: 'Issac Howard', owner: 'TEAM A', prospect: true, farm: false, matchingRights: true, year3Used: false },
       },
       owners: { 'TEAM A': ['howard'] },
       farmPlayers: [],
@@ -363,9 +363,9 @@ describe('draft validation report', () => {
     const prospects = {
       isRightsList: true,
       prospects: {
-        retained: { name: 'Retained Rookie', owner: 'TEAM A', prospect: true, farm: false, cost: 5, matchingRights: true },
-        high: { name: 'High Value Rookie', owner: 'TEAM B', prospect: true, farm: false, cost: 8, matchingRights: true },
-        low: { name: 'Low Value Rookie', owner: 'TEAM B', prospect: true, farm: false, cost: 1, matchingRights: false },
+        retained: { name: 'Retained Rookie', owner: 'TEAM A', prospect: true, farm: false, cost: 5, matchingRights: true, year3Used: false },
+        high: { name: 'High Value Rookie', owner: 'TEAM B', prospect: true, farm: false, cost: 8, matchingRights: true, year3Used: false },
+        low: { name: 'Low Value Rookie', owner: 'TEAM B', prospect: true, farm: false, cost: 1, matchingRights: false, year3Used: false },
       },
       owners: { 'TEAM A': ['retained'], 'TEAM B': ['high', 'low'] },
       farmPlayers: [],
@@ -378,13 +378,10 @@ describe('draft validation report', () => {
     const teamB = buildOwnerViewData(state).owners.find((owner) => owner.name === 'TEAM B');
     const availableByName = Object.fromEntries(report.availablePlayers.map((player) => [player.name, player]));
 
-    expect(teamB.matchingRights.map((player) => `${player.name} (${player.matchingRights ? 'Y' : 'N'})`)).toEqual([
-      'High Value Rookie (Y)',
-      'Low Value Rookie (N)',
-    ]);
+    expect(teamB.matchingRights.map((player) => `${player.name} (${player.matchingRights ? 'Y' : 'N'})`)).toEqual(['High Value Rookie (Y)']);
     expect(buildOwnerViewData(state).owners.find((owner) => owner.name === 'TEAM A').matchingRights).toHaveLength(0);
     expect(availableByName['High Value Rookie']).toMatchObject({ matchingRights: true, rightsOwner: 'TEAM B' });
-    expect(availableByName['Low Value Rookie']).toMatchObject({ matchingRights: false, rightsOwner: 'TEAM B' });
+    expect(availableByName['Low Value Rookie']).toMatchObject({ matchingRights: false, rightsOwner: '' });
     expect(availableByName['High Value Rookie'].evaluation.score).toBeGreaterThan(availableByName['Low Value Rookie'].evaluation.score);
     expect(availableByName['Retained Rookie']).toBeUndefined();
   });
@@ -422,9 +419,9 @@ describe('draft validation report', () => {
     state = mergeDataset(state, 'prospects', {
       isRightsList: true,
       prospects: {
-        gauthier: { name: 'Cutter Gauthier', owner: 'HEBREW HAMMERS', prospect: true, farm: false },
-        blake: { name: 'Jackson Blake', owner: 'HEBREW HAMMERS', prospect: true, farm: false },
-        koivunen: { name: 'Ville Koivunen', owner: 'HEBREW HAMMERS', prospect: true, farm: false },
+        gauthier: { name: 'Cutter Gauthier', owner: 'HEBREW HAMMERS', prospect: true, farm: false, matchingRights: true, year3Used: false },
+        blake: { name: 'Jackson Blake', owner: 'HEBREW HAMMERS', prospect: true, farm: false, matchingRights: true, year3Used: false },
+        koivunen: { name: 'Ville Koivunen', owner: 'HEBREW HAMMERS', prospect: true, farm: false, matchingRights: true, year3Used: false },
       },
       owners: { 'HEBREW HAMMERS': ['gauthier', 'blake', 'koivunen'] },
       farmPlayers: [],

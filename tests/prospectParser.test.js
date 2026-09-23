@@ -108,8 +108,7 @@ describe('prospectParser expanded cases', () => {
     expect(alvaro.playerId).toMatch(/alvaro/);
 
     const farms = getFarmPlayers(data).map(p => p.playerId);
-    expect(farms).toContain('john-doe');
-    expect(farms.some(id => id.includes('farm') || id.includes('farmlower'))).toBe(true);
+    expect(farms).toEqual([]);
 
     const rights = getRightsPlayers(data).map(p => p.playerId);
     expect(rights.length).toBeGreaterThanOrEqual(3);
@@ -136,15 +135,20 @@ describe('prospectParser expanded cases', () => {
     const rp = Object.values(data.prospects).find(p => p.name.includes('Rights Player'));
     expect(rp).toBeDefined();
     expect(rp.matchingRights).toBe(true);
+    expect(rp.year3Used).toBe(true);
+    expect(rp.prospectEligible).toBe(false);
 
     const nr = Object.values(data.prospects).find(p => p.name.includes('NoRights'));
     expect(nr).toBeDefined();
     expect(nr.matchingRights).toBe(false);
+    expect(nr.prospectEligible).toBe(false);
 
     const fr = Object.values(data.prospects).find(p => p.name.includes('FarmRights'));
     expect(fr).toBeDefined();
     expect(fr.farm).toBe(true);
     // matching rights should be true even for farm players when column contains Y
     expect(fr.matchingRights).toBe(true);
+    expect(fr.prospectEligible).toBe(true);
+    expect(getRightsPlayers(data).map(player => player.name)).toEqual(['FarmRights']);
   });
 });

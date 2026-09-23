@@ -143,6 +143,8 @@ function parsePlayerRow(columns, owner) {
 
     // Matching Rights column is the 7th column (index 6) in the CSV header
     const matchingRights = String(columns[6] || '').trim().toUpperCase() === 'Y';
+    const year3Used = String(columns[5] || '').trim().toUpperCase() === 'X';
+    const prospectEligible = matchingRights && !year3Used;
 
     return {
         playerId: createPlayerId(playerName),
@@ -153,6 +155,8 @@ function parsePlayerRow(columns, owner) {
         farm,
         termRemaining,
         matchingRights,
+        year3Used,
+        prospectEligible,
         draftYear,
         poolPosition,
     };
@@ -212,11 +216,11 @@ export function parseProspects(csvData) {
 // ----------------------------
 
 export function getFarmPlayers(prospectData) {
-    return Object.values(prospectData.prospects).filter(player => player.farm);
+    return Object.values(prospectData.prospects).filter(player => player.farm && player.prospectEligible);
 }
 
 export function getRightsPlayers(prospectData) {
-    return Object.values(prospectData.prospects).filter(player => player.matchingRights);
+    return Object.values(prospectData.prospects).filter(player => player.prospectEligible);
 }
 
 export function getProspectsByTerm(prospectData, years) {

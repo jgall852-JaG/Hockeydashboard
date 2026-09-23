@@ -213,11 +213,11 @@ export function buildOwnerViewData(rawState) {
   veteransArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
 
   const owners = [...ownerSet].sort((a, b) => a.localeCompare(b)).map((owner) => {
-    const ownerProspects = prospectsArr.filter((p) => p.owner === owner);
+    const ownerProspects = prospectsArr.filter((p) => p.owner === owner && isProspectRetentionEligible(p, stateObj.datasets.prospects?.isRightsList));
     const ownerVeterans = veteransArr.filter((p) => p.owner === owner);
     const ownerRosterPlayers = rosterArr.filter((p) => p.owner === owner);
     const retainedRosterPlayers = ownerRosterPlayers.filter((p) => isTruthyRecordValue(p.retained));
-    const farmPlayers = ownerProspects.filter((p) => p.farm);
+    const farmPlayers = ownerProspects.filter((p) => p.farm && retainedRosterPlayers.some((retained) => normalizeLookupKey(retained.name) === normalizeLookupKey(p.name)));
     const retainedKeys = new Set(rosterArr.filter((player) => player.retained).map((player) => normalizeLookupKey(player.name)));
     const matchingRights = ownerProspects.filter((player) => !retainedKeys.has(normalizeLookupKey(player.name)));
 
@@ -596,6 +596,15 @@ function getImportedClassification(record, sourceType) {
   return '';
 }
 
+function isProspectRetentionEligible(record, enforceRightsRules = false) {
+  if (!enforceRightsRules) return true;
+  const matchingRights = Boolean(record?.matchingRights);
+  const year3Used = record?.year3Used !== undefined
+    ? Boolean(record.year3Used)
+    : String(pickRecordValue(record, ['yr3', 'year3'])).trim().toUpperCase() === 'X';
+  return matchingRights && !year3Used;
+}
+
 function reconcileRetainedClassifications(stateObj) {
   const next = normalizeState(stateObj);
   const rosterPlayers = Object.values(next.datasets.roster?.players || {});
@@ -609,6 +618,7 @@ function reconcileRetainedClassifications(stateObj) {
 
   const classificationsByRosterKey = new Map();
   const addClassification = (record, sourceType) => {
+    if (sourceType === 'prospect' && !isProspectRetentionEligible(record, next.datasets.prospects?.isRightsList)) return;
     const name = getRecordName(record);
     if (!name) return;
     const rosterKey = findCanonicalRosterKey(name, rosterByKey);
@@ -1167,7 +1177,10 @@ function buildDraftValidationReport(stateObj) {
       if (availableState.status === 'available' && owners.length === 0 && !assignedByPlayerKey.has(key)) {
         const prospectEntry = entries.find((entry) => entry.sourceType === 'prospect')?.record || null;
         const veteranEntry = entries.find((entry) => entry.sourceType === 'veteran')?.record || null;
-        const evaluationRecord = prospectEntry || veteranEntry || rosterEntry;
+        const eligibleProspect = prospectEntry && isProspectRetentionEligible(prospectEntry, nextState.datasets.prospects?.isRightsList)
+          ? prospectEntry
+          : null;
+        const evaluationRecord = eligibleProspect || veteranEntry || rosterEntry;
         const evaluation = getPlayerEvaluation(evaluationRecord);
         const recordType = getRecordType(evaluationRecord) || getRecordType(rosterEntry) || 'Unknown';
         availablePlayers.push({
@@ -1179,7 +1192,7 @@ function buildDraftValidationReport(stateObj) {
           status: 'Available',
           manualOverride: false,
           matchingRights: prospectEntry ? Boolean(prospectEntry.matchingRights) : null,
-          rightsOwner: prospectEntry ? getRecordOwner(prospectEntry) : '',
+          rightsOwner: eligibleProspect ? getRecordOwner(eligibleProspect) : '',
           evaluation,
         });
       }
@@ -1339,9 +1352,10 @@ function buildDraftValidationReport(stateObj) {
 // ----------------------------
 
 function computeDashboardSummary(stateObj) {
-  const prospects = Object.values(stateObj.datasets.prospects?.prospects || {});
-  const veterans = Object.values(stateObj.datasets.veterans?.veterans || {});
-  const rosterPlayers = Object.values(stateObj.datasets.roster?.players || {});
+  const reconciled = reconcileRetainedClassifications(stateObj);
+  const prospects = Object.values(reconciled.datasets.prospects?.prospects || {});
+  const veterans = Object.values(reconciled.datasets.veterans?.veterans || {});
+  const rosterPlayers = Object.values(reconciled.datasets.roster?.players || {});
   const ownerSet = new Set();
   if (stateObj.datasets.prospects?.owners) Object.keys(stateObj.datasets.prospects.owners).forEach((o) => ownerSet.add(o));
   if (stateObj.datasets.veterans?.owners) Object.keys(stateObj.datasets.veterans.owners).forEach((o) => ownerSet.add(o));
@@ -1350,10 +1364,15 @@ function computeDashboardSummary(stateObj) {
   veterans.forEach((v) => { if (v && v.owner) ownerSet.add(v.owner); });
 
   const totalOwners = ownerSet.size;
-  const totalProspects = prospects.length;
-  const totalVeterans = veterans.length;
-  const totalFarmPlayers = prospects.filter((p) => p.farm).length;
-  const totalMatchingRights = prospects.filter((p) => p.matchingRights).length;
+  const retainedPlayers = rosterPlayers.filter((player) => isTruthyRecordValue(player.retained));
+  const totalProspects = retainedPlayers.filter((player) => getRecordType(player) === 'Rookie').length;
+  const totalVeterans = retainedPlayers.filter((player) => getRecordType(player) === 'Veteran').length;
+  const totalFarmPlayers = retainedPlayers.filter((player) => getRecordType(player) === 'Farm').length;
+  const retainedKeys = new Set(retainedPlayers.map((player) => normalizeLookupKey(getRecordName(player))));
+  const totalMatchingRights = prospects.filter((player) =>
+    isProspectRetentionEligible(player, reconciled.datasets.prospects?.isRightsList)
+    && !retainedKeys.has(normalizeLookupKey(getRecordName(player)))
+  ).length;
 
   return { totalOwners, totalProspects, totalVeterans, totalFarmPlayers, totalMatchingRights };
 }
@@ -2227,8 +2246,8 @@ function renderOwnerList(ownerData, report) {
           <div class="owner-name">${owner.name}</div>
         </div>
         <div class="owner-badges">
-          <span class="owner-badge">Pros ${owner.prospects.length}</span>
-          <span class="owner-badge">Vet ${owner.veterans.length}</span>
+          <span class="owner-badge">Rookie ${owner.retainedRookies.length}</span>
+          <span class="owner-badge">Vet ${owner.retainedVeterans.length}</span>
           <span class="owner-badge">Roster ${owner.rosterPlayers.length}</span>
           <span class="owner-badge">Farm ${owner.farmPlayers.length}</span>
           <span class="owner-badge">MR ${owner.matchingRights.length}</span>
@@ -2274,7 +2293,13 @@ function renderOwnerDetails(ownerData, report) {
   const avgCostFmt = stats.prospectCount ? formatCurrency(stats.averageProspectCost) : '—';
   const highest = stats.highestCostProspect ? `${stats.highestCostProspect.name} ($${formatCurrency(stats.highestCostProspect.cost)})` : '—';
   const rosterIndex = buildRosterIndex(state.importedData || ownerData._rawState || {});
-  const ownerPlayers = [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || []), ...(selectedOwner.rosterPlayers || [])];
+  const ownerPlayers = [
+    ...(selectedOwner.retainedRookies || []),
+    ...(selectedOwner.retainedVeterans || []),
+    ...(selectedOwner.retainedFarm || []),
+    ...(selectedOwner.retainedUnclassified || []),
+    ...(selectedOwner.matchingRights || []),
+  ];
 
   if (!state.selectedPlayerKey || !ownerPlayers.some((player) => player.playerKey === state.selectedPlayerKey)) {
     state.selectedPlayerKey = ownerPlayers.length ? ownerPlayers[0].playerKey : null;
@@ -2287,8 +2312,8 @@ function renderOwnerDetails(ownerData, report) {
   const ownerSummary = `
     <div class="owner-summary panel">
       <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;">
-        <div class="meta-pill">Prospects: ${stats.prospectCount}</div>
-        <div class="meta-pill">Veterans: ${stats.veteranCount}</div>
+        <div class="meta-pill">Retained Rookies: ${selectedOwner.retainedRookies.length}</div>
+        <div class="meta-pill">Retained Veterans: ${selectedOwner.retainedVeterans.length}</div>
         <div class="meta-pill">Farm: ${stats.farmCount}</div>
         <div class="meta-pill">Matching Rights: ${stats.matchingRightsCount}</div>
         <div class="meta-pill">Total Prospect Cost: $${totalCostFmt}</div>
@@ -2329,14 +2354,6 @@ function renderOwnerDetails(ownerData, report) {
     </div>
     <div class="detail-grid">
       <article class="detail-card">
-        <h3>Prospects</h3>
-        ${renderPlayerList(selectedOwner.prospects, state.playerSearch)}
-      </article>
-      <article class="detail-card">
-        <h3>Veterans</h3>
-        ${renderPlayerList(selectedOwner.veterans, state.playerSearch)}
-      </article>
-      <article class="detail-card">
         <h3>Retained Veterans</h3>
         ${renderPlayerList(selectedOwner.retainedVeterans, state.playerSearch)}
       </article>
@@ -2351,10 +2368,6 @@ function renderOwnerDetails(ownerData, report) {
       <article class="detail-card">
         <h3>Retained Unclassified</h3>
         ${renderPlayerList(selectedOwner.retainedUnclassified, state.playerSearch)}
-      </article>
-      <article class="detail-card">
-        <h3>Farm Players</h3>
-        ${renderPlayerList(selectedOwner.farmPlayers, state.playerSearch)}
       </article>
       <article class="detail-card">
         <h3>Matching Rights</h3>
@@ -2394,9 +2407,9 @@ function renderOwnerView(unifiedState) {
   const summaryHtml = `
     <section class="panel summary-grid">
       <div class="summary-card"><div class="summary-value">${summary.totalOwners}</div><div class="summary-label">Total Owners</div></div>
-      <div class="summary-card"><div class="summary-value">${summary.totalProspects}</div><div class="summary-label">Total Prospects</div></div>
-      <div class="summary-card"><div class="summary-value">${summary.totalVeterans}</div><div class="summary-label">Total Veterans</div></div>
-      <div class="summary-card"><div class="summary-value">${summary.totalFarmPlayers}</div><div class="summary-label">Total Farm Players</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalProspects}</div><div class="summary-label">Retained Rookies</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalVeterans}</div><div class="summary-label">Retained Veterans</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalFarmPlayers}</div><div class="summary-label">Retained Farm</div></div>
       <div class="summary-card"><div class="summary-value">${summary.totalMatchingRights}</div><div class="summary-label">Total Matching Rights</div></div>
     </section>
   `;
