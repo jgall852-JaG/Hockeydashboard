@@ -12,11 +12,18 @@ import {
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
 const MAX_PREVIEW_ROWS = 10;
+const GOOGLE_SHEET_ID = '1_RbnvnxnMzzwty7jdq8I9SN3mWfp187xKVnyPackzeA';
+const GOOGLE_SHEET_SOURCES = Object.freeze([
+  { name: 'google-position-inventory.csv', gid: '663280764', datasetType: 'roster', expectedLayout: 'inventory' },
+  { name: 'google-utility-inventory.csv', gid: '1551984288', datasetType: 'roster', expectedLayout: 'utility' },
+  { name: 'google-retained-players.csv', gid: '1727331506', datasetType: 'roster', expectedLayout: 'retained-grid' },
+  { name: 'google-live-roster.csv', gid: '910545566', datasetType: 'roster', expectedLayout: 'league-layout' },
+  { name: 'google-rookie-rights.csv', gid: '1065921002', datasetType: 'prospects' },
+]);
 const DRAFT_ROSTER_RULES = Object.freeze({
   budgetCap: 250,
   minSlotCost: 0.5,
-  targetSkaters: 23,
-  targetGoalieTeams: 2,
+  targetRosterSlots: 25,
 });
 const GOALIE_TEAM_CITY_KEYS = new Set([
   'anaheim',
@@ -51,8 +58,14 @@ const GOALIE_TEAM_CITY_KEYS = new Set([
   'washington',
   'winnipeg',
 ]);
-const SKATER_POSITION_KEYS = new Set(['c', 'lw', 'rw', 'd', 'ld', 'rd', 'f']);
+const SKATER_POSITION_KEYS = new Set(['c', 'l', 'r', 'lw', 'rw', 'd', 'ld', 'rd', 'f']);
 const GOALIE_TEAM_POSITION_KEYS = new Set(['g', 'goalie', 'goalieteam', 'goalie team', 'team goalie', 'gt']);
+const RETAINED_CLASSIFICATION_OVERRIDES = Object.freeze({
+  'cole caufield': 'Veteran',
+  'cutter gauthier': 'Rookie',
+  'jackson blake': 'Rookie',
+  'ville koivunen': 'Rookie',
+});
 
 const state = {
   importedData: null,
@@ -83,6 +96,7 @@ function parseCSVLine(line) {
       } else {
         inQuotes = !inQuotes;
       }
+      stateObj = reconcileRetainedClassifications(stateObj);
       continue;
     }
 
@@ -103,6 +117,12 @@ export function detectDatasetType(csvText) {
   const text = String(csvText || '');
   const rows = text.split(/\r?\n/).filter((row) => row.trim());
   const normalized = rows.join('\n').toUpperCase();
+  const rosterCandidate = parseRoster(text);
+  const isStructuredRosterLayout = rosterCandidate?.layout && rosterCandidate.layout !== 'flat-table' && rosterCandidate.layout !== 'unknown';
+
+  if (isStructuredRosterLayout && Object.keys(rosterCandidate.players || {}).length > 0) {
+    return 'roster';
+  }
 
   if (
     normalized.includes('TERM REMAINING') ||
@@ -124,7 +144,6 @@ export function detectDatasetType(csvText) {
     return 'veterans';
   }
 
-  const rosterCandidate = parseRoster(text);
   if (Object.keys(rosterCandidate?.players || {}).length > 0) {
     return 'roster';
   }
@@ -190,6 +209,9 @@ export function buildOwnerViewData(rawState) {
   if (stateObj.datasets.prospects?.owners) Object.keys(stateObj.datasets.prospects.owners).forEach((o) => ownerSet.add(o));
   if (stateObj.datasets.veterans?.owners) Object.keys(stateObj.datasets.veterans.owners).forEach((o) => ownerSet.add(o));
   rosterArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
+  Object.values(stateObj.workingAssignments || {}).forEach((assignment) => {
+    if (assignment?.team) ownerSet.add(assignment.team);
+  });
 
   // derive from player records as well
   prospectsArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
@@ -199,14 +221,20 @@ export function buildOwnerViewData(rawState) {
     const ownerProspects = prospectsArr.filter((p) => p.owner === owner);
     const ownerVeterans = veteransArr.filter((p) => p.owner === owner);
     const ownerRosterPlayers = rosterArr.filter((p) => p.owner === owner);
+    const retainedRosterPlayers = ownerRosterPlayers.filter((p) => isTruthyRecordValue(p.retained));
     const farmPlayers = ownerProspects.filter((p) => p.farm);
-    const matchingRights = ownerProspects.filter((p) => p.matchingRights);
+    const retainedKeys = new Set(rosterArr.filter((player) => player.retained).map((player) => normalizeLookupKey(player.name)));
+    const matchingRights = ownerProspects.filter((player) => !retainedKeys.has(normalizeLookupKey(player.name)));
 
     return {
       name: owner,
       prospects: ownerProspects,
       veterans: ownerVeterans,
       rosterPlayers: ownerRosterPlayers,
+      retainedVeterans: retainedRosterPlayers.filter((p) => getRecordType(p) === 'Veteran'),
+      retainedRookies: retainedRosterPlayers.filter((p) => getRecordType(p) === 'Rookie'),
+      retainedFarm: retainedRosterPlayers.filter((p) => getRecordType(p) === 'Farm'),
+      retainedUnclassified: retainedRosterPlayers.filter((p) => !getRecordType(p)),
       farmPlayers,
       matchingRights,
     };
@@ -349,12 +377,11 @@ function loadState() {
   try {
     const parsed = JSON.parse(raw);
     if (parsed && parsed.version === APP_STATE_VERSION && parsed.datasets) {
-      // Already new shape
-      return normalizeState(parsed);
+      return reconcileWorkingAssignments(reconcileRetainedClassifications(normalizeState(parsed)));
     }
 
     if (parsed && parsed.version === 1 && parsed.datasets) {
-      return normalizeState({ ...parsed, version: APP_STATE_VERSION });
+      return reconcileWorkingAssignments(reconcileRetainedClassifications(normalizeState({ ...parsed, version: APP_STATE_VERSION })));
     }
 
     // Migrate old shape
@@ -398,19 +425,256 @@ function migrateOldState(oldObj) {
 }
 
 function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
-  const next = JSON.parse(JSON.stringify(stateObj));
+  const next = normalizeState(stateObj);
   next.datasets = next.datasets || { prospects: null, veterans: null, roster: null, transactions: null };
-  next.datasets[datasetType] = parsedData;
+  next.datasets[datasetType] = datasetType === 'roster'
+    ? mergeRosterDataset(next.datasets.roster, parsedData, sourceName)
+    : parsedData;
   next.metadata = next.metadata || {};
   next.metadata[datasetType] = {
     status: (parsedData ? 'ok' : 'empty'),
     sourceName: sourceName || null,
     importedAt: parsedData ? new Date().toISOString() : null,
-    records: parsedData ? countParsedRecords(parsedData, datasetType) : 0,
+    records: next.datasets[datasetType] ? countParsedRecords(next.datasets[datasetType], datasetType) : 0,
   };
   next.manualOverrides = Array.isArray(next.manualOverrides) ? next.manualOverrides : [];
   next.version = APP_STATE_VERSION;
-  return normalizeState(next);
+  return reconcileWorkingAssignments(reconcileRetainedClassifications(normalizeState(next)));
+}
+
+async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('Google Sheet refresh is unavailable because this browser does not support fetch.');
+  }
+
+  const snapshots = await Promise.all(GOOGLE_SHEET_SOURCES.map(async (source) => {
+    const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv&gid=${source.gid}&cacheBust=${Date.now()}`;
+    const response = await fetchImpl(url, { cache: 'no-store' });
+    if (!response?.ok) {
+      throw new Error(`Google Sheet refresh failed for ${source.name} (HTTP ${response?.status || 'unknown'}).`);
+    }
+
+    const csvText = await response.text();
+    const parsedData = source.datasetType === 'prospects' ? parseProspects(csvText) : parseRoster(csvText);
+    if (source.datasetType === 'prospects') {
+      parsedData.isRightsList = true;
+    }
+    const recordCount = source.datasetType === 'prospects'
+      ? Object.keys(parsedData.prospects || {}).length
+      : Object.keys(parsedData.players || {}).length;
+    if ((source.expectedLayout && parsedData.layout !== source.expectedLayout) || !recordCount) {
+      throw new Error(`Google Sheet refresh returned an unexpected ${source.name} layout.`);
+    }
+    return { source, parsedData };
+  }));
+
+  let next = normalizeState(stateObj);
+  snapshots.forEach(({ source, parsedData }) => {
+    next = mergeDataset(next, source.datasetType, parsedData, source.name);
+  });
+  return next;
+}
+
+function getRosterSourceKey(parsedData, sourceName) {
+  const layout = String(parsedData?.layout || 'flat-table').trim().toLowerCase();
+  if (layout !== 'flat-table') return layout;
+  const normalizedSourceName = normalizeLookupKey(sourceName || 'flat-table').replace(/\s+/g, '-');
+  return `flat-table:${normalizedSourceName || 'default'}`;
+}
+
+function mergeRosterRecord(base, incoming) {
+  const next = { ...(base || {}) };
+  Object.entries(incoming || {}).forEach(([key, value]) => {
+    const hasValue = value !== undefined && value !== null && String(value).trim() !== '';
+    if (hasValue || !(key in next)) {
+      next[key] = value;
+    }
+  });
+  next.retained = Boolean(base?.retained || incoming?.retained);
+  next.drafted = Boolean(base?.drafted || incoming?.drafted);
+  return next;
+}
+
+function findCanonicalRosterKey(name, recordsByKey) {
+  const exactKey = normalizeLookupKey(name);
+  if (!exactKey) return '';
+  if (recordsByKey.has(exactKey)) return exactKey;
+
+  const tokens = exactKey.split(' ').filter(Boolean);
+  if (tokens.length < 2 || tokens[0].length !== 1) return '';
+
+  const firstInitial = tokens[0];
+  const surname = tokens.slice(1).join(' ');
+  const matches = [...recordsByKey.keys()].filter((candidateKey) => {
+    const candidateTokens = candidateKey.split(' ').filter(Boolean);
+    return candidateTokens.length >= 2
+      && candidateTokens[0].startsWith(firstInitial)
+      && candidateTokens.slice(1).join(' ') === surname;
+  });
+  return matches.length === 1 ? matches[0] : '';
+}
+
+function rebuildRosterDataset(sources) {
+  const recordsByKey = new Map();
+  const sourceList = Object.values(sources || {});
+  const baselineSources = sourceList.filter((source) => ['inventory', 'utility'].includes(source?.layout));
+  const authoritativeSources = sourceList.filter((source) => !['inventory', 'utility'].includes(source?.layout));
+
+  const mergeSource = (source, resolveAliases) => {
+    Object.values(source?.players || {}).forEach((record) => {
+      const name = getRecordName(record);
+      if (!name) return;
+      const exactKey = normalizeLookupKey(name);
+      const canonicalKey = resolveAliases ? (findCanonicalRosterKey(name, recordsByKey) || exactKey) : exactKey;
+      const current = recordsByKey.get(canonicalKey);
+      const merged = mergeRosterRecord(current, record);
+      if (current?.name && canonicalKey !== exactKey) {
+        merged.name = current.name;
+      }
+
+      const owners = [...new Set([
+        ...(current?.sourceOwners || []),
+        getRecordOwner(current),
+        getRecordOwner(record),
+      ].filter(Boolean))];
+      merged.sourceOwners = owners;
+      merged.owner = owners.length === 1 ? owners[0] : (getRecordOwner(record) || getRecordOwner(current));
+      merged.ownershipConflict = owners.length > 1 ? owners : [];
+      recordsByKey.set(canonicalKey, merged);
+    });
+  };
+
+  baselineSources.forEach((source) => mergeSource(source, false));
+  authoritativeSources.forEach((source) => mergeSource(source, true));
+
+  const players = {};
+  const teams = {};
+  recordsByKey.forEach((player, key) => {
+    const playerKey = key.replace(/\s+/g, '-') || `player-${Object.keys(players).length + 1}`;
+    players[playerKey] = player;
+    if (player.nhlteam) {
+      if (!teams[player.nhlteam]) teams[player.nhlteam] = [];
+      teams[player.nhlteam].push(playerKey);
+    }
+  });
+
+  return {
+    layout: 'merged',
+    sources,
+    players,
+    teams,
+    goalieFranchises: [],
+    contacts: {},
+  };
+}
+
+function mergeRosterDataset(currentRoster, parsedData, sourceName) {
+  const sources = currentRoster?.sources && typeof currentRoster.sources === 'object'
+    ? { ...currentRoster.sources }
+    : {};
+
+  if (!Object.keys(sources).length && currentRoster?.players) {
+    const legacyLayout = currentRoster.layout && currentRoster.layout !== 'merged' ? currentRoster.layout : 'legacy';
+    sources[legacyLayout] = { ...currentRoster, layout: legacyLayout };
+  }
+
+  const sourceKey = getRosterSourceKey(parsedData, sourceName);
+  sources[sourceKey] = {
+    ...parsedData,
+    layout: parsedData?.layout || 'flat-table',
+    sourceName: sourceName || null,
+  };
+  return rebuildRosterDataset(sources);
+}
+
+function getImportedClassification(record, sourceType) {
+  const explicit = getRecordType(record);
+  if (explicit) return explicit;
+  if (sourceType === 'prospect') return isTruthyRecordValue(record?.farm) ? 'Farm' : 'Rookie';
+  if (sourceType === 'veteran') return 'Veteran';
+  return '';
+}
+
+function reconcileRetainedClassifications(stateObj) {
+  const next = normalizeState(stateObj);
+  const rosterPlayers = Object.values(next.datasets.roster?.players || {});
+  if (!rosterPlayers.length) return next;
+
+  const rosterByKey = new Map();
+  rosterPlayers.forEach((record) => {
+    const key = normalizeLookupKey(getRecordName(record));
+    if (key) rosterByKey.set(key, record);
+  });
+
+  const classificationsByRosterKey = new Map();
+  const addClassification = (record, sourceType) => {
+    const name = getRecordName(record);
+    if (!name) return;
+    const rosterKey = findCanonicalRosterKey(name, rosterByKey);
+    if (!rosterKey) return;
+    const classification = getImportedClassification(record, sourceType);
+    if (!classification) return;
+    if (!classificationsByRosterKey.has(rosterKey)) classificationsByRosterKey.set(rosterKey, new Set());
+    classificationsByRosterKey.get(rosterKey).add(classification);
+  };
+
+  Object.values(next.datasets.prospects?.prospects || {}).forEach((record) => addClassification(record, 'prospect'));
+  Object.values(next.datasets.veterans?.veterans || {}).forEach((record) => addClassification(record, 'veteran'));
+
+  Object.values(next.datasets.roster?.players || {}).forEach((record) => {
+    if (!isTruthyRecordValue(record.retained)) return;
+    const key = normalizeLookupKey(getRecordName(record));
+    const imported = [...(classificationsByRosterKey.get(key) || [])];
+    const explicit = normalizeClassification(record.classification);
+    const confirmedOverride = RETAINED_CLASSIFICATION_OVERRIDES[key] || '';
+    const classifications = [...new Set([confirmedOverride, explicit, ...imported].filter(Boolean))];
+
+    record.classificationConflict = confirmedOverride ? [] : classifications.length > 1 ? classifications : [];
+    if (confirmedOverride) {
+      record.classification = confirmedOverride;
+    } else if (explicit) {
+      record.classification = explicit;
+    } else if (classifications.includes('Farm')) {
+      record.classification = 'Farm';
+    } else if (classifications.length === 1) {
+      record.classification = classifications[0];
+    } else {
+      record.classification = '';
+    }
+  });
+
+  return next;
+}
+
+function recordBlocksAvailability(record) {
+  return Boolean(
+    getRecordOwner(record)
+    || isTruthyRecordValue(pickRecordValue(record, ['retained', 'retention', 'kept']))
+    || isTruthyRecordValue(pickRecordValue(record, ['drafted', 'draftstatus', 'draft_status']))
+  );
+}
+
+function reconcileWorkingAssignments(stateObj) {
+  const next = normalizeState(stateObj);
+  const blockedNames = new Set();
+  const blockingRecords = [
+    ...Object.values(next.datasets.roster?.players || {}),
+    ...Object.values(next.datasets.veterans?.veterans || {}),
+    ...(next.datasets.prospects?.isRightsList ? [] : Object.values(next.datasets.prospects?.prospects || {})),
+  ];
+  blockingRecords.forEach((record) => {
+    if (!recordBlocksAvailability(record)) return;
+    const key = normalizeLookupKey(getRecordName(record));
+    if (key) blockedNames.add(key);
+  });
+
+  next.workingAssignments = Object.fromEntries(
+    Object.entries(next.workingAssignments || {}).filter(([key, assignment]) => {
+      const normalizedName = normalizeLookupKey(assignment?.name || key);
+      return normalizedName && !blockedNames.has(normalizedName);
+    })
+  );
+  return next;
 }
 
 function normalizeState(stateObj) {
@@ -534,7 +798,10 @@ function getPlayerRetainedCost(player) {
 }
 
 function buildOwnerDraftPlan(ownerEntry) {
-  const rawPlayers = [...(ownerEntry?.prospects || []), ...(ownerEntry?.veterans || []), ...(ownerEntry?.rosterPlayers || [])];
+  const rosterPlayers = ownerEntry?.rosterPlayers || [];
+  const rawPlayers = rosterPlayers.length
+    ? rosterPlayers
+    : [...(ownerEntry?.prospects || []), ...(ownerEntry?.veterans || [])];
   const dedupedPlayers = [];
   const seen = new Set();
   rawPlayers.forEach((player) => {
@@ -561,11 +828,11 @@ function buildOwnerDraftPlan(ownerEntry) {
 
   const retainedSpend = players.reduce((sum, player) => sum + getPlayerRetainedCost(player), 0);
   const remainingBudget = Number((DRAFT_ROSTER_RULES.budgetCap - retainedSpend).toFixed(2));
-  const skatersNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetSkaters - slotCounts.skaters);
-  const goalieTeamsNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetGoalieTeams - slotCounts.goalieTeams);
-  const slotsNeeded = skatersNeeded + goalieTeamsNeeded;
-  const minimumRequired = Number((slotsNeeded * DRAFT_ROSTER_RULES.minSlotCost).toFixed(2));
-  const budgetShortfall = Number(Math.max(0, minimumRequired - remainingBudget).toFixed(2));
+  const filledSlots = slotCounts.skaters + slotCounts.goalieTeams;
+  const slotsNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetRosterSlots - filledSlots);
+  const averageCostPerSlotRemaining = slotsNeeded > 0
+    ? Number((remainingBudget / slotsNeeded).toFixed(2))
+    : 0;
 
   return {
     owner: ownerEntry?.name || 'Unknown',
@@ -574,14 +841,42 @@ function buildOwnerDraftPlan(ownerEntry) {
     skaters: slotCounts.skaters,
     goalieTeams: slotCounts.goalieTeams,
     unclassified: slotCounts.unclassified,
-    skatersNeeded,
-    goalieTeamsNeeded,
+    filledSlots,
     slotsNeeded,
-    minimumRequired,
-    budgetShortfall,
-    hasOverfilledSkaters: slotCounts.skaters > DRAFT_ROSTER_RULES.targetSkaters,
-    hasOverfilledGoalieTeams: slotCounts.goalieTeams > DRAFT_ROSTER_RULES.targetGoalieTeams,
+    averageCostPerSlotRemaining,
+    hasOverfilledRoster: filledSlots > DRAFT_ROSTER_RULES.targetRosterSlots,
   };
+}
+
+function getLeagueTeamNames(stateObj) {
+  const owners = new Set();
+  const normalized = normalizeState(stateObj);
+  const addOwner = (owner) => {
+    const value = String(owner || '').trim();
+    if (value) owners.add(value);
+  };
+  Object.keys(normalized.datasets.prospects?.owners || {}).forEach(addOwner);
+  Object.keys(normalized.datasets.veterans?.owners || {}).forEach(addOwner);
+  Object.values(normalized.datasets.roster?.players || {}).forEach((player) => addOwner(getRecordOwner(player)));
+  return [...owners].sort((a, b) => a.localeCompare(b));
+}
+
+function resolveLeagueTeamName(value, teamNames) {
+  const input = normalizeLookupKey(value);
+  if (!input) return { error: 'Team is required.' };
+
+  const exact = teamNames.find((team) => normalizeLookupKey(team) === input);
+  if (exact) return { team: exact };
+
+  const matches = teamNames.filter((team) => {
+    const normalizedTeam = normalizeLookupKey(team);
+    const acronym = normalizedTeam.split(' ').map((word) => word[0]).join('');
+    return normalizedTeam.startsWith(input) || acronym.startsWith(input);
+  });
+
+  if (matches.length === 1) return { team: matches[0] };
+  if (!matches.length) return { error: `No league team matches "${value}".` };
+  return { error: `"${value}" matches multiple league teams. Type more characters.` };
 }
 
 function getRecordType(record) {
@@ -593,6 +888,20 @@ function getRecordType(record) {
   return '';
 }
 
+function getPlayerEvaluation(record) {
+  const points = Number(pickRecordValue(record, ['points', 'pts'])) || 0;
+  const adp = Number(pickRecordValue(record, ['adp', 'averageDraftPosition', 'average_draft_position'])) || 0;
+  const cost = Number(pickRecordValue(record, ['currentCost', 'currentcost', 'cost'])) || 0;
+  const score = points * 100 + (adp > 0 ? Math.max(0, 1000 - adp) : 0) + cost;
+  return {
+    points,
+    adp: adp || null,
+    cost,
+    score,
+    evaluated: points > 0 || adp > 0 || cost > 0,
+  };
+}
+
 function getAvailableStatus(record) {
   const owner = getRecordOwner(record);
   const draftedField = pickRecordValue(record, ['drafted', 'draftstatus', 'draft_status']);
@@ -602,20 +911,9 @@ function getAvailableStatus(record) {
   const retained = isTruthyRecordValue(retainedField);
   const explicitlyAvailable = isTruthyRecordValue(availableField) || isFalsyRecordValue(draftedField);
 
-  if (owner && explicitlyAvailable) {
-    return { status: 'conflict', label: 'Assigned but marked available' };
-  }
-
-  if (!owner && (retained || drafted)) {
-    return { status: 'conflict', label: retained ? 'Retained but unowned' : 'Drafted but unowned' };
-  }
-
-  if (owner || retained || drafted) {
-    return {
-      status: retained ? 'retained' : drafted ? 'drafted' : 'owned',
-      label: retained ? 'Retained' : drafted ? 'Drafted' : 'Owned',
-    };
-  }
+  if (owner) return { status: 'owned', label: 'Owned' };
+  if (retained) return { status: 'retained', label: 'Retained' };
+  if (drafted) return { status: 'drafted', label: 'Drafted' };
 
   if (explicitlyAvailable || !owner) {
     return { status: 'available', label: 'Available' };
@@ -749,7 +1047,7 @@ function removeWorkingAssignment(stateObj, playerKey) {
 }
 
 function buildDraftValidationReport(stateObj) {
-  const nextState = normalizeState(stateObj);
+  const nextState = reconcileRetainedClassifications(stateObj);
   const ownerData = buildOwnerViewData(nextState);
   const rosterPlayers = Object.values(nextState.datasets.roster?.players || {});
   const prospects = Object.values(nextState.datasets.prospects?.prospects || {});
@@ -776,10 +1074,14 @@ function buildDraftValidationReport(stateObj) {
     if (!occurrencesByKey.has(key)) {
       occurrencesByKey.set(key, []);
     }
+    const owner = sourceType === 'prospect' && nextState.datasets.prospects?.isRightsList
+      ? ''
+      : getRecordOwner(record);
     occurrencesByKey.get(key).push({
       sourceType,
       name,
-      owner: getRecordOwner(record),
+      owner,
+      rightsOwner: sourceType === 'prospect' && nextState.datasets.prospects?.isRightsList ? getRecordOwner(record) : '',
       record,
     });
   };
@@ -793,14 +1095,24 @@ function buildDraftValidationReport(stateObj) {
   const ownershipMismatches = [];
   const missingClassificationIssues = [];
   const retentionIssues = [];
+  const retainedClassificationIssues = [];
   const availableIntegrityIssues = [];
   const availablePlayers = [];
 
   occurrencesByKey.forEach((entries, key) => {
     const owners = [...new Set(entries.map((entry) => entry.owner).filter(Boolean))];
-    if (owners.length > 1) {
-      duplicateOwnershipIssues.push(`${entries[0].name}: ${owners.join(' / ')}`);
-    }
+    const duplicateOwnerGroups = ['roster', 'prospect', 'veteran']
+      .map((sourceType) => [...new Set(entries.filter((entry) => entry.sourceType === sourceType).map((entry) => entry.owner).filter(Boolean))])
+      .filter((sourceOwners) => sourceOwners.length > 1);
+    duplicateOwnerGroups.forEach((sourceOwners) => {
+      duplicateOwnershipIssues.push(`${entries[0].name}: ${sourceOwners.join(' / ')}`);
+    });
+    entries.forEach((entry) => {
+      const sourceOwners = Array.isArray(entry.record?.ownershipConflict) ? entry.record.ownershipConflict.filter(Boolean) : [];
+      if (sourceOwners.length > 1) {
+        duplicateOwnershipIssues.push(`${entry.name}: ${sourceOwners.join(' / ')}`);
+      }
+    });
 
     const rosterEntry = entries.find((entry) => entry.sourceType === 'roster')?.record || rosterByKey.get(key) || null;
     const rosterOwner = getRecordOwner(rosterEntry);
@@ -829,8 +1141,15 @@ function buildDraftValidationReport(stateObj) {
 
     if (rosterEntry) {
       const availableState = rosterAvailableState || getAvailableStatus(rosterEntry);
-      if (availableState.status === 'conflict') {
-        availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: ${availableState.label}`);
+      const explicitlyAvailable = isTruthyRecordValue(pickRecordValue(rosterEntry, ['available', 'isavailable', 'undrafted']));
+      const retained = isTruthyRecordValue(pickRecordValue(rosterEntry, ['retained', 'retention', 'kept']));
+      const drafted = isTruthyRecordValue(pickRecordValue(rosterEntry, ['drafted', 'draftstatus', 'draft_status']));
+      if (rosterOwner && explicitlyAvailable) {
+        availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: owned in sheet but flagged available in roster`);
+      } else if (!rosterOwner && retained) {
+        availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: retained but missing owner`);
+      } else if (!rosterOwner && drafted) {
+        availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: drafted but missing owner`);
       }
       if (availableState.status === 'available' && owners.length) {
         availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: owned in sheet but flagged available in roster`);
@@ -838,8 +1157,21 @@ function buildDraftValidationReport(stateObj) {
       if (owners.length && rosterOwner && !owners.includes(rosterOwner)) {
         ownershipMismatches.push(`${getRecordName(rosterEntry) || key}: roster=${rosterOwner}, sheet=${owners.join(' / ')}`);
       }
+      if (isTruthyRecordValue(rosterEntry.retained)) {
+        const classification = getRecordType(rosterEntry);
+        const conflicts = Array.isArray(rosterEntry.classificationConflict) ? rosterEntry.classificationConflict.filter(Boolean) : [];
+        if (conflicts.length > 1) {
+          retainedClassificationIssues.push(`${getRecordName(rosterEntry) || key}: ${conflicts.join(' / ')}`);
+        } else if (!classification) {
+          retainedClassificationIssues.push(`${getRecordName(rosterEntry) || key}: missing Veteran, Rookie, or Farm classification`);
+        }
+      }
       if (availableState.status === 'available' && owners.length === 0 && !assignedByPlayerKey.has(key)) {
-        const recordType = getRecordType(rosterEntry) || 'Unknown';
+        const prospectEntry = entries.find((entry) => entry.sourceType === 'prospect')?.record || null;
+        const veteranEntry = entries.find((entry) => entry.sourceType === 'veteran')?.record || null;
+        const evaluationRecord = prospectEntry || veteranEntry || rosterEntry;
+        const evaluation = getPlayerEvaluation(evaluationRecord);
+        const recordType = getRecordType(evaluationRecord) || getRecordType(rosterEntry) || 'Unknown';
         availablePlayers.push({
           key,
           name: getRecordName(rosterEntry) || key,
@@ -848,6 +1180,9 @@ function buildDraftValidationReport(stateObj) {
           owner: rosterOwner || '—',
           status: 'Available',
           manualOverride: false,
+          matchingRights: prospectEntry ? Boolean(prospectEntry.matchingRights) : null,
+          rightsOwner: prospectEntry ? getRecordOwner(prospectEntry) : '',
+          evaluation,
         });
       }
     }
@@ -923,11 +1258,13 @@ function buildDraftValidationReport(stateObj) {
     {
       key: 'retention-integrity',
       label: 'Retention Integrity',
-      status: retentionIssues.length ? 'warning' : 'valid',
-      message: retentionIssues.length
-        ? `${retentionIssues.length} veteran record${retentionIssues.length === 1 ? '' : 's'} need retention data`
-        : 'Retention data is present',
-      count: retentionIssues.length,
+      status: retainedClassificationIssues.some((issue) => issue.includes(' / ')) ? 'error' : (retentionIssues.length || retainedClassificationIssues.length) ? 'warning' : 'valid',
+      message: retainedClassificationIssues.length
+        ? `${retainedClassificationIssues.length} retained player${retainedClassificationIssues.length === 1 ? '' : 's'} need classification resolution`
+        : retentionIssues.length
+          ? `${retentionIssues.length} veteran record${retentionIssues.length === 1 ? '' : 's'} need retention data`
+          : 'Retained players resolve to Veteran, Rookie, or Farm',
+      count: retentionIssues.length + retainedClassificationIssues.length,
     },
     {
       key: 'available-player-integrity',
@@ -940,18 +1277,18 @@ function buildDraftValidationReport(stateObj) {
     },
     {
       key: 'draft-roster-rules',
-      label: 'Draft Roster Rules (23 skaters + 2 goalie teams)',
-      status: ownerDraftPlans.some((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0)
+      label: 'Draft Roster Rules (25 flexible slots)',
+      status: ownerDraftPlans.some((plan) => plan.hasOverfilledRoster || plan.remainingBudget < 0)
         ? 'error'
         : ownerDraftPlans.some((plan) => plan.unclassified > 0)
           ? 'warning'
           : 'valid',
-      message: ownerDraftPlans.some((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0)
-        ? `${ownerDraftPlans.filter((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0).length} team${ownerDraftPlans.filter((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0).length === 1 ? '' : 's'} cannot satisfy roster or budget floor at $${DRAFT_ROSTER_RULES.minSlotCost.toFixed(2)} per open slot`
+      message: ownerDraftPlans.some((plan) => plan.hasOverfilledRoster || plan.remainingBudget < 0)
+        ? `${ownerDraftPlans.filter((plan) => plan.hasOverfilledRoster || plan.remainingBudget < 0).length} team${ownerDraftPlans.filter((plan) => plan.hasOverfilledRoster || plan.remainingBudget < 0).length === 1 ? '' : 's'} exceed the 25-slot roster or $${DRAFT_ROSTER_RULES.budgetCap.toFixed(2)} budget`
         : ownerDraftPlans.some((plan) => plan.unclassified > 0)
           ? `${ownerDraftPlans.filter((plan) => plan.unclassified > 0).length} team${ownerDraftPlans.filter((plan) => plan.unclassified > 0).length === 1 ? '' : 's'} contain unclassified roster positions`
-          : 'All teams can still complete 23 skaters + 2 goalie teams with the $0.50 minimum slot cost',
-      count: ownerDraftPlans.filter((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0).length,
+          : 'All teams are within the flexible 25-slot roster and budget limits',
+      count: ownerDraftPlans.filter((plan) => plan.hasOverfilledRoster || plan.remainingBudget < 0).length,
     },
   ];
 
@@ -964,7 +1301,7 @@ function buildDraftValidationReport(stateObj) {
     validationHealth: hasErrors ? 'error' : hasWarnings ? 'warning' : 'valid',
     retentionListLoaded: veterans.length > 0,
     counts: {
-      ownershipCount: prospects.filter((player) => getRecordOwner(player)).length + veterans.filter((player) => getRecordOwner(player)).length,
+      ownershipCount: [...occurrencesByKey.values()].filter((entries) => entries.some((entry) => entry.owner)).length,
       rosterCount: rosterPlayers.length,
       availableCount: availablePlayers.filter((player) => !player.manualOverride).length,
       manualOverrideCount: manualOverrides.length,
@@ -972,6 +1309,10 @@ function buildDraftValidationReport(stateObj) {
       missingOwnershipCount: missingOwnershipIssues.length,
       missingClassificationCount: missingClassificationIssues.length,
       retentionIssuesCount: retentionIssues.length,
+      retainedVeteranCount: rosterPlayers.filter((player) => isTruthyRecordValue(player.retained) && getRecordType(player) === 'Veteran').length,
+      retainedRookieCount: rosterPlayers.filter((player) => isTruthyRecordValue(player.retained) && getRecordType(player) === 'Rookie').length,
+      retainedFarmCount: rosterPlayers.filter((player) => isTruthyRecordValue(player.retained) && getRecordType(player) === 'Farm').length,
+      retainedUnclassifiedCount: rosterPlayers.filter((player) => isTruthyRecordValue(player.retained) && !getRecordType(player)).length,
       availableIntegrityCount: availableIntegrityIssues.length,
       ownerDraftPlanCount: ownerDraftPlans.length,
       workingAssignedCount: assignedPlayers.length,
@@ -982,6 +1323,7 @@ function buildDraftValidationReport(stateObj) {
       ownershipMismatches,
       missingClassificationIssues,
       retentionIssues,
+      retainedClassificationIssues,
       availableIntegrityIssues,
     },
     availablePlayers,
@@ -1146,8 +1488,8 @@ function computeOwnerAggregates(stateObj) {
 
 function renderLeagueIntelligence(aggregates) {
   const g = aggregates.global;
-  const mep = g.mostExpensiveProspect ? `${escapeHtml(g.mostExpensiveProspect.name)} (${g.mostExpensiveProspect.owner}) $${formatValue(g.mostExpensiveProspect.cost)}` : '—';
-  const mev = g.mostExpensiveVeteran ? `${escapeHtml(g.mostExpensiveVeteran.name)} (${g.mostExpensiveVeteran.owner}) $${formatValue(g.mostExpensiveVeteran.cost)}` : '—';
+  const mep = g.mostExpensiveProspect ? `${escapeHtml(g.mostExpensiveProspect.name)} (${g.mostExpensiveProspect.owner}) $${formatCurrency(g.mostExpensiveProspect.cost)}` : '—';
+  const mev = g.mostExpensiveVeteran ? `${escapeHtml(g.mostExpensiveVeteran.name)} (${g.mostExpensiveVeteran.owner}) $${formatCurrency(g.mostExpensiveVeteran.cost)}` : '—';
 
   return `
     <section class="panel league-intel">
@@ -1199,8 +1541,8 @@ function renderValidationStatusText(status) {
 function renderDraftValidationCenter(report) {
   const ownerPlanRows = (report.ownerDraftPlans || []).map((plan) => {
     let status = 'Ready';
-    if (plan.budgetShortfall > 0 || plan.remainingBudget < 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams) {
-      status = 'Shortfall';
+    if (plan.remainingBudget < 0 || plan.hasOverfilledRoster) {
+      status = 'Over Limit';
     } else if (plan.unclassified > 0) {
       status = 'Needs Position Cleanup';
     }
@@ -1208,13 +1550,12 @@ function renderDraftValidationCenter(report) {
     return `
       <tr>
         <td>${escapeHtml(plan.owner)}</td>
-        <td>$${formatValue(plan.retainedSpend)}</td>
-        <td>$${formatValue(plan.remainingBudget)}</td>
-        <td>${plan.skaters}/${report.draftRosterRules?.targetSkaters ?? DRAFT_ROSTER_RULES.targetSkaters}</td>
-        <td>${plan.goalieTeams}/${report.draftRosterRules?.targetGoalieTeams ?? DRAFT_ROSTER_RULES.targetGoalieTeams}</td>
+        <td>$${formatCurrency(plan.retainedSpend)}</td>
+        <td>$${formatCurrency(plan.remainingBudget)}</td>
+        <td>${plan.skaters}</td>
+        <td>${plan.goalieTeams}</td>
         <td>${plan.slotsNeeded}</td>
-        <td>$${formatValue(plan.minimumRequired)}</td>
-        <td>${plan.budgetShortfall > 0 ? `$${formatValue(plan.budgetShortfall)}` : '—'}</td>
+        <td>$${formatCurrency(plan.averageCostPerSlotRemaining)}</td>
         <td>${escapeHtml(status)}</td>
       </tr>
     `;
@@ -1242,7 +1583,7 @@ function renderDraftValidationCenter(report) {
           <span class="meta-pill">${escapeHtml(report.snapshot.label)}</span>
           <span class="meta-pill">${report.retentionListLoaded ? 'Retention list loaded' : 'Retention list missing'}</span>
           <span class="meta-pill">Overrides ${report.counts.manualOverrideCount}</span>
-          <span class="meta-pill">Roster rule: ${report.draftRosterRules?.targetSkaters ?? DRAFT_ROSTER_RULES.targetSkaters}+${report.draftRosterRules?.targetGoalieTeams ?? DRAFT_ROSTER_RULES.targetGoalieTeams}</span>
+          <span class="meta-pill">Roster rule: ${report.draftRosterRules?.targetRosterSlots ?? DRAFT_ROSTER_RULES.targetRosterSlots} flexible slots</span>
         </div>
       </div>
       <div class="validation-summary">
@@ -1251,6 +1592,9 @@ function renderDraftValidationCenter(report) {
         <div class="meta-pill">Available ${report.counts.availableCount}</div>
         <div class="meta-pill">Working State ${report.counts.workingAssignedCount}</div>
         <div class="meta-pill">Owned ${report.counts.ownershipCount}</div>
+        <div class="meta-pill">Retained Veterans ${report.counts.retainedVeteranCount}</div>
+        <div class="meta-pill">Retained Rookies ${report.counts.retainedRookieCount}</div>
+        <div class="meta-pill">Retained Farm ${report.counts.retainedFarmCount}</div>
         <div class="meta-pill">Min slot cost $${(report.draftRosterRules?.minSlotCost ?? DRAFT_ROSTER_RULES.minSlotCost).toFixed(2)}</div>
         <div class="meta-pill">${report.retentionListLoaded ? 'Retention list ready' : 'Retention list not loaded'}</div>
       </div>
@@ -1265,13 +1609,12 @@ function renderDraftValidationCenter(report) {
               <th>Skaters</th>
               <th>Goalie Teams</th>
               <th>Open Slots</th>
-              <th>Min Needed</th>
-              <th>Shortfall</th>
+              <th>ACPSR</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            ${ownerPlanRows || '<tr><td colspan="9" class="empty-state">No owner roster data available.</td></tr>'}
+            ${ownerPlanRows || '<tr><td colspan="8" class="empty-state">No owner roster data available.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1281,7 +1624,8 @@ function renderDraftValidationCenter(report) {
 
 function renderBestAvailablePanel(report) {
   const players = (report.availablePlayers || [])
-    .filter((player) => !player.manualOverride)
+    .filter((player) => !player.manualOverride && player.evaluation?.evaluated)
+    .sort((a, b) => b.evaluation.score - a.evaluation.score || a.name.localeCompare(b.name))
     .slice(0, 12);
 
   const cards = players.length
@@ -1291,6 +1635,10 @@ function renderBestAvailablePanel(report) {
           <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
             <span class="meta-pill">${escapeHtml(player.position || '—')}</span>
             <span class="meta-pill">${escapeHtml(player.type || 'Unknown')}</span>
+            ${player.evaluation?.cost > 0 ? `<span class="meta-pill">Eval $${formatCurrency(player.evaluation.cost)}</span>` : ''}
+            ${player.evaluation?.points > 0 ? `<span class="meta-pill">${player.evaluation.points} PTS</span>` : ''}
+            ${player.evaluation?.adp ? `<span class="meta-pill">ADP ${formatValue(player.evaluation.adp)}</span>` : ''}
+            ${player.matchingRights !== null ? `<span class="meta-pill">MR ${player.matchingRights ? 'Y' : 'N'}${player.rightsOwner ? ` · ${escapeHtml(player.rightsOwner)}` : ''}</span>` : ''}
           </div>
           <div class="workspace-inline-actions">
             <button type="button" class="secondary draft-assign-open-btn" data-assign-player-key="${escapeHtml(player.key)}" data-assign-name="${escapeHtml(player.name)}" data-assign-position="${escapeHtml(player.position || '—')}" data-assign-type="${escapeHtml(player.type || 'Rookie')}">Assign</button>
@@ -1304,7 +1652,7 @@ function renderBestAvailablePanel(report) {
       <div class="preview-header">
         <div>
           <h3>Best Available</h3>
-          <div class="panel-subtitle">Players still unassigned in Working State.</div>
+          <div class="panel-subtitle">Available players ranked by imported points, ADP, and cost evaluation.</div>
         </div>
         <div class="preview-meta">
           <span class="meta-pill">Unassigned ${players.length}</span>
@@ -1329,7 +1677,7 @@ function renderDraftWorkspacePanel(report) {
                   <div>
                     <div class="player-name">${escapeHtml(entry.name)}</div>
                     <div class="player-meta">
-                      <span class="player-chip">$${formatValue(entry.bid)}</span>
+                      <span class="player-chip">$${formatCurrency(entry.bid)}</span>
                       <span class="player-chip">${escapeHtml(entry.classification)}</span>
                       <span class="player-chip">${escapeHtml(entry.status)}</span>
                     </div>
@@ -1379,12 +1727,18 @@ function saveWorkingAssignmentFromButton(unifiedState, button) {
   const bidInput = getByDataValue('data-workspace-bid-key', playerKey);
   const classificationInput = getByDataValue('data-workspace-classification-key', playerKey);
   const statusInput = getByDataValue('data-workspace-status-key', playerKey);
+  const teamResolution = resolveLeagueTeamName(teamInput?.value || '', getLeagueTeamNames(unifiedState));
+  if (teamResolution.error) {
+    alert(teamResolution.error);
+    teamInput?.focus();
+    return;
+  }
 
   const result = upsertWorkingAssignment(unifiedState, {
     playerKey,
     name: playerName,
     position: playerPosition,
-    team: teamInput?.value || '',
+    team: teamResolution.team,
     bid: bidInput?.value || '',
     classification: classificationInput?.value || playerType,
     fallbackClassification: playerType,
@@ -1409,6 +1763,8 @@ function renderAvailablePlayerCenter(report) {
 
   const officialPlayers = players.filter((player) => !player.manualOverride);
   const manualPlayers = players.filter((player) => player.manualOverride);
+  const teamNames = (report.ownerDraftPlans || []).map((plan) => plan.owner).sort((a, b) => a.localeCompare(b));
+  const teamOptions = teamNames.map((team) => `<option value="${escapeHtml(team)}"></option>`).join('');
 
   const renderRows = (rows) => rows.length
     ? rows.map((player) => `
@@ -1421,8 +1777,8 @@ function renderAvailablePlayerCenter(report) {
           <td>${escapeHtml(player.type)}</td>
           <td>${escapeHtml(player.status)}</td>
           <td>${escapeHtml(player.owner || '—')}</td>
-          <td><input type="text" class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" placeholder="Team" value="${escapeHtml(assignmentMap[player.key]?.team || '')}" /></td>
-          <td><input type="number" class="workspace-bid-input" data-workspace-bid-key="${escapeHtml(player.key)}" min="${DRAFT_ROSTER_RULES.minSlotCost}" step="0.5" placeholder="0.50" value="${escapeHtml(String(assignmentMap[player.key]?.bid ?? ''))}" /></td>
+          <td><input type="text" class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" list="leagueTeamOptions" autocomplete="off" placeholder="Team (e.g. FI)" value="${escapeHtml(assignmentMap[player.key]?.team || '')}" /></td>
+          <td><input type="number" class="workspace-bid-input" data-workspace-bid-key="${escapeHtml(player.key)}" min="${DRAFT_ROSTER_RULES.minSlotCost.toFixed(2)}" step="0.01" placeholder="0.50" value="${assignmentMap[player.key]?.bid === undefined ? '' : escapeHtml(formatCurrency(assignmentMap[player.key].bid))}" /></td>
           <td>
             <select class="workspace-classification-select" data-workspace-classification-key="${escapeHtml(player.key)}">
               ${['Rookie', 'Veteran', 'Farm'].map((option) => `<option value="${option}" ${normalizeWorkingClassification(assignmentMap[player.key]?.classification || player.type, player.type) === option ? 'selected' : ''}>${option}</option>`).join('')}
@@ -1458,6 +1814,7 @@ function renderAvailablePlayerCenter(report) {
       <div style="margin:12px 0;">
         <input id="availablePlayerSearchInput" placeholder="Search available players..." value="${escapeHtml(state.availablePlayerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
       </div>
+      <datalist id="leagueTeamOptions">${teamOptions}</datalist>
       <div class="table-wrap">
         <table class="validation-table">
           <thead>
@@ -1580,6 +1937,12 @@ function formatValue(value) {
   return String(value);
 }
 
+function formatCurrency(value) {
+  if (value === null || value === undefined || value === '') return '—';
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(2) : String(value);
+}
+
 function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -1607,23 +1970,29 @@ function renderPlayerBadges(player) {
   if (player.sourceType === 'prospect') {
     badges.push('Prospect');
     if (player.poolPosition) badges.push(`Pool ${player.poolPosition}`);
-    if (player.cost !== undefined && player.cost !== null) badges.push(`$${formatValue(player.cost)}`);
+    if (player.cost !== undefined && player.cost !== null) badges.push(`$${formatCurrency(player.cost)}`);
     if (player.termRemaining !== undefined && player.termRemaining !== null) badges.push(`${player.termRemaining}Y`);
     if (player.farm) badges.push('Farm');
     if (player.matchingRights) badges.push('Rights');
   } else if (player.sourceType === 'veteran') {
     badges.push('Veteran');
     if (player.poolPosition) badges.push(`Pool ${player.poolPosition}`);
-    if (player.currentCost !== undefined && player.currentCost !== null) badges.push(`$${formatValue(player.currentCost)}`);
+    if (player.currentCost !== undefined && player.currentCost !== null) badges.push(`$${formatCurrency(player.currentCost)}`);
     if (player.retentionYear) badges.push(`Ret ${player.retentionYear}`);
   } else if (player.sourceType) {
     badges.push(player.sourceType);
+  }
+  if (player.sourceType === 'roster') {
+    const classification = getRecordType(player);
+    if (classification) badges.push(classification);
+    if (isTruthyRecordValue(player.retained)) badges.push('Retained');
+    if (player.cost !== undefined && player.cost !== null && player.cost !== '') badges.push(`$${formatCurrency(player.cost)}`);
   }
 
   return badges.map((badge) => `<span class="player-chip">${escapeHtml(badge)}</span>`).join('');
 }
 
-function renderPlayerList(players, filter) {
+function renderPlayerList(players, filter, options = {}) {
   const search = (filter || '').trim().toLowerCase();
   const filtered = search
     ? (players || []).filter((p) => (p.name || '').toLowerCase().includes(search))
@@ -1641,7 +2010,7 @@ function renderPlayerList(players, filter) {
           <li>
             <button class="player-item ${isActive ? 'active' : ''}" data-player-key="${player.playerKey}">
               <div>
-                <div class="player-name">${escapeHtml(player.name || 'Unnamed Player')}</div>
+                <div class="player-name">${escapeHtml(player.name || 'Unnamed Player')}${options.showMatchingRights ? ` (${player.matchingRights ? 'Y' : 'N'})` : ''}</div>
                 <div class="player-meta">${renderPlayerBadges(player)}</div>
               </div>
               <div class="player-chevron">›</div>
@@ -1691,15 +2060,15 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
 
   const historicalRows = [];
   if (player.sourceType === 'prospect') {
-    historicalRows.push(['Cost', `$${formatValue(player.cost)}`]);
+    historicalRows.push(['Cost', `$${formatCurrency(player.cost)}`]);
     historicalRows.push(['Term Remaining', player.termRemaining ?? '—']);
     historicalRows.push(['Farm', player.farm ? 'Yes' : 'No']);
     historicalRows.push(['Matching Rights', player.matchingRights ? 'Yes' : 'No']);
     historicalRows.push(['Draft Year', player.draftYear ?? '—']);
   } else if (player.sourceType === 'veteran') {
-    historicalRows.push(['Current Cost', `$${formatValue(player.currentCost)}`]);
+    historicalRows.push(['Current Cost', `$${formatCurrency(player.currentCost)}`]);
     historicalRows.push(['Retention Year', player.retentionYear ?? '—']);
-    historicalRows.push(['Latest Retention', player.retentionHistory?.length ? `$${formatValue(player.retentionHistory[player.retentionHistory.length - 1]?.cost)}` : '—']);
+    historicalRows.push(['Latest Retention', player.retentionHistory?.length ? `$${formatCurrency(player.retentionHistory[player.retentionHistory.length - 1]?.cost)}` : '—']);
   }
   historicalRows.push(['Career GP', liveProfile?.historical?.gamesPlayed ?? '—']);
   historicalRows.push(['Career G', liveProfile?.historical?.goals ?? '—']);
@@ -1862,6 +2231,7 @@ function renderOwnerList(ownerData, report) {
         <div class="owner-badges">
           <span class="owner-badge">Pros ${owner.prospects.length}</span>
           <span class="owner-badge">Vet ${owner.veterans.length}</span>
+          <span class="owner-badge">Roster ${owner.rosterPlayers.length}</span>
           <span class="owner-badge">Farm ${owner.farmPlayers.length}</span>
           <span class="owner-badge">MR ${owner.matchingRights.length}</span>
           <span class="owner-badge">WS ${localAssignedCount}</span>
@@ -1902,9 +2272,9 @@ function renderOwnerDetails(ownerData, report) {
   }
 
   const stats = computeOwnerStatistics(selectedOwner);
-  const totalCostFmt = formatValue(stats.totalProspectCost);
-  const avgCostFmt = stats.prospectCount ? formatValue(stats.averageProspectCost) : '—';
-  const highest = stats.highestCostProspect ? `${stats.highestCostProspect.name} ($${stats.highestCostProspect.cost})` : '—';
+  const totalCostFmt = formatCurrency(stats.totalProspectCost);
+  const avgCostFmt = stats.prospectCount ? formatCurrency(stats.averageProspectCost) : '—';
+  const highest = stats.highestCostProspect ? `${stats.highestCostProspect.name} ($${formatCurrency(stats.highestCostProspect.cost)})` : '—';
   const rosterIndex = buildRosterIndex(state.importedData || ownerData._rawState || {});
   const ownerPlayers = [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || []), ...(selectedOwner.rosterPlayers || [])];
 
@@ -1942,7 +2312,7 @@ function renderOwnerDetails(ownerData, report) {
                 <div>
                   <div class="player-name">${escapeHtml(entry.name)}</div>
                   <div class="player-meta">
-                    <span class="player-chip">$${formatValue(entry.bid)}</span>
+                    <span class="player-chip">$${formatCurrency(entry.bid)}</span>
                     <span class="player-chip">${escapeHtml(entry.classification)}</span>
                     <span class="player-chip">${escapeHtml(entry.status)}</span>
                   </div>
@@ -1969,12 +2339,28 @@ function renderOwnerDetails(ownerData, report) {
         ${renderPlayerList(selectedOwner.veterans, state.playerSearch)}
       </article>
       <article class="detail-card">
+        <h3>Retained Veterans</h3>
+        ${renderPlayerList(selectedOwner.retainedVeterans, state.playerSearch)}
+      </article>
+      <article class="detail-card">
+        <h3>Retained Rookies</h3>
+        ${renderPlayerList(selectedOwner.retainedRookies, state.playerSearch)}
+      </article>
+      <article class="detail-card">
+        <h3>Retained Farm</h3>
+        ${renderPlayerList(selectedOwner.retainedFarm, state.playerSearch)}
+      </article>
+      <article class="detail-card">
+        <h3>Retained Unclassified</h3>
+        ${renderPlayerList(selectedOwner.retainedUnclassified, state.playerSearch)}
+      </article>
+      <article class="detail-card">
         <h3>Farm Players</h3>
         ${renderPlayerList(selectedOwner.farmPlayers, state.playerSearch)}
       </article>
       <article class="detail-card">
         <h3>Matching Rights</h3>
-        ${renderPlayerList(selectedOwner.matchingRights, state.playerSearch)}
+        ${renderPlayerList(selectedOwner.matchingRights, state.playerSearch, { showMatchingRights: true })}
       </article>
       ${localAssignmentHtml}
     </div>
@@ -2093,8 +2479,15 @@ function renderOwnerView(unifiedState) {
   const availablePlayerSearchInput = document.getElementById('availablePlayerSearchInput');
   if (availablePlayerSearchInput) {
     availablePlayerSearchInput.addEventListener('input', (e) => {
+      const caretPosition = e.target.selectionStart;
       state.availablePlayerSearch = e.target.value || '';
       renderOwnerView(unifiedState);
+      const nextSearchInput = document.getElementById('availablePlayerSearchInput');
+      if (nextSearchInput) {
+        nextSearchInput.focus();
+        const nextCaret = Math.min(caretPosition ?? nextSearchInput.value.length, nextSearchInput.value.length);
+        nextSearchInput.setSelectionRange(nextCaret, nextCaret);
+      }
     });
   }
 
@@ -2133,27 +2526,6 @@ function renderOwnerView(unifiedState) {
       state.importedData = nextState;
       state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
       renderOwnerView(nextState);
-    });
-  });
-
-  document.querySelectorAll('.save-assignment-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      saveWorkingAssignmentFromButton(unifiedState, button);
-    });
-  });
-
-  document.querySelectorAll('.clear-assignment-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      const nextState = removeWorkingAssignment(unifiedState, button.dataset.clearPlayerKey);
-      state.importedData = nextState;
-      renderOwnerView(nextState);
-    });
-  });
-
-  document.querySelectorAll('.draft-assign-open-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      state.availablePlayerSearch = button.dataset.assignName || '';
-      renderOwnerView(unifiedState);
     });
   });
 
@@ -2299,37 +2671,63 @@ function handleImport(csvText, fileName) {
 
 function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
+  const liveRefreshBtn = document.getElementById('liveRefreshBtn');
+  const liveRefreshStatus = document.getElementById('liveRefreshStatus');
+
+  liveRefreshBtn.addEventListener('click', async () => {
+    liveRefreshBtn.disabled = true;
+    liveRefreshBtn.textContent = 'Refreshing...';
+    liveRefreshStatus.textContent = 'Downloading current league data';
+
+    try {
+      const nextState = await refreshGoogleSheetState(state.importedData || loadState());
+      persistState(nextState);
+      state.importedData = nextState;
+      state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+      state.selectedPlayerKey = null;
+      renderOwnerView(nextState);
+      liveRefreshStatus.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    } catch (error) {
+      console.error('Google Sheet refresh failed', error);
+      liveRefreshStatus.textContent = 'Refresh failed';
+      alert(error instanceof Error ? error.message : 'Google Sheet refresh failed.');
+    } finally {
+      liveRefreshBtn.disabled = false;
+      liveRefreshBtn.textContent = 'Refresh Google Sheets';
+    }
+  });
+
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target) return;
+
+    const saveButton = target.closest('.save-assignment-btn');
+    if (saveButton) {
+      event.preventDefault();
+      saveWorkingAssignmentFromButton(state.importedData || loadState(), saveButton);
+      return;
+    }
+
+    const clearButton = target.closest('.clear-assignment-btn');
+    if (clearButton) {
+      event.preventDefault();
+      const nextState = removeWorkingAssignment(state.importedData || loadState(), clearButton.dataset.clearPlayerKey);
+      state.importedData = nextState;
+      renderOwnerView(nextState);
+      return;
+    }
+
+    const openAssignButton = target.closest('.draft-assign-open-btn');
+    if (openAssignButton) {
+      event.preventDefault();
+      state.availablePlayerSearch = openAssignButton.dataset.assignName || '';
+      renderOwnerView(state.importedData || loadState());
+    }
+  });
+
   backToImportBtn.addEventListener('click', () => {
     state.selectedOwner = null;
     state.selectedPlayerKey = null;
-
-    document.addEventListener('click', (event) => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (!target) return;
-
-      const saveButton = target.closest('.save-assignment-btn');
-      if (saveButton) {
-        event.preventDefault();
-        saveWorkingAssignmentFromButton(state.importedData || loadState(), saveButton);
-        return;
-      }
-
-      const clearButton = target.closest('.clear-assignment-btn');
-      if (clearButton) {
-        event.preventDefault();
-        const nextState = removeWorkingAssignment(state.importedData || loadState(), clearButton.dataset.clearPlayerKey);
-        state.importedData = nextState;
-        renderOwnerView(nextState);
-        return;
-      }
-
-      const openAssignButton = target.closest('.draft-assign-open-btn');
-      if (openAssignButton) {
-        event.preventDefault();
-        state.availablePlayerSearch = openAssignButton.dataset.assignName || '';
-        renderOwnerView(state.importedData || loadState());
-      }
-    });
     renderImportScreen();
   });
 
@@ -2363,4 +2761,8 @@ export {
   buildOwnerDraftPlan,
   createManualOverrideDraft,
   getSnapshotAgeInfo,
+  mergeDataset,
+  refreshGoogleSheetState,
+  resolveLeagueTeamName,
+  upsertWorkingAssignment,
 };

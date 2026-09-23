@@ -54,6 +54,25 @@ button, input {
   margin-bottom: 20px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.live-refresh-status {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+  transform: none;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--accent);

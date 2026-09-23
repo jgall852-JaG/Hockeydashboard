@@ -25,14 +25,37 @@ function normalizeTeamAbbrev(value) {
   return /^[A-Z]{3}$/.test(text) ? text : '';
 }
 
+function normalizeRecordKey(key) {
+  return String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .replace(/^\s+|\s+$/g, '');
+}
+
 function pickRecordValue(record, keys) {
   if (!record) return '';
+
+  const aliasMap = new Map();
+  Object.keys(record).forEach((key) => {
+    const normalized = normalizeRecordKey(key);
+    if (!normalized || aliasMap.has(normalized)) return;
+    aliasMap.set(normalized, record[key]);
+  });
+
   for (const key of keys) {
     const direct = record[key];
     if (direct !== undefined && direct !== null && String(direct).trim() !== '') {
       return direct;
     }
+
+    const normalizedKey = normalizeRecordKey(key);
+    const aliasValue = normalizedKey ? aliasMap.get(normalizedKey) : undefined;
+    if (aliasValue !== undefined && aliasValue !== null && String(aliasValue).trim() !== '') {
+      return aliasValue;
+    }
   }
+
   return '';
 }
 
