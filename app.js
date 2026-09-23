@@ -12,6 +12,47 @@ import {
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
 const MAX_PREVIEW_ROWS = 10;
+const DRAFT_ROSTER_RULES = Object.freeze({
+  budgetCap: 250,
+  minSlotCost: 0.5,
+  targetSkaters: 23,
+  targetGoalieTeams: 2,
+});
+const GOALIE_TEAM_CITY_KEYS = new Set([
+  'anaheim',
+  'boston',
+  'buffalo',
+  'calgary',
+  'carolina',
+  'chicago',
+  'colorado',
+  'columbus',
+  'dallas',
+  'detroit',
+  'edmonton',
+  'florida',
+  'los angeles',
+  'minnesota',
+  'montreal',
+  'nashville',
+  'new jersey',
+  'new york',
+  'ottawa',
+  'philadelphia',
+  'pittsburgh',
+  'san jose',
+  'seattle',
+  'st louis',
+  'tampa bay',
+  'toronto',
+  'utah',
+  'vancouver',
+  'vegas',
+  'washington',
+  'winnipeg',
+]);
+const SKATER_POSITION_KEYS = new Set(['c', 'lw', 'rw', 'd', 'ld', 'rd', 'f']);
+const GOALIE_TEAM_POSITION_KEYS = new Set(['g', 'goalie', 'goalieteam', 'goalie team', 'team goalie', 'gt']);
 
 const state = {
   importedData: null,
@@ -142,11 +183,13 @@ export function buildOwnerViewData(rawState) {
   // Extract arrays of players from datasets
   const prospectsArr = Object.values(stateObj.datasets.prospects?.prospects || {}).map((player) => decoratePlayer(player, 'prospect'));
   const veteransArr = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
+  const rosterArr = Object.values(stateObj.datasets.roster?.players || {}).map((player) => decoratePlayer(player, 'roster'));
 
   const ownerSet = new Set();
   // derive owners from dataset owners maps if present
   if (stateObj.datasets.prospects?.owners) Object.keys(stateObj.datasets.prospects.owners).forEach((o) => ownerSet.add(o));
   if (stateObj.datasets.veterans?.owners) Object.keys(stateObj.datasets.veterans.owners).forEach((o) => ownerSet.add(o));
+  rosterArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
 
   // derive from player records as well
   prospectsArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
@@ -155,6 +198,7 @@ export function buildOwnerViewData(rawState) {
   const owners = [...ownerSet].sort((a, b) => a.localeCompare(b)).map((owner) => {
     const ownerProspects = prospectsArr.filter((p) => p.owner === owner);
     const ownerVeterans = veteransArr.filter((p) => p.owner === owner);
+    const ownerRosterPlayers = rosterArr.filter((p) => p.owner === owner);
     const farmPlayers = ownerProspects.filter((p) => p.farm);
     const matchingRights = ownerProspects.filter((p) => p.matchingRights);
 
@@ -162,6 +206,7 @@ export function buildOwnerViewData(rawState) {
       name: owner,
       prospects: ownerProspects,
       veterans: ownerVeterans,
+      rosterPlayers: ownerRosterPlayers,
       farmPlayers,
       matchingRights,
     };
@@ -294,6 +339,7 @@ const DEFAULT_STATE = {
     transactions: { status: 'empty' },
   },
   manualOverrides: [],
+  workingAssignments: {},
 };
 
 function loadState() {
@@ -377,6 +423,9 @@ function normalizeState(stateObj) {
   next.datasets = stateObj.datasets || next.datasets;
   next.metadata = stateObj.metadata || next.metadata;
   next.manualOverrides = Array.isArray(stateObj.manualOverrides) ? stateObj.manualOverrides : [];
+  next.workingAssignments = stateObj.workingAssignments && typeof stateObj.workingAssignments === 'object' && !Array.isArray(stateObj.workingAssignments)
+    ? stateObj.workingAssignments
+    : {};
   return next;
 }
 
@@ -450,6 +499,89 @@ function getRecordOwner(record) {
 
 function getRecordPosition(record) {
   return String(pickRecordValue(record, ['position', 'primaryposition', 'positioncode'])).trim();
+}
+
+function normalizeDraftPositionText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getDraftSlotPosition(record) {
+  return String(pickRecordValue(record, ['poolPosition', 'poolposition', 'position', 'primaryposition', 'positioncode'])).trim();
+}
+
+function isGoalieTeamPosition(position) {
+  const normalized = normalizeDraftPositionText(position);
+  if (!normalized) return false;
+  if (GOALIE_TEAM_CITY_KEYS.has(normalized)) return true;
+  if (GOALIE_TEAM_POSITION_KEYS.has(normalized)) return true;
+  return normalized.split(/[\/,&]/).map((part) => part.trim()).some((token) => GOALIE_TEAM_POSITION_KEYS.has(token));
+}
+
+function isSkaterPosition(position) {
+  const normalized = normalizeDraftPositionText(position);
+  if (!normalized) return false;
+  const tokens = normalized.split(/[\/,&\s]+/).filter(Boolean);
+  return tokens.some((token) => SKATER_POSITION_KEYS.has(token));
+}
+
+function getPlayerRetainedCost(player) {
+  const numeric = Number(player?.currentCost ?? player?.currentcost ?? player?.cost ?? 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function buildOwnerDraftPlan(ownerEntry) {
+  const rawPlayers = [...(ownerEntry?.prospects || []), ...(ownerEntry?.veterans || []), ...(ownerEntry?.rosterPlayers || [])];
+  const dedupedPlayers = [];
+  const seen = new Set();
+  rawPlayers.forEach((player) => {
+    const key = `${normalizeLookupKey(player?.name || '')}|${normalizeLookupKey(player?.owner || ownerEntry?.name || '')}`;
+    if (!key || key === '|') return;
+    if (seen.has(key)) return;
+    seen.add(key);
+    dedupedPlayers.push(player);
+  });
+  const players = dedupedPlayers;
+  const slotCounts = players.reduce((acc, player) => {
+    const position = getDraftSlotPosition(player);
+    if (isGoalieTeamPosition(position)) {
+      acc.goalieTeams += 1;
+      return acc;
+    }
+    if (isSkaterPosition(position)) {
+      acc.skaters += 1;
+      return acc;
+    }
+    acc.unclassified += 1;
+    return acc;
+  }, { skaters: 0, goalieTeams: 0, unclassified: 0 });
+
+  const retainedSpend = players.reduce((sum, player) => sum + getPlayerRetainedCost(player), 0);
+  const remainingBudget = Number((DRAFT_ROSTER_RULES.budgetCap - retainedSpend).toFixed(2));
+  const skatersNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetSkaters - slotCounts.skaters);
+  const goalieTeamsNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetGoalieTeams - slotCounts.goalieTeams);
+  const slotsNeeded = skatersNeeded + goalieTeamsNeeded;
+  const minimumRequired = Number((slotsNeeded * DRAFT_ROSTER_RULES.minSlotCost).toFixed(2));
+  const budgetShortfall = Number(Math.max(0, minimumRequired - remainingBudget).toFixed(2));
+
+  return {
+    owner: ownerEntry?.name || 'Unknown',
+    retainedSpend: Number(retainedSpend.toFixed(2)),
+    remainingBudget,
+    skaters: slotCounts.skaters,
+    goalieTeams: slotCounts.goalieTeams,
+    unclassified: slotCounts.unclassified,
+    skatersNeeded,
+    goalieTeamsNeeded,
+    slotsNeeded,
+    minimumRequired,
+    budgetShortfall,
+    hasOverfilledSkaters: slotCounts.skaters > DRAFT_ROSTER_RULES.targetSkaters,
+    hasOverfilledGoalieTeams: slotCounts.goalieTeams > DRAFT_ROSTER_RULES.targetGoalieTeams,
+  };
 }
 
 function getRecordType(record) {
@@ -541,13 +673,92 @@ function addManualOverrideEntry(stateObj, draft) {
   return { state: next, entry };
 }
 
+function normalizeWorkingStatus(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return 'Assigned';
+  if (text === 'assigned') return 'Assigned';
+  if (text === 'winning team') return 'Winning Team';
+  if (text === 'winning bid') return 'Winning Bid';
+  if (text === 'tbd') return 'TBD';
+  return 'Assigned';
+}
+
+function normalizeWorkingClassification(value, fallback = 'Rookie') {
+  const normalized = normalizeClassification(value);
+  if (normalized) return normalized;
+  const fallbackNormalized = normalizeClassification(fallback);
+  return fallbackNormalized || 'Rookie';
+}
+
+function createWorkingAssignmentDraft(data) {
+  const playerKey = String(data?.playerKey || '').trim();
+  const name = String(data?.name || '').trim();
+  const team = String(data?.team || '').trim();
+  const position = String(data?.position || '').trim();
+  const classification = normalizeWorkingClassification(data?.classification, data?.fallbackClassification);
+  const status = normalizeWorkingStatus(data?.status);
+  const bidRaw = String(data?.bid ?? '').trim();
+  const bidNumeric = Number(bidRaw);
+  if (!playerKey || !name || !team) {
+    return null;
+  }
+  if (!Number.isFinite(bidNumeric) || bidNumeric < DRAFT_ROSTER_RULES.minSlotCost) {
+    return null;
+  }
+
+  return {
+    playerKey,
+    name,
+    team,
+    position: position || '—',
+    classification,
+    status,
+    bid: Number(bidNumeric.toFixed(2)),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function upsertWorkingAssignment(stateObj, draft) {
+  const entry = createWorkingAssignmentDraft(draft);
+  if (!entry) {
+    return {
+      state: normalizeState(stateObj),
+      error: `Team and bid are required. Bid must be at least $${DRAFT_ROSTER_RULES.minSlotCost.toFixed(2)}.`,
+    };
+  }
+
+  const next = normalizeState(stateObj);
+  const current = next.workingAssignments && typeof next.workingAssignments === 'object' ? next.workingAssignments : {};
+  next.workingAssignments = {
+    ...current,
+    [entry.playerKey]: entry,
+  };
+  persistState(next);
+  return { state: next, entry };
+}
+
+function removeWorkingAssignment(stateObj, playerKey) {
+  const key = String(playerKey || '').trim();
+  if (!key) return normalizeState(stateObj);
+  const next = normalizeState(stateObj);
+  const current = { ...(next.workingAssignments || {}) };
+  delete current[key];
+  next.workingAssignments = current;
+  persistState(next);
+  return next;
+}
+
 function buildDraftValidationReport(stateObj) {
   const nextState = normalizeState(stateObj);
+  const ownerData = buildOwnerViewData(nextState);
   const rosterPlayers = Object.values(nextState.datasets.roster?.players || {});
   const prospects = Object.values(nextState.datasets.prospects?.prospects || {});
   const veterans = Object.values(nextState.datasets.veterans?.veterans || {});
   const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+  const workingAssignments = nextState.workingAssignments && typeof nextState.workingAssignments === 'object' ? nextState.workingAssignments : {};
+  const assignedByPlayerKey = new Set(Object.keys(workingAssignments).map((key) => String(key || '').trim()).filter(Boolean));
   const snapshot = getSnapshotAgeInfo(nextState);
+  const ownerDraftPlans = ownerData.owners.map((owner) => buildOwnerDraftPlan(owner));
 
   const rosterByKey = new Map();
   rosterPlayers.forEach((player) => {
@@ -621,10 +832,13 @@ function buildDraftValidationReport(stateObj) {
       if (availableState.status === 'conflict') {
         availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: ${availableState.label}`);
       }
+      if (availableState.status === 'available' && owners.length) {
+        availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: owned in sheet but flagged available in roster`);
+      }
       if (owners.length && rosterOwner && !owners.includes(rosterOwner)) {
         ownershipMismatches.push(`${getRecordName(rosterEntry) || key}: roster=${rosterOwner}, sheet=${owners.join(' / ')}`);
       }
-      if (availableState.status === 'available') {
+      if (availableState.status === 'available' && owners.length === 0 && !assignedByPlayerKey.has(key)) {
         const recordType = getRecordType(rosterEntry) || 'Unknown';
         availablePlayers.push({
           key,
@@ -642,6 +856,7 @@ function buildDraftValidationReport(stateObj) {
   manualOverrides.forEach((override) => {
     const key = normalizeLookupKey(override.name);
     if (!key) return;
+    if (assignedByPlayerKey.has(override.id || `manual-${key}`)) return;
     availablePlayers.push({
       key: override.id || `manual-${key}`,
       name: override.name,
@@ -654,6 +869,26 @@ function buildDraftValidationReport(stateObj) {
       createdAt: override.createdAt || null,
     });
   });
+
+  const assignedPlayers = Object.values(workingAssignments)
+    .filter((entry) => entry && entry.playerKey && entry.name && entry.team)
+    .map((entry) => ({
+      playerKey: entry.playerKey,
+      name: entry.name,
+      team: entry.team,
+      bid: Number(entry.bid || 0),
+      classification: normalizeWorkingClassification(entry.classification, 'Rookie'),
+      status: normalizeWorkingStatus(entry.status),
+      position: entry.position || '—',
+      updatedAt: entry.updatedAt || null,
+    }))
+    .sort((a, b) => a.team.localeCompare(b.team) || a.name.localeCompare(b.name));
+
+  const assignedByTeam = assignedPlayers.reduce((acc, player) => {
+    if (!acc[player.team]) acc[player.team] = [];
+    acc[player.team].push(player);
+    return acc;
+  }, {});
 
   const validationRows = [
     {
@@ -703,6 +938,21 @@ function buildDraftValidationReport(stateObj) {
         : 'Available pool is internally consistent',
       count: availableIntegrityIssues.length,
     },
+    {
+      key: 'draft-roster-rules',
+      label: 'Draft Roster Rules (23 skaters + 2 goalie teams)',
+      status: ownerDraftPlans.some((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0)
+        ? 'error'
+        : ownerDraftPlans.some((plan) => plan.unclassified > 0)
+          ? 'warning'
+          : 'valid',
+      message: ownerDraftPlans.some((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0)
+        ? `${ownerDraftPlans.filter((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0).length} team${ownerDraftPlans.filter((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0).length === 1 ? '' : 's'} cannot satisfy roster or budget floor at $${DRAFT_ROSTER_RULES.minSlotCost.toFixed(2)} per open slot`
+        : ownerDraftPlans.some((plan) => plan.unclassified > 0)
+          ? `${ownerDraftPlans.filter((plan) => plan.unclassified > 0).length} team${ownerDraftPlans.filter((plan) => plan.unclassified > 0).length === 1 ? '' : 's'} contain unclassified roster positions`
+          : 'All teams can still complete 23 skaters + 2 goalie teams with the $0.50 minimum slot cost',
+      count: ownerDraftPlans.filter((plan) => plan.budgetShortfall > 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams || plan.remainingBudget < 0).length,
+    },
   ];
 
   const hasErrors = validationRows.some((check) => check.status === 'error');
@@ -723,6 +973,8 @@ function buildDraftValidationReport(stateObj) {
       missingClassificationCount: missingClassificationIssues.length,
       retentionIssuesCount: retentionIssues.length,
       availableIntegrityCount: availableIntegrityIssues.length,
+      ownerDraftPlanCount: ownerDraftPlans.length,
+      workingAssignedCount: assignedPlayers.length,
     },
     details: {
       duplicateOwnershipIssues,
@@ -733,7 +985,12 @@ function buildDraftValidationReport(stateObj) {
       availableIntegrityIssues,
     },
     availablePlayers,
+    assignedPlayers,
+    assignedByTeam,
+    workingAssignments,
     manualOverrides,
+    ownerDraftPlans,
+    draftRosterRules: DRAFT_ROSTER_RULES,
   };
 }
 
@@ -744,9 +1001,11 @@ function buildDraftValidationReport(stateObj) {
 function computeDashboardSummary(stateObj) {
   const prospects = Object.values(stateObj.datasets.prospects?.prospects || {});
   const veterans = Object.values(stateObj.datasets.veterans?.veterans || {});
+  const rosterPlayers = Object.values(stateObj.datasets.roster?.players || {});
   const ownerSet = new Set();
   if (stateObj.datasets.prospects?.owners) Object.keys(stateObj.datasets.prospects.owners).forEach((o) => ownerSet.add(o));
   if (stateObj.datasets.veterans?.owners) Object.keys(stateObj.datasets.veterans.owners).forEach((o) => ownerSet.add(o));
+  rosterPlayers.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
   prospects.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
   veterans.forEach((v) => { if (v && v.owner) ownerSet.add(v.owner); });
 
@@ -938,6 +1197,29 @@ function renderValidationStatusText(status) {
 }
 
 function renderDraftValidationCenter(report) {
+  const ownerPlanRows = (report.ownerDraftPlans || []).map((plan) => {
+    let status = 'Ready';
+    if (plan.budgetShortfall > 0 || plan.remainingBudget < 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams) {
+      status = 'Shortfall';
+    } else if (plan.unclassified > 0) {
+      status = 'Needs Position Cleanup';
+    }
+
+    return `
+      <tr>
+        <td>${escapeHtml(plan.owner)}</td>
+        <td>$${formatValue(plan.retainedSpend)}</td>
+        <td>$${formatValue(plan.remainingBudget)}</td>
+        <td>${plan.skaters}/${report.draftRosterRules?.targetSkaters ?? DRAFT_ROSTER_RULES.targetSkaters}</td>
+        <td>${plan.goalieTeams}/${report.draftRosterRules?.targetGoalieTeams ?? DRAFT_ROSTER_RULES.targetGoalieTeams}</td>
+        <td>${plan.slotsNeeded}</td>
+        <td>$${formatValue(plan.minimumRequired)}</td>
+        <td>${plan.budgetShortfall > 0 ? `$${formatValue(plan.budgetShortfall)}` : '—'}</td>
+        <td>${escapeHtml(status)}</td>
+      </tr>
+    `;
+  }).join('');
+
   const rows = report.validationRows.map((row) => `
     <div class="validation-row validation-${row.status}">
       <div>
@@ -960,22 +1242,167 @@ function renderDraftValidationCenter(report) {
           <span class="meta-pill">${escapeHtml(report.snapshot.label)}</span>
           <span class="meta-pill">${report.retentionListLoaded ? 'Retention list loaded' : 'Retention list missing'}</span>
           <span class="meta-pill">Overrides ${report.counts.manualOverrideCount}</span>
+          <span class="meta-pill">Roster rule: ${report.draftRosterRules?.targetSkaters ?? DRAFT_ROSTER_RULES.targetSkaters}+${report.draftRosterRules?.targetGoalieTeams ?? DRAFT_ROSTER_RULES.targetGoalieTeams}</span>
         </div>
       </div>
       <div class="validation-summary">
         <div class="meta-pill">${escapeHtml(report.snapshot.details)}</div>
         <div class="meta-pill">Roster records ${report.counts.rosterCount}</div>
         <div class="meta-pill">Available ${report.counts.availableCount}</div>
+        <div class="meta-pill">Working State ${report.counts.workingAssignedCount}</div>
         <div class="meta-pill">Owned ${report.counts.ownershipCount}</div>
+        <div class="meta-pill">Min slot cost $${(report.draftRosterRules?.minSlotCost ?? DRAFT_ROSTER_RULES.minSlotCost).toFixed(2)}</div>
         <div class="meta-pill">${report.retentionListLoaded ? 'Retention list ready' : 'Retention list not loaded'}</div>
       </div>
       <div class="validation-list">${rows}</div>
+      <div class="table-wrap" style="margin-top:12px;">
+        <table class="validation-table">
+          <thead>
+            <tr>
+              <th>Owner</th>
+              <th>Retained</th>
+              <th>Remaining</th>
+              <th>Skaters</th>
+              <th>Goalie Teams</th>
+              <th>Open Slots</th>
+              <th>Min Needed</th>
+              <th>Shortfall</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${ownerPlanRows || '<tr><td colspan="9" class="empty-state">No owner roster data available.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
     </section>
   `;
 }
 
+function renderBestAvailablePanel(report) {
+  const players = (report.availablePlayers || [])
+    .filter((player) => !player.manualOverride)
+    .slice(0, 12);
+
+  const cards = players.length
+    ? players.map((player) => `
+        <div class="summary-card" style="text-align:left;">
+          <div style="font-weight:600;margin-bottom:6px;">${escapeHtml(player.name)}</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <span class="meta-pill">${escapeHtml(player.position || '—')}</span>
+            <span class="meta-pill">${escapeHtml(player.type || 'Unknown')}</span>
+          </div>
+          <div class="workspace-inline-actions">
+            <button type="button" class="secondary draft-assign-open-btn" data-assign-player-key="${escapeHtml(player.key)}" data-assign-name="${escapeHtml(player.name)}" data-assign-position="${escapeHtml(player.position || '—')}" data-assign-type="${escapeHtml(player.type || 'Rookie')}">Assign</button>
+          </div>
+        </div>
+      `).join('')
+    : '<div class="empty-state">No unassigned players remain in Best Available.</div>';
+
+  return `
+    <section class="panel validation-panel">
+      <div class="preview-header">
+        <div>
+          <h3>Best Available</h3>
+          <div class="panel-subtitle">Players still unassigned in Working State.</div>
+        </div>
+        <div class="preview-meta">
+          <span class="meta-pill">Unassigned ${players.length}</span>
+        </div>
+      </div>
+      <div class="summary-grid">${cards}</div>
+    </section>
+  `;
+}
+
+function renderDraftWorkspacePanel(report) {
+  const assignedPlayers = report.assignedPlayers || [];
+  const grouped = Object.entries(report.assignedByTeam || {}).sort((a, b) => a[0].localeCompare(b[0]));
+  const groupsHtml = grouped.length
+    ? grouped.map(([team, entries]) => `
+        <div class="detail-card">
+          <h4>${escapeHtml(team)} (${entries.length})</h4>
+          <ul class="player-list">
+            ${entries.map((entry) => `
+              <li>
+                <div class="player-item" style="cursor:default;">
+                  <div>
+                    <div class="player-name">${escapeHtml(entry.name)}</div>
+                    <div class="player-meta">
+                      <span class="player-chip">$${formatValue(entry.bid)}</span>
+                      <span class="player-chip">${escapeHtml(entry.classification)}</span>
+                      <span class="player-chip">${escapeHtml(entry.status)}</span>
+                    </div>
+                  </div>
+                  <button type="button" class="secondary clear-assignment-btn" data-clear-player-key="${escapeHtml(entry.playerKey)}">Clear</button>
+                </div>
+              </li>
+            `).join('')}
+          </ul>
+        </div>
+      `).join('')
+    : '<div class="empty-state">No Working State assignments yet.</div>';
+
+  return `
+    <section class="panel validation-panel">
+      <div class="preview-header">
+        <div>
+          <h3>Draft Workspace</h3>
+          <div class="panel-subtitle">Working State assignments grouped by team.</div>
+        </div>
+        <div class="preview-meta">
+          <span class="meta-pill">Assigned Players ${assignedPlayers.length}</span>
+          <span class="meta-pill">Available ${report.counts.availableCount}</span>
+        </div>
+      </div>
+      <div class="detail-grid">
+        ${groupsHtml}
+      </div>
+    </section>
+  `;
+}
+
+function saveWorkingAssignmentFromButton(unifiedState, button) {
+  const playerKey = String(button.dataset.savePlayerKey || button.dataset.assignPlayerKey || '').trim();
+  const playerName = String(button.dataset.playerName || button.dataset.assignName || '').trim();
+  const playerPosition = String(button.dataset.playerPosition || button.dataset.assignPosition || '—').trim();
+  const playerType = String(button.dataset.playerType || button.dataset.assignType || 'Rookie').trim();
+  if (!playerKey || !playerName) {
+    alert('Unable to save assignment. Missing player context.');
+    return;
+  }
+
+  const getByDataValue = (attributeName, value) => Array.from(document.querySelectorAll(`[${attributeName}]`))
+    .find((element) => element.getAttribute(attributeName) === value) || null;
+
+  const teamInput = getByDataValue('data-workspace-team-key', playerKey);
+  const bidInput = getByDataValue('data-workspace-bid-key', playerKey);
+  const classificationInput = getByDataValue('data-workspace-classification-key', playerKey);
+  const statusInput = getByDataValue('data-workspace-status-key', playerKey);
+
+  const result = upsertWorkingAssignment(unifiedState, {
+    playerKey,
+    name: playerName,
+    position: playerPosition,
+    team: teamInput?.value || '',
+    bid: bidInput?.value || '',
+    classification: classificationInput?.value || playerType,
+    fallbackClassification: playerType,
+    status: statusInput?.value || 'Assigned',
+  });
+
+  if (result.error) {
+    alert(result.error);
+    return;
+  }
+
+  state.importedData = result.state;
+  renderOwnerView(result.state);
+}
+
 function renderAvailablePlayerCenter(report) {
   const search = String(state.availablePlayerSearch || '').trim().toLowerCase();
+  const assignmentMap = report.workingAssignments || {};
   const players = report.availablePlayers
     .filter((player) => !search || player.name.toLowerCase().includes(search) || player.position.toLowerCase().includes(search) || player.type.toLowerCase().includes(search))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -994,9 +1421,26 @@ function renderAvailablePlayerCenter(report) {
           <td>${escapeHtml(player.type)}</td>
           <td>${escapeHtml(player.status)}</td>
           <td>${escapeHtml(player.owner || '—')}</td>
+          <td><input type="text" class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" placeholder="Team" value="${escapeHtml(assignmentMap[player.key]?.team || '')}" /></td>
+          <td><input type="number" class="workspace-bid-input" data-workspace-bid-key="${escapeHtml(player.key)}" min="${DRAFT_ROSTER_RULES.minSlotCost}" step="0.5" placeholder="0.50" value="${escapeHtml(String(assignmentMap[player.key]?.bid ?? ''))}" /></td>
+          <td>
+            <select class="workspace-classification-select" data-workspace-classification-key="${escapeHtml(player.key)}">
+              ${['Rookie', 'Veteran', 'Farm'].map((option) => `<option value="${option}" ${normalizeWorkingClassification(assignmentMap[player.key]?.classification || player.type, player.type) === option ? 'selected' : ''}>${option}</option>`).join('')}
+            </select>
+          </td>
+          <td>
+            <select class="workspace-status-select" data-workspace-status-key="${escapeHtml(player.key)}">
+              ${['Assigned', 'Winning Team', 'Winning Bid', 'TBD'].map((option) => `<option value="${option}" ${normalizeWorkingStatus(assignmentMap[player.key]?.status || 'Assigned') === option ? 'selected' : ''}>${option}</option>`).join('')}
+            </select>
+          </td>
+          <td>
+            <div class="workspace-inline-actions">
+              <button type="button" class="secondary save-assignment-btn" data-save-player-key="${escapeHtml(player.key)}" data-player-name="${escapeHtml(player.name)}" data-player-position="${escapeHtml(player.position || '—')}" data-player-type="${escapeHtml(player.type || 'Rookie')}">Save</button>
+            </div>
+          </td>
         </tr>
       `).join('')
-    : '<tr><td colspan="5" class="empty-state">No players match this filter.</td></tr>';
+    : '<tr><td colspan="10" class="empty-state">No players match this filter.</td></tr>';
 
   return `
     <section class="panel validation-panel">
@@ -1023,6 +1467,11 @@ function renderAvailablePlayerCenter(report) {
               <th>Type</th>
               <th>Status</th>
               <th>Owner</th>
+              <th>Team</th>
+              <th>Bid</th>
+              <th>Class</th>
+              <th>Work Status</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
@@ -1379,7 +1828,7 @@ function renderPreviewSection(parsedData, datasetType) {
   `;
 }
 
-function renderOwnerList(ownerData) {
+function renderOwnerList(ownerData, report) {
   const meta = ownerData.metadata || {};
   const statusHtml = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
@@ -1403,6 +1852,7 @@ function renderOwnerList(ownerData) {
 
   const ownerListMarkup = ownersFiltered.map((owner) => {
     const isActive = state.selectedOwner === owner.name;
+    const localAssignedCount = report?.assignedByTeam?.[owner.name]?.length || 0;
 
     return `
       <button class="owner-item ${isActive ? 'active' : ''}" data-owner="${owner.name}">
@@ -1414,6 +1864,7 @@ function renderOwnerList(ownerData) {
           <span class="owner-badge">Vet ${owner.veterans.length}</span>
           <span class="owner-badge">Farm ${owner.farmPlayers.length}</span>
           <span class="owner-badge">MR ${owner.matchingRights.length}</span>
+          <span class="owner-badge">WS ${localAssignedCount}</span>
         </div>
       </button>
     `;
@@ -1439,7 +1890,7 @@ function renderOwnerList(ownerData) {
   `;
 }
 
-function renderOwnerDetails(ownerData) {
+function renderOwnerDetails(ownerData, report) {
   const selectedOwner = ownerData.owners.find((owner) => owner.name === state.selectedOwner) || ownerData.owners[0];
 
   if (!selectedOwner) {
@@ -1455,7 +1906,7 @@ function renderOwnerDetails(ownerData) {
   const avgCostFmt = stats.prospectCount ? formatValue(stats.averageProspectCost) : '—';
   const highest = stats.highestCostProspect ? `${stats.highestCostProspect.name} ($${stats.highestCostProspect.cost})` : '—';
   const rosterIndex = buildRosterIndex(state.importedData || ownerData._rawState || {});
-  const ownerPlayers = [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || [])];
+  const ownerPlayers = [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || []), ...(selectedOwner.rosterPlayers || [])];
 
   if (!state.selectedPlayerKey || !ownerPlayers.some((player) => player.playerKey === state.selectedPlayerKey)) {
     state.selectedPlayerKey = ownerPlayers.length ? ownerPlayers[0].playerKey : null;
@@ -1479,6 +1930,31 @@ function renderOwnerDetails(ownerData) {
     </div>
   `;
 
+  const localAssignments = (report?.assignedByTeam?.[selectedOwner.name] || []);
+  const localAssignmentHtml = localAssignments.length
+    ? `
+      <article class="detail-card">
+        <h3>Draft Workspace Assignments</h3>
+        <ul class="player-list">
+          ${localAssignments.map((entry) => `
+            <li>
+              <div class="player-item" style="cursor:default;">
+                <div>
+                  <div class="player-name">${escapeHtml(entry.name)}</div>
+                  <div class="player-meta">
+                    <span class="player-chip">$${formatValue(entry.bid)}</span>
+                    <span class="player-chip">${escapeHtml(entry.classification)}</span>
+                    <span class="player-chip">${escapeHtml(entry.status)}</span>
+                  </div>
+                </div>
+              </div>
+            </li>
+          `).join('')}
+        </ul>
+      </article>
+    `
+    : '';
+
   const cards = `
     <div style="margin-bottom:10px;">
       <input id="playerSearchInput" placeholder="Search players..." value="${escapeHtml(state.playerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
@@ -1500,6 +1976,7 @@ function renderOwnerDetails(ownerData) {
         <h3>Matching Rights</h3>
         ${renderPlayerList(selectedOwner.matchingRights, state.playerSearch)}
       </article>
+      ${localAssignmentHtml}
     </div>
   `;
 
@@ -1540,16 +2017,18 @@ function renderOwnerView(unifiedState) {
     </section>
   `;
 
-  const ownerListMarkup = renderOwnerList(ownerData);
-  const ownerDetailMarkup = renderOwnerDetails(ownerData);
-  const rosterIndex = buildRosterIndex(unifiedState);
   const draftValidationReport = buildDraftValidationReport(unifiedState);
+  const ownerListMarkup = renderOwnerList(ownerData, draftValidationReport);
+  const ownerDetailMarkup = renderOwnerDetails(ownerData, draftValidationReport);
+  const rosterIndex = buildRosterIndex(unifiedState);
 
   // compute aggregates once
   const aggregates = computeOwnerAggregates(unifiedState);
   const leagueHtml = renderLeagueIntelligence(aggregates);
   const dataQualityHtml = renderDataQualityPanel(unifiedState);
   const validationCenterHtml = renderDraftValidationCenter(draftValidationReport);
+  const bestAvailableHtml = renderBestAvailablePanel(draftValidationReport);
+  const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
   const availablePlayerHtml = renderAvailablePlayerCenter(draftValidationReport);
   const overrideAuditHtml = renderManualOverridePanel(draftValidationReport, unifiedState);
 
@@ -1562,6 +2041,8 @@ function renderOwnerView(unifiedState) {
         ${leagueHtml}
         ${dataQualityHtml}
         ${validationCenterHtml}
+        ${bestAvailableHtml}
+        ${workspaceHtml}
         ${availablePlayerHtml}
         ${overrideAuditHtml}
         ${ownerDetailMarkup}
@@ -1655,9 +2136,30 @@ function renderOwnerView(unifiedState) {
     });
   });
 
+  document.querySelectorAll('.save-assignment-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      saveWorkingAssignmentFromButton(unifiedState, button);
+    });
+  });
+
+  document.querySelectorAll('.clear-assignment-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextState = removeWorkingAssignment(unifiedState, button.dataset.clearPlayerKey);
+      state.importedData = nextState;
+      renderOwnerView(nextState);
+    });
+  });
+
+  document.querySelectorAll('.draft-assign-open-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.availablePlayerSearch = button.dataset.assignName || '';
+      renderOwnerView(unifiedState);
+    });
+  });
+
   const selectedOwner = ownerData.owners.find((owner) => owner.name === state.selectedOwner) || ownerData.owners[0];
   const selectedPlayer = selectedOwner
-    ? [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || [])].find((player) => player.playerKey === state.selectedPlayerKey) || null
+    ? [...(selectedOwner.prospects || []), ...(selectedOwner.veterans || []), ...(selectedOwner.rosterPlayers || [])].find((player) => player.playerKey === state.selectedPlayerKey) || null
     : null;
 
   if (selectedPlayer) {
@@ -1800,6 +2302,34 @@ function initialize() {
   backToImportBtn.addEventListener('click', () => {
     state.selectedOwner = null;
     state.selectedPlayerKey = null;
+
+    document.addEventListener('click', (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+
+      const saveButton = target.closest('.save-assignment-btn');
+      if (saveButton) {
+        event.preventDefault();
+        saveWorkingAssignmentFromButton(state.importedData || loadState(), saveButton);
+        return;
+      }
+
+      const clearButton = target.closest('.clear-assignment-btn');
+      if (clearButton) {
+        event.preventDefault();
+        const nextState = removeWorkingAssignment(state.importedData || loadState(), clearButton.dataset.clearPlayerKey);
+        state.importedData = nextState;
+        renderOwnerView(nextState);
+        return;
+      }
+
+      const openAssignButton = target.closest('.draft-assign-open-btn');
+      if (openAssignButton) {
+        event.preventDefault();
+        state.availablePlayerSearch = openAssignButton.dataset.assignName || '';
+        renderOwnerView(state.importedData || loadState());
+      }
+    });
     renderImportScreen();
   });
 
@@ -1825,10 +2355,12 @@ if (typeof document !== 'undefined') {
 
 export {
   STORAGE_KEY,
+  DRAFT_ROSTER_RULES,
   state,
   addManualOverrideEntry,
   removeManualOverrideById,
   buildDraftValidationReport,
+  buildOwnerDraftPlan,
   createManualOverrideDraft,
   getSnapshotAgeInfo,
 };

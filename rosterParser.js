@@ -1,78 +1,46 @@
 /**
  * rosterParser.js
- * Parses CSV roster data and converts it to an array of player objects
+ * Parses roster-like CSV data from multiple league sheet layouts.
  */
 
-/**
- * Parses CSV roster data
- * @param {string} csvData - Raw CSV data with headers
- * @returns {Object} Object containing players, teams, goalieFranchises, and contacts
- */
-function parseRoster(csvData) {
-  const lines = csvData.trim().split('\n');
-  
-  if (lines.length === 0) {
-    return {
-      players: {},
-      teams: {},
-      goalieFranchises: [],
-      contacts: {}
-    };
-  }
-
-  // Parse header
-  const headers = parseCSVLine(lines[0]);
-  
-  // Initialize result structure
-  const result = {
+function createEmptyRosterResult() {
+  return {
     players: {},
     teams: {},
     goalieFranchises: [],
-    contacts: {}
+    contacts: {},
   };
-  
-  // Parse data rows
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '') continue; // Skip empty lines
-    
-    const values = parseCSVLine(lines[i]);
-    const player = {};
-    
-    headers.forEach((header, index) => {
-      player[header.toLowerCase()] = values[index] || '';
-    });
-    
-    // Use player name as key, or index if no name
-    const playerKey = player.name || `player_${i}`;
-    result.players[playerKey] = player;
-    
-    // Track teams
-    if (player.nhlteam) {
-      if (!result.teams[player.nhlteam]) {
-        result.teams[player.nhlteam] = [];
-      }
-      result.teams[player.nhlteam].push(playerKey);
-    }
-  }
-  
-  return result;
 }
 
-/**
- * Parses a single CSV line, handling quoted values
- * @param {string} line - A single CSV line
- * @returns {Array} Array of values
- */
+function normalizeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function parseCost(value) {
+  const cleaned = String(value || '').replace(/[^0-9.\-]/g, '');
+  if (!cleaned) return 0;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function parseCSVLine(line) {
   const values = [];
   let current = '';
   let insideQuotes = false;
-  
+
   for (let i = 0; i < line.length; i++) {
     const char = line[i];
-    
     if (char === '"') {
-      insideQuotes = !insideQuotes;
+      if (insideQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        insideQuotes = !insideQuotes;
+      }
     } else if (char === ',' && !insideQuotes) {
       values.push(current.trim());
       current = '';
@@ -80,17 +48,282 @@ function parseCSVLine(line) {
       current += char;
     }
   }
-  
+
   values.push(current.trim());
   return values;
 }
 
-/**
- * Filters roster by position
- * @param {Object} roster - Parsed roster object
- * @param {string} position - Position to filter by
- * @returns {Object} Filtered players by position
- */
+function addPlayer(result, player, fallbackKey) {
+  const name = String(player.name || '').trim();
+  if (!name || name.toLowerCase() === 'x') return;
+
+  const baseKey = normalizeKey(name) || `player-${fallbackKey}`;
+  let key = baseKey;
+  let suffix = 2;
+  while (result.players[key]) {
+    key = `${baseKey}-${suffix}`;
+    suffix += 1;
+  }
+
+  const nextPlayer = {
+    name,
+    owner: String(player.owner || '').trim(),
+    position: String(player.position || '').trim(),
+    poolposition: String(player.poolposition || player.position || '').trim(),
+    nhlteam: String(player.nhlteam || '').trim(),
+    cost: player.cost ?? '',
+    source: String(player.source || '').trim(),
+  };
+
+  result.players[key] = nextPlayer;
+  if (nextPlayer.nhlteam) {
+    if (!result.teams[nextPlayer.nhlteam]) {
+      result.teams[nextPlayer.nhlteam] = [];
+    }
+    result.teams[nextPlayer.nhlteam].push(key);
+  }
+}
+
+function parseInventoryMatrix(lines) {
+  const result = createEmptyRosterResult();
+  const header = parseCSVLine(lines[0] || '');
+  const groups = [];
+  for (let col = 0; col < header.length; col += 2) {
+    const rawPosition = String(header[col] || '').trim();
+    if (!rawPosition) continue;
+    const position = rawPosition
+      .replace(/\s+/g, ' ')
+      .replace(/LEFT WING/i, 'LW')
+      .replace(/RIGHT WING/i, 'RW')
+      .replace(/CENTER/i, 'C')
+      .replace(/DEFENSE/i, 'D')
+      .replace(/UTILITY/i, 'U')
+      .toUpperCase();
+    groups.push({ position, nameCol: col, teamCol: col + 1 });
+  }
+
+  let fallback = 1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (!lines[i].trim()) continue;
+    const values = parseCSVLine(lines[i]);
+    groups.forEach((group) => {
+      const name = values[group.nameCol] || '';
+      const nhlteam = values[group.teamCol] || '';
+      addPlayer(result, {
+        name,
+        owner: '',
+        position: group.position,
+        poolposition: group.position,
+        nhlteam,
+        cost: '',
+        source: 'inventory',
+      }, fallback++);
+    });
+  }
+
+  return result;
+}
+
+function parseUtilitySheet(lines) {
+  const result = createEmptyRosterResult();
+  let fallback = 1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if (!lines[i].trim()) continue;
+    const values = parseCSVLine(lines[i]);
+    const name = values[0] || '';
+    const nhlteam = values[1] || '';
+    const eligibility = values[2] || 'U';
+    addPlayer(result, {
+      name,
+      owner: '',
+      position: 'U',
+      poolposition: eligibility,
+      nhlteam,
+      cost: '',
+      source: 'utility',
+    }, fallback++);
+  }
+  return result;
+}
+
+function normalizeLeagueSlotPosition(raw) {
+  const value = String(raw || '').trim().toUpperCase();
+  if (!value) return '';
+  if (['C', 'L', 'R', 'D', 'G', 'U', 'F', 'IR', 'DH'].includes(value)) return value;
+  return '';
+}
+
+function looksLikeContactRow(values) {
+  return values.some((cell) => /\S+@\S+\.\S+/.test(String(cell || '').replace(/\s+/g, '')));
+}
+
+function looksLikePhoneRow(values) {
+  return values.some((cell) => /\d{3}[- ]?\d{3}[- ]?\d{4}/.test(String(cell || '')));
+}
+
+function parseLeagueLayout(lines) {
+  const result = createEmptyRosterResult();
+  const header = parseCSVLine(lines[0] || '');
+  const owners = header.slice(1).map((cell) => String(cell || '').trim());
+  let currentPosition = '';
+  let fallback = 1;
+
+  for (let i = 1; i < lines.length; i += 1) {
+    if (!lines[i].trim()) continue;
+    const values = parseCSVLine(lines[i]);
+    if (looksLikePhoneRow(values) || looksLikeContactRow(values)) continue;
+
+    const firstCell = String(values[0] || '').trim();
+    const slotPosition = normalizeLeagueSlotPosition(firstCell);
+    if (slotPosition) {
+      currentPosition = slotPosition;
+    }
+
+    owners.forEach((owner, idx) => {
+      if (!owner) return;
+      const cell = String(values[idx + 1] || '').trim();
+      if (!cell) return;
+      if (cell.toUpperCase() === owner.toUpperCase()) return;
+      const name = cell.replace(/\s+[clrwdgfu]{1,2}$/i, '').trim();
+      if (!name) return;
+
+      addPlayer(result, {
+        name,
+        owner,
+        position: currentPosition || '',
+        poolposition: currentPosition || '',
+        nhlteam: '',
+        cost: '',
+        source: 'league-layout',
+      }, fallback++);
+    });
+  }
+
+  return result;
+}
+
+function parseRetainedGrid(lines) {
+  const result = createEmptyRosterResult();
+  let blockOwners = [];
+  let fallback = 1;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const values = parseCSVLine(line);
+    const hasPlayerHeader = values.some((cell) => String(cell || '').trim().toLowerCase() === 'player name');
+    if (hasPlayerHeader) continue;
+
+    const first = String(values[0] || '').trim().toUpperCase();
+    if (first === 'F' && String(values[1] || '').trim().toLowerCase().includes('farm deductions')) {
+      continue;
+    }
+
+    const ownerCandidates = [];
+    for (let col = 0; col < values.length; col += 4) {
+      ownerCandidates.push(String(values[col] || '').trim());
+    }
+
+    const namedOwnerCandidates = ownerCandidates.filter((value) => /[A-Za-z]/.test(value) && !['#', 'F'].includes(value.toUpperCase()));
+    const isOwnerRow = namedOwnerCandidates.length >= 2
+      && !values.some((cell) => String(cell || '').toUpperCase().includes('TOTAL SPENT'))
+      && !values.some((cell) => String(cell || '').toUpperCase().includes('BALANCE'))
+      && !values.some((cell) => String(cell || '').includes('$'));
+    if (isOwnerRow) {
+      blockOwners = ownerCandidates.map((value) => String(value || '').trim());
+      continue;
+    }
+
+    if (!blockOwners.length) continue;
+
+    if (values.some((cell) => String(cell || '').toUpperCase().includes('TOTAL SPENT'))) continue;
+    if (values.some((cell) => String(cell || '').toUpperCase().includes('BALANCE'))) continue;
+
+    for (let col = 0; col < blockOwners.length * 4; col += 4) {
+      const owner = String(blockOwners[col / 4] || '').trim();
+      if (!owner || owner === '#') continue;
+      const name = String(values[col + 1] || '').trim();
+      const position = String(values[col + 2] || '').trim();
+      const rawCost = String(values[col + 3] || '').trim();
+      if (!name || /^TOTAL SPENT$/i.test(name) || /^BALANCE$/i.test(name)) continue;
+
+      addPlayer(result, {
+        name,
+        owner,
+        position,
+        poolposition: position,
+        nhlteam: '',
+        cost: parseCost(rawCost),
+        source: 'retained-grid',
+      }, fallback++);
+    }
+  }
+
+  return result;
+}
+
+function parseFlatTable(lines) {
+  const result = createEmptyRosterResult();
+  const headers = parseCSVLine(lines[0] || '').map((header) => String(header || '').trim().toLowerCase());
+  let fallback = 1;
+
+  for (let i = 1; i < lines.length; i += 1) {
+    if (!lines[i].trim()) continue;
+    const values = parseCSVLine(lines[i]);
+    const record = {};
+    headers.forEach((header, index) => {
+      if (!header) return;
+      record[header] = values[index] || '';
+    });
+
+    const name = record.name || record.player || record.fullname || record.playername || '';
+    const position = record.poolposition || record.position || record.primaryposition || record.positioncode || '';
+    const owner = record.owner || record.team || record.currentteam || record.club || '';
+    const nhlteam = record.nhlteam || record.teamabbrev || '';
+
+    addPlayer(result, {
+      name,
+      owner,
+      position,
+      poolposition: position,
+      nhlteam,
+      cost: parseCost(record.cost || record.currentcost || ''),
+      source: 'flat-table',
+    }, fallback++);
+  }
+
+  return result;
+}
+
+function parseRoster(csvData) {
+  const raw = String(csvData || '');
+  const lines = raw.split(/\r?\n/);
+  const nonEmptyLines = lines.filter((line) => line.trim());
+  if (!nonEmptyLines.length) return createEmptyRosterResult();
+
+  const firstLine = parseCSVLine(nonEmptyLines[0]);
+  const firstCell = String(firstLine[0] || '').trim().toUpperCase();
+  const headerJoined = firstLine.join('|').toUpperCase();
+
+  if (firstCell === 'UTILITY') {
+    return parseUtilitySheet(nonEmptyLines);
+  }
+
+  if (headerJoined.includes('LEFT WING') && headerJoined.includes('CENTER') && headerJoined.includes('RIGHT WING')) {
+    return parseInventoryMatrix(nonEmptyLines);
+  }
+
+  if (!firstCell && firstLine.length > 3 && firstLine.slice(1).some((cell) => String(cell || '').trim())) {
+    return parseLeagueLayout(nonEmptyLines);
+  }
+
+  if (nonEmptyLines.some((line) => line.toUpperCase().includes('TOTAL SPENT')) && nonEmptyLines.some((line) => line.toUpperCase().includes('PLAYER NAME'))) {
+    return parseRetainedGrid(nonEmptyLines);
+  }
+
+  return parseFlatTable(nonEmptyLines);
+}
+
 function filterByPosition(roster, position) {
   const filtered = {};
   Object.entries(roster.players).forEach(([key, player]) => {
@@ -101,12 +334,6 @@ function filterByPosition(roster, position) {
   return filtered;
 }
 
-/**
- * Filters roster by NHL team
- * @param {Object} roster - Parsed roster object
- * @param {string} nhlTeam - NHL team to filter by
- * @returns {Object} Filtered players by NHL team
- */
 function filterByNHLTeam(roster, nhlTeam) {
   const filtered = {};
   Object.entries(roster.players).forEach(([key, player]) => {
@@ -117,12 +344,6 @@ function filterByNHLTeam(roster, nhlTeam) {
   return filtered;
 }
 
-/**
- * Filters roster by owner
- * @param {Object} roster - Parsed roster object
- * @param {string} owner - Owner name to filter by
- * @returns {Object} Filtered players by owner
- */
 function filterByOwner(roster, owner) {
   const filtered = {};
   Object.entries(roster.players).forEach(([key, player]) => {
@@ -133,12 +354,6 @@ function filterByOwner(roster, owner) {
   return filtered;
 }
 
-/**
- * Gets players with a specific status (prospect, veteran, farm)
- * @param {Object} roster - Parsed roster object
- * @param {string} status - Status type to filter by
- * @returns {Object} Filtered players by status
- */
 function filterByStatus(roster, status) {
   const filtered = {};
   Object.entries(roster.players).forEach(([key, player]) => {
@@ -149,22 +364,12 @@ function filterByStatus(roster, status) {
   return filtered;
 }
 
-/**
- * Sorts roster by cost (highest to lowest)
- * @param {Object} roster - Parsed roster object
- * @returns {Array} Array of player objects sorted by cost
- */
 function sortByCost(roster) {
   return Object.entries(roster.players)
     .map(([key, player]) => ({ ...player, playerKey: key }))
     .sort((a, b) => parseFloat(b.cost || 0) - parseFloat(a.cost || 0));
 }
 
-/**
- * Groups roster by owner
- * @param {Object} roster - Parsed roster object
- * @returns {Object} Roster grouped by owner
- */
 function groupByOwner(roster) {
   const grouped = {};
   Object.entries(roster.players).forEach(([key, player]) => {
@@ -189,7 +394,7 @@ export {
   filterByOwner,
   filterByStatus,
   sortByCost,
-  groupByOwner
+  groupByOwner,
 };
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -201,6 +406,6 @@ if (typeof module !== 'undefined' && module.exports) {
     filterByOwner,
     filterByStatus,
     sortByCost,
-    groupByOwner
+    groupByOwner,
   };
 }
