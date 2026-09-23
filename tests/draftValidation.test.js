@@ -268,6 +268,40 @@ describe('draft validation report', () => {
     expect(report.validationRows.find((row) => row.key === 'retention-integrity').status).toBe('valid');
   });
 
+  test('reconciles unique first-name spelling variants across classification sheets', () => {
+    const inventory = parseRoster([
+      'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
+      'Isaac Howard,EDM,Other Center,EDM,Other Wing,EDM,Eric Karlsson,PIT',
+    ].join('\n'));
+    const retained = parseRoster([
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,I Howard,LW,$2.50,1,E Karlsson,D,$14.00',
+      ',TOTAL SPENT,,$2.50,,TOTAL SPENT,,$14.00',
+    ].join('\n'));
+
+    let state = mergeDataset(undefined, 'roster', inventory, 'inventory.csv');
+    state = mergeDataset(state, 'roster', retained, 'retained.csv');
+    state = mergeDataset(state, 'prospects', {
+      isRightsList: true,
+      prospects: {
+        howard: { name: 'Issac Howard', owner: 'TEAM A', prospect: true, farm: false },
+      },
+      owners: { 'TEAM A': ['howard'] },
+      farmPlayers: [],
+    }, 'rookie-rights.csv');
+    state = mergeDataset(state, 'veterans', {
+      veterans: {
+        karlsson: { name: 'Erik Karlsson', owner: 'TEAM B', veteran: true, retentionYear: 2026 },
+      },
+      owners: { 'TEAM B': ['karlsson'] },
+    }, 'veterans.csv');
+
+    const owners = buildOwnerViewData(state).owners;
+    expect(owners.find((owner) => owner.name === 'TEAM A').retainedRookies.map((player) => player.name)).toEqual(['Isaac Howard']);
+    expect(owners.find((owner) => owner.name === 'TEAM B').retainedVeterans.map((player) => player.name)).toEqual(['Eric Karlsson']);
+  });
+
   test('refreshes all Google Sheet sources atomically and rebuilds league state', async () => {
     const csvByGid = {
       '663280764': 'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,\nAvailable Player,MIN,Owned Player,CHI,Right Wing,UTA,Defense,COL',
@@ -275,6 +309,7 @@ describe('draft validation report', () => {
       '1727331506': 'TEAM A,,,,TEAM B,,,\n#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost\n1,O Player,C,$10.00,,,,\n,TOTAL SPENT,,$10.00,,TOTAL SPENT,,$0.00',
       '910545566': ',TEAM A,TEAM B\nC,O Player,\nF,,Farm Player\n,514-555-0100,514-555-0101',
       '1065921002': 'TEAMS,COST,Term Remaining,YR1,YR2,YR3,Matching Rights\nTEAM B,,,,,,\nAvailable Player LW - 2025,$1.50,2,X,X,,Y',
+      '1905579914': 'TEAMS,2023,2024,2025,2026,2027\nTEAM A,,,,,\nOwned Player C - 2025,,,$5.00,$10.00,',
     };
     const fetchMock = jest.fn(async (url) => {
       const gid = new URL(url).searchParams.get('gid');
@@ -304,9 +339,10 @@ describe('draft validation report', () => {
     }, fetchMock);
     const report = buildDraftValidationReport(refreshed);
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
     expect(Object.keys(refreshed.datasets.roster.sources)).toHaveLength(4);
     expect(Object.keys(refreshed.datasets.prospects.prospects)).toHaveLength(1);
+    expect(Object.keys(refreshed.datasets.veterans.veterans)).toHaveLength(1);
     expect(report.availablePlayers.some((player) => player.name === 'Owned Player')).toBe(false);
     expect(report.availablePlayers.some((player) => player.name === 'Available Player')).toBe(false);
     expect(report.assignedPlayers.some((player) => player.name === 'Available Player')).toBe(true);
@@ -383,6 +419,22 @@ describe('draft validation report', () => {
     let state = mergeDataset(undefined, 'roster', inventory, 'inventory.csv');
     state = mergeDataset(state, 'roster', retained, 'retained.csv');
     state = mergeDataset(state, 'roster', league, 'league.csv');
+    state = mergeDataset(state, 'prospects', {
+      isRightsList: true,
+      prospects: {
+        gauthier: { name: 'Cutter Gauthier', owner: 'HEBREW HAMMERS', prospect: true, farm: false },
+        blake: { name: 'Jackson Blake', owner: 'HEBREW HAMMERS', prospect: true, farm: false },
+        koivunen: { name: 'Ville Koivunen', owner: 'HEBREW HAMMERS', prospect: true, farm: false },
+      },
+      owners: { 'HEBREW HAMMERS': ['gauthier', 'blake', 'koivunen'] },
+      farmPlayers: [],
+    }, 'rookie-rights.csv');
+    state = mergeDataset(state, 'veterans', {
+      veterans: {
+        caufield: { name: 'Cole Caufield', owner: 'HEBREW HAMMERS', veteran: true, retentionYear: 2026 },
+      },
+      owners: { 'HEBREW HAMMERS': ['caufield'] },
+    }, 'veterans.csv');
     const owner = buildOwnerViewData(state).owners.find((entry) => entry.name === 'HEBREW HAMMERS');
     const plan = buildDraftValidationReport(state).ownerDraftPlans.find((entry) => entry.owner === 'HEBREW HAMMERS');
 

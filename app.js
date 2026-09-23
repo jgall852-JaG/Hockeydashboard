@@ -19,6 +19,7 @@ const GOOGLE_SHEET_SOURCES = Object.freeze([
   { name: 'google-retained-players.csv', gid: '1727331506', datasetType: 'roster', expectedLayout: 'retained-grid' },
   { name: 'google-live-roster.csv', gid: '910545566', datasetType: 'roster', expectedLayout: 'league-layout' },
   { name: 'google-rookie-rights.csv', gid: '1065921002', datasetType: 'prospects' },
+  { name: 'google-veterans.csv', gid: '1905579914', datasetType: 'veterans' },
 ]);
 const DRAFT_ROSTER_RULES = Object.freeze({
   budgetCap: 250,
@@ -60,12 +61,6 @@ const GOALIE_TEAM_CITY_KEYS = new Set([
 ]);
 const SKATER_POSITION_KEYS = new Set(['c', 'l', 'r', 'lw', 'rw', 'd', 'ld', 'rd', 'f']);
 const GOALIE_TEAM_POSITION_KEYS = new Set(['g', 'goalie', 'goalieteam', 'goalie team', 'team goalie', 'gt']);
-const RETAINED_CLASSIFICATION_OVERRIDES = Object.freeze({
-  'cole caufield': 'Veteran',
-  'cutter gauthier': 'Rookie',
-  'jackson blake': 'Rookie',
-  'ville koivunen': 'Rookie',
-});
 
 const state = {
   importedData: null,
@@ -455,13 +450,19 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
     }
 
     const csvText = await response.text();
-    const parsedData = source.datasetType === 'prospects' ? parseProspects(csvText) : parseRoster(csvText);
+    const parsedData = source.datasetType === 'prospects'
+      ? parseProspects(csvText)
+      : source.datasetType === 'veterans'
+        ? parseVeterans(csvText)
+        : parseRoster(csvText);
     if (source.datasetType === 'prospects') {
       parsedData.isRightsList = true;
     }
     const recordCount = source.datasetType === 'prospects'
       ? Object.keys(parsedData.prospects || {}).length
-      : Object.keys(parsedData.players || {}).length;
+      : source.datasetType === 'veterans'
+        ? Object.keys(parsedData.veterans || {}).length
+        : Object.keys(parsedData.players || {}).length;
     if ((source.expectedLayout && parsedData.layout !== source.expectedLayout) || !recordCount) {
       throw new Error(`Google Sheet refresh returned an unexpected ${source.name} layout.`);
     }
@@ -501,9 +502,9 @@ function findCanonicalRosterKey(name, recordsByKey) {
   if (recordsByKey.has(exactKey)) return exactKey;
 
   const tokens = exactKey.split(' ').filter(Boolean);
-  if (tokens.length < 2 || tokens[0].length !== 1) return '';
+  if (tokens.length < 2) return '';
 
-  const firstInitial = tokens[0];
+  const firstInitial = tokens[0][0];
   const surname = tokens.slice(1).join(' ');
   const matches = [...recordsByKey.keys()].filter((candidateKey) => {
     const candidateTokens = candidateKey.split(' ').filter(Boolean);
@@ -626,13 +627,10 @@ function reconcileRetainedClassifications(stateObj) {
     const key = normalizeLookupKey(getRecordName(record));
     const imported = [...(classificationsByRosterKey.get(key) || [])];
     const explicit = normalizeClassification(record.classification);
-    const confirmedOverride = RETAINED_CLASSIFICATION_OVERRIDES[key] || '';
-    const classifications = [...new Set([confirmedOverride, explicit, ...imported].filter(Boolean))];
+    const classifications = [...new Set([explicit, ...imported].filter(Boolean))];
 
-    record.classificationConflict = confirmedOverride ? [] : classifications.length > 1 ? classifications : [];
-    if (confirmedOverride) {
-      record.classification = confirmedOverride;
-    } else if (explicit) {
+    record.classificationConflict = classifications.length > 1 ? classifications : [];
+    if (explicit) {
       record.classification = explicit;
     } else if (classifications.includes('Farm')) {
       record.classification = 'Farm';
