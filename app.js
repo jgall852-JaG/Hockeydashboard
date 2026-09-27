@@ -487,10 +487,10 @@ function formatAgeLabel(ageMinutes) {
   if (!Number.isFinite(ageMinutes)) return 'Not available';
   if (ageMinutes < 60) return `${ageMinutes} minute${ageMinutes === 1 ? '' : 's'} ago`;
 
-  const hours = Math.round(ageMinutes / 60);
+  const hours = Math.floor(ageMinutes / 60);
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
 
-  const days = Math.round(hours / 24);
+  const days = Math.floor(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
 }
 
@@ -551,7 +551,13 @@ function parsePortableStateBundle(bundle) {
   const candidate = bundle && typeof bundle === 'object' ? bundle : null;
   const appStateSource = candidate?.appState || (candidate?.datasets ? candidate : null);
 
-  if (!appStateSource) {
+  if (
+    !appStateSource
+    || typeof appStateSource !== 'object'
+    || !appStateSource.datasets
+    || typeof appStateSource.datasets !== 'object'
+    || Array.isArray(appStateSource.datasets)
+  ) {
     throw new Error('This file does not contain a Hockey Dashboard saved state.');
   }
 
@@ -633,8 +639,23 @@ async function importPortableStateFile(file) {
   if (!file) return null;
 
   const rawText = await file.text();
-  const parsedJson = JSON.parse(rawText);
-  return applyPortableStateBundle(parsedJson);
+  let parsedJson;
+
+  try {
+    parsedJson = JSON.parse(rawText);
+  } catch (err) {
+    throw new Error('The selected file is not valid JSON. Export a fresh Hockey Dashboard state and try again.');
+  }
+
+  try {
+    return applyPortableStateBundle(parsedJson);
+  } catch (err) {
+    if (err.message === 'This file does not contain a Hockey Dashboard saved state.') {
+      throw err;
+    }
+
+    throw new Error(`Unable to import the saved dashboard state. ${err.message}`);
+  }
 }
 
 function normalizeClassification(value) {
@@ -2573,11 +2594,28 @@ function handleImport(csvText, fileName) {
 
 function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
+  const topbarCsvFileInput = document.getElementById('topbarCsvFileInput');
   backToImportBtn.addEventListener('click', () => {
-    state.selectedOwner = null;
-    state.selectedPlayerKey = null;
-    renderImportScreen();
+    if (topbarCsvFileInput) {
+      topbarCsvFileInput.value = '';
+      topbarCsvFileInput.click();
+    } else {
+      state.selectedOwner = null;
+      state.selectedPlayerKey = null;
+      renderImportScreen();
+    }
   });
+
+  if (topbarCsvFileInput) {
+    topbarCsvFileInput.addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const csvText = await file.text();
+      handleImport(csvText, file.name);
+      topbarCsvFileInput.value = '';
+    });
+  }
 
   const exportStateBtn = document.getElementById('exportStateBtn');
   if (exportStateBtn) {

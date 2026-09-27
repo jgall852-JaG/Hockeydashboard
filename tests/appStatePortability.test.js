@@ -96,6 +96,10 @@ describe('portable state helpers', () => {
     expect(parsed.appState.datasets.veterans.veterans.one.name).toBe('Veteran One');
   });
 
+  test('rejects malformed legacy objects that only contain a truthy datasets field', () => {
+    expect(() => parsePortableStateBundle({ datasets: true })).toThrow('This file does not contain a Hockey Dashboard saved state.');
+  });
+
   test('rejects files that do not contain a saved dashboard state', () => {
     expect(() => parsePortableStateBundle({ nope: true })).toThrow('This file does not contain a Hockey Dashboard saved state.');
   });
