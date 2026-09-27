@@ -1,6 +1,8 @@
+import { jest } from '@jest/globals';
 import {
   getLiveCacheStatus,
   parsePortableStateBundle,
+  refreshGoogleSheetState,
   serializePortableStateBundle,
 } from '../app.js';
 
@@ -110,5 +112,84 @@ describe('live cache status', () => {
     const status = getLiveCacheStatus({ players: {}, teams: {} });
     expect(status.label).toBe('Local data only');
     expect(status.status).toBe('warning');
+  });
+});
+
+describe('google sheet refresh integration', () => {
+  test('merges the multi-sheet live snapshot without dropping saved state', async () => {
+    const responses = [
+      [
+        'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
+        'LW One,ANA,C One,BOS,RW One,BUF,D One,CGY',
+      ].join('\n'),
+      [
+        'UTILITY,,',
+        'Utility One,NYR,C/L',
+      ].join('\n'),
+      [
+        'TEAM A,,,,TEAM B,,,',
+        '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+        '1,Connor Bedard,C,$5.00,1,Matthew Knies,LW,$3.00',
+        ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
+      ].join('\n'),
+      [
+        ',TEAM A,TEAM B',
+        'C,Connor Bedard,',
+        'LW,,Matthew Knies',
+        'D,Nick Perbix,',
+        'RW,,Jake Guentzel',
+      ].join('\n'),
+      [
+        'TEAMS,',
+        'TEAM A,',
+        'Connor Bedard C - 2023,$5,2,,,,Y',
+        'TEAM B,',
+        'Matthew Knies LW - 2021,$3,1,,,,N',
+      ].join('\n'),
+    ];
+
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      text: async () => responses.shift(),
+    }));
+
+    const next = await refreshGoogleSheetState({
+      version: 2,
+      datasets: { prospects: null, veterans: null, roster: null, transactions: null },
+      metadata: {
+        prospects: { status: 'empty' },
+        veterans: { status: 'empty' },
+        roster: { status: 'empty' },
+        transactions: { status: 'empty' },
+      },
+      manualOverrides: [{ id: 'manual-1', name: 'Manual Player' }],
+      workingAssignments: {
+        'nick perbix': { playerKey: 'nick perbix', name: 'Nick Perbix' },
+      },
+    }, fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(next.datasets.roster.layout).toBe('merged');
+    expect(Object.keys(next.datasets.roster.sources)).toEqual(expect.arrayContaining([
+      'inventory',
+      'utility',
+      'retained-grid',
+      'league-layout',
+    ]));
+    expect(next.datasets.roster.players['connor-bedard']).toMatchObject({
+      name: 'Connor Bedard',
+      owner: 'TEAM A',
+      retained: true,
+      position: 'C',
+    });
+    expect(next.datasets.roster.players['utility-one']).toMatchObject({
+      name: 'Utility One',
+      position: 'U',
+    });
+    expect(next.datasets.prospects.isRightsList).toBe(true);
+    expect(next.metadata.roster.sourceName).toBe('google-live-roster.csv');
+    expect(next.metadata.prospects.sourceName).toBe('google-rookie-rights.csv');
+    expect(next.manualOverrides).toHaveLength(1);
+    expect(next.workingAssignments['nick perbix'].name).toBe('Nick Perbix');
   });
 });

@@ -58,7 +58,15 @@ button, input {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+   align-items: center;
   gap: 10px;
+}
+
+.live-refresh-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: right;
 }
 
 .eyebrow {

@@ -3,8 +3,9 @@
  * Parses roster-like CSV data from multiple league sheet layouts.
  */
 
-function createEmptyRosterResult() {
+function createEmptyRosterResult(layout = 'unknown') {
   return {
+    layout,
     players: {},
     teams: {},
     goalieFranchises: [],
@@ -73,6 +74,10 @@ function addPlayer(result, player, fallbackKey) {
     nhlteam: String(player.nhlteam || '').trim(),
     cost: player.cost ?? '',
     source: String(player.source || '').trim(),
+    retained: Boolean(player.retained),
+    drafted: Boolean(player.drafted),
+    available: player.available ?? '',
+    classification: String(player.classification || '').trim(),
   };
 
   result.players[key] = nextPlayer;
@@ -85,7 +90,7 @@ function addPlayer(result, player, fallbackKey) {
 }
 
 function parseInventoryMatrix(lines) {
-  const result = createEmptyRosterResult();
+  const result = createEmptyRosterResult('inventory');
   const header = parseCSVLine(lines[0] || '');
   const groups = [];
   for (let col = 0; col < header.length; col += 2) {
@@ -125,7 +130,7 @@ function parseInventoryMatrix(lines) {
 }
 
 function parseUtilitySheet(lines) {
-  const result = createEmptyRosterResult();
+  const result = createEmptyRosterResult('utility');
   let fallback = 1;
   for (let i = 1; i < lines.length; i += 1) {
     if (!lines[i].trim()) continue;
@@ -162,7 +167,7 @@ function looksLikePhoneRow(values) {
 }
 
 function parseLeagueLayout(lines) {
-  const result = createEmptyRosterResult();
+  const result = createEmptyRosterResult('league-layout');
   const header = parseCSVLine(lines[0] || '');
   const owners = header.slice(1).map((cell) => String(cell || '').trim());
   let currentPosition = '';
@@ -171,7 +176,7 @@ function parseLeagueLayout(lines) {
   for (let i = 1; i < lines.length; i += 1) {
     if (!lines[i].trim()) continue;
     const values = parseCSVLine(lines[i]);
-    if (looksLikePhoneRow(values) || looksLikeContactRow(values)) continue;
+    if (looksLikePhoneRow(values) || looksLikeContactRow(values)) break;
 
     const firstCell = String(values[0] || '').trim();
     const slotPosition = normalizeLeagueSlotPosition(firstCell);
@@ -195,6 +200,7 @@ function parseLeagueLayout(lines) {
         nhlteam: '',
         cost: '',
         source: 'league-layout',
+        classification: currentPosition === 'F' ? 'Farm' : '',
       }, fallback++);
     });
   }
@@ -203,7 +209,7 @@ function parseLeagueLayout(lines) {
 }
 
 function parseRetainedGrid(lines) {
-  const result = createEmptyRosterResult();
+  const result = createEmptyRosterResult('retained-grid');
   let blockOwners = [];
   let fallback = 1;
 
@@ -255,6 +261,7 @@ function parseRetainedGrid(lines) {
         nhlteam: '',
         cost: parseCost(rawCost),
         source: 'retained-grid',
+        retained: true,
       }, fallback++);
     }
   }
@@ -263,7 +270,7 @@ function parseRetainedGrid(lines) {
 }
 
 function parseFlatTable(lines) {
-  const result = createEmptyRosterResult();
+  const result = createEmptyRosterResult('flat-table');
   const headers = parseCSVLine(lines[0] || '').map((header) => String(header || '').trim().toLowerCase());
   let fallback = 1;
 
@@ -273,13 +280,18 @@ function parseFlatTable(lines) {
     const record = {};
     headers.forEach((header, index) => {
       if (!header) return;
-      record[header] = values[index] || '';
+      const value = values[index] || '';
+      const normalizedHeader = header.replace(/[^a-z0-9]+/g, '');
+      record[header] = value;
+      if (normalizedHeader) {
+        record[normalizedHeader] = value;
+      }
     });
 
-    const name = record.name || record.player || record.fullname || record.playername || '';
-    const position = record.poolposition || record.position || record.primaryposition || record.positioncode || '';
-    const owner = record.owner || record.team || record.currentteam || record.club || '';
-    const nhlteam = record.nhlteam || record.teamabbrev || '';
+    const name = record.name || record.player || record.fullname || record.playername || record.displayname || record['full name'] || record['player name'] || '';
+    const position = record.poolposition || record.position || record.primaryposition || record.positioncode || record['pool position'] || record['primary position'] || record['position code'] || '';
+    const owner = record.owner || record.team || record.currentteam || record.club || record['current team'] || record['team name'] || '';
+    const nhlteam = record.nhlteam || record.teamabbrev || record['nhl team'] || record['team abbrev'] || '';
 
     addPlayer(result, {
       name,
@@ -287,8 +299,12 @@ function parseFlatTable(lines) {
       position,
       poolposition: position,
       nhlteam,
-      cost: parseCost(record.cost || record.currentcost || ''),
+      cost: parseCost(record.cost || record.currentcost || record['current cost'] || ''),
       source: 'flat-table',
+      retained: ['y', 'yes', 'true', '1'].includes(String(record.retained || record.retention || record.kept || '').trim().toLowerCase()),
+      drafted: ['y', 'yes', 'true', '1'].includes(String(record.drafted || record.draftstatus || record['draft status'] || '').trim().toLowerCase()),
+      available: record.available || record.isavailable || record['is available'] || record.undrafted || '',
+      classification: record.classification || record.type || '',
     }, fallback++);
   }
 
@@ -313,7 +329,7 @@ function parseRoster(csvData) {
     return parseInventoryMatrix(nonEmptyLines);
   }
 
-  if (!firstCell && firstLine.length > 3 && firstLine.slice(1).some((cell) => String(cell || '').trim())) {
+  if (!firstCell && firstLine.length >= 3 && firstLine.slice(1).some((cell) => String(cell || '').trim())) {
     return parseLeagueLayout(nonEmptyLines);
   }
 

@@ -14,6 +14,14 @@ const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
 const PORTABLE_STATE_VERSION = 1;
 const MAX_PREVIEW_ROWS = 10;
+const GOOGLE_SHEET_ID = '1_RbnvnxnMzzwty7jdq8I9SN3mWfp187xKVnyPackzeA';
+const GOOGLE_SHEET_SOURCES = Object.freeze([
+  { name: 'google-position-inventory.csv', gid: '663280764', datasetType: 'roster', expectedLayout: 'inventory' },
+  { name: 'google-utility-inventory.csv', gid: '1551984288', datasetType: 'roster', expectedLayout: 'utility' },
+  { name: 'google-retained-players.csv', gid: '1727331506', datasetType: 'roster', expectedLayout: 'retained-grid' },
+  { name: 'google-live-roster.csv', gid: '910545566', datasetType: 'roster', expectedLayout: 'league-layout' },
+  { name: 'google-rookie-rights.csv', gid: '1065921002', datasetType: 'prospects' },
+]);
 const DRAFT_ROSTER_RULES = Object.freeze({
   budgetCap: 250,
   minSlotCost: 0.5,
@@ -68,6 +76,7 @@ const state = {
   liveCache: loadLiveCache(),
   liveProfiles: {},
   liveRequests: {},
+  liveRefreshMessage: '',
 };
 
 function parseCSVLine(line) {
@@ -105,6 +114,12 @@ export function detectDatasetType(csvText) {
   const text = String(csvText || '');
   const rows = text.split(/\r?\n/).filter((row) => row.trim());
   const normalized = rows.join('\n').toUpperCase();
+  const rosterCandidate = parseRoster(text);
+  const isStructuredRosterLayout = rosterCandidate?.layout && rosterCandidate.layout !== 'flat-table' && rosterCandidate.layout !== 'unknown';
+
+  if (isStructuredRosterLayout && Object.keys(rosterCandidate.players || {}).length > 0) {
+    return 'roster';
+  }
 
   if (
     normalized.includes('TERM REMAINING') ||
@@ -126,7 +141,6 @@ export function detectDatasetType(csvText) {
     return 'veterans';
   }
 
-  const rosterCandidate = parseRoster(text);
   if (Object.keys(rosterCandidate?.players || {}).length > 0) {
     return 'roster';
   }
@@ -402,13 +416,15 @@ function migrateOldState(oldObj) {
 function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
   const next = JSON.parse(JSON.stringify(stateObj));
   next.datasets = next.datasets || { prospects: null, veterans: null, roster: null, transactions: null };
-  next.datasets[datasetType] = parsedData;
+  next.datasets[datasetType] = datasetType === 'roster'
+    ? mergeRosterDataset(next.datasets.roster, parsedData, sourceName)
+    : parsedData;
   next.metadata = next.metadata || {};
   next.metadata[datasetType] = {
     status: (parsedData ? 'ok' : 'empty'),
     sourceName: sourceName || null,
     importedAt: parsedData ? new Date().toISOString() : null,
-    records: parsedData ? countParsedRecords(parsedData, datasetType) : 0,
+    records: next.datasets[datasetType] ? countParsedRecords(next.datasets[datasetType], datasetType) : 0,
   };
   next.manualOverrides = Array.isArray(next.manualOverrides) ? next.manualOverrides : [];
   next.version = APP_STATE_VERSION;
@@ -569,10 +585,187 @@ function parsePortableStateBundle(bundle) {
   };
 }
 
+async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('Google Sheet refresh is unavailable because this browser does not support fetch.');
+  }
+
+  const snapshots = await Promise.all(GOOGLE_SHEET_SOURCES.map(async (source) => {
+    const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv&gid=${source.gid}&cacheBust=${Date.now()}`;
+    const response = await fetchImpl(url, { cache: 'no-store' });
+    if (!response?.ok) {
+      throw new Error(`Google Sheet refresh failed for ${source.name} (HTTP ${response?.status || 'unknown'}).`);
+    }
+
+    const csvText = await response.text();
+    const parsedData = source.datasetType === 'prospects' ? parseProspects(csvText) : parseRoster(csvText);
+    if (source.datasetType === 'prospects') {
+      parsedData.isRightsList = true;
+    }
+    const recordCount = source.datasetType === 'prospects'
+      ? Object.keys(parsedData.prospects || {}).length
+      : Object.keys(parsedData.players || {}).length;
+    if ((source.expectedLayout && parsedData.layout !== source.expectedLayout) || !recordCount) {
+      throw new Error(`Google Sheet refresh returned an unexpected ${source.name} layout.`);
+    }
+    return { source, parsedData };
+  }));
+
+  let next = normalizeState(stateObj);
+  snapshots.forEach(({ source, parsedData }) => {
+    next = mergeDataset(next, source.datasetType, parsedData, source.name);
+  });
+  return next;
+}
+
+function getRosterSourceKey(parsedData, sourceName) {
+  const layout = String(parsedData?.layout || 'flat-table').trim().toLowerCase();
+  if (layout !== 'flat-table') return layout;
+  const normalizedSourceName = normalizeLookupKey(sourceName || 'flat-table').replace(/\s+/g, '-');
+  return `flat-table:${normalizedSourceName || 'default'}`;
+}
+
+function mergeRosterRecord(base, incoming) {
+  const next = { ...(base || {}) };
+  Object.entries(incoming || {}).forEach(([key, value]) => {
+    const hasValue = value !== undefined && value !== null && String(value).trim() !== '';
+    if (hasValue || !(key in next)) {
+      next[key] = value;
+    }
+  });
+  next.retained = Boolean(base?.retained || incoming?.retained);
+  next.drafted = Boolean(base?.drafted || incoming?.drafted);
+  return next;
+}
+
+function findCanonicalRosterKey(name, recordsByKey) {
+  const exactKey = normalizeLookupKey(name);
+  if (!exactKey) return '';
+  if (recordsByKey.has(exactKey)) return exactKey;
+
+  const tokens = exactKey.split(' ').filter(Boolean);
+  if (tokens.length < 2 || tokens[0].length !== 1) return '';
+
+  const firstInitial = tokens[0];
+  const surname = tokens.slice(1).join(' ');
+  const matches = [...recordsByKey.keys()].filter((candidateKey) => {
+    const candidateTokens = candidateKey.split(' ').filter(Boolean);
+    return candidateTokens.length >= 2
+      && candidateTokens[0].startsWith(firstInitial)
+      && candidateTokens.slice(1).join(' ') === surname;
+  });
+  return matches.length === 1 ? matches[0] : '';
+}
+
+function rebuildRosterDataset(sources) {
+  const recordsByKey = new Map();
+  const sourceList = Object.values(sources || {});
+  const baselineSources = sourceList.filter((source) => ['inventory', 'utility'].includes(source?.layout));
+  const authoritativeSources = sourceList.filter((source) => !['inventory', 'utility'].includes(source?.layout));
+
+  const mergeSource = (source, resolveAliases) => {
+    Object.values(source?.players || {}).forEach((record) => {
+      const name = getRecordName(record);
+      if (!name) return;
+      const exactKey = normalizeLookupKey(name);
+      const canonicalKey = resolveAliases ? (findCanonicalRosterKey(name, recordsByKey) || exactKey) : exactKey;
+      const current = recordsByKey.get(canonicalKey);
+      const merged = mergeRosterRecord(current, record);
+      if (current?.name && canonicalKey !== exactKey) {
+        merged.name = current.name;
+      }
+
+      const owners = [...new Set([
+        ...(current?.sourceOwners || []),
+        getRecordOwner(current),
+        getRecordOwner(record),
+      ].filter(Boolean))];
+      merged.sourceOwners = owners;
+      merged.owner = owners.length === 1 ? owners[0] : (getRecordOwner(record) || getRecordOwner(current));
+      merged.ownershipConflict = owners.length > 1 ? owners : [];
+      recordsByKey.set(canonicalKey, merged);
+    });
+  };
+
+  baselineSources.forEach((source) => mergeSource(source, false));
+  authoritativeSources.forEach((source) => mergeSource(source, true));
+
+  const players = {};
+  const teams = {};
+  recordsByKey.forEach((player, key) => {
+    const playerKey = key.replace(/\s+/g, '-') || `player-${Object.keys(players).length + 1}`;
+    players[playerKey] = player;
+    if (player.nhlteam) {
+      if (!teams[player.nhlteam]) teams[player.nhlteam] = [];
+      teams[player.nhlteam].push(playerKey);
+    }
+  });
+
+  return {
+    layout: 'merged',
+    sources,
+    players,
+    teams,
+    goalieFranchises: [],
+    contacts: {},
+  };
+}
+
+function mergeRosterDataset(currentRoster, parsedData, sourceName) {
+  const sources = currentRoster?.sources && typeof currentRoster.sources === 'object'
+    ? { ...currentRoster.sources }
+    : {};
+
+  if (!Object.keys(sources).length && currentRoster?.players) {
+    const legacyLayout = currentRoster.layout && currentRoster.layout !== 'merged' ? currentRoster.layout : 'legacy';
+    sources[legacyLayout] = { ...currentRoster, layout: legacyLayout };
+  }
+
+  const sourceKey = getRosterSourceKey(parsedData, sourceName);
+  sources[sourceKey] = {
+    ...parsedData,
+    layout: parsedData?.layout || 'flat-table',
+    sourceName: sourceName || null,
+  };
+  return rebuildRosterDataset(sources);
+}
+
+function hasGoogleSheetSnapshot(stateObj) {
+  const sourceNames = [
+    stateObj?.metadata?.roster?.sourceName,
+    stateObj?.metadata?.prospects?.sourceName,
+  ].filter(Boolean);
+  return sourceNames.some((name) => String(name).startsWith('google-'));
+}
+
 function updateTopbarActions(currentState = state.importedData || DEFAULT_STATE) {
+  const liveRefreshStatus = document.getElementById('liveRefreshStatus');
+  const liveRefreshBtn = document.getElementById('liveRefreshBtn');
+  const backToImportBtn = document.getElementById('backToImportBtn');
   const exportStateBtn = document.getElementById('exportStateBtn');
+  const hasData = hasLoadedData(currentState);
+  const googleSnapshotLoaded = hasGoogleSheetSnapshot(currentState);
+
+  if (liveRefreshStatus) {
+    if (state.liveRefreshMessage && googleSnapshotLoaded) {
+      liveRefreshStatus.textContent = state.liveRefreshMessage;
+    } else if (googleSnapshotLoaded) {
+      liveRefreshStatus.textContent = 'Google Sheets snapshot loaded';
+    } else {
+      liveRefreshStatus.textContent = '';
+    }
+  }
+
+  if (liveRefreshBtn) {
+    liveRefreshBtn.disabled = false;
+  }
+
+  if (backToImportBtn) {
+    backToImportBtn.textContent = hasData ? 'Refresh Snapshot' : 'Upload CSV';
+  }
+
   if (exportStateBtn) {
-    const hasPortableContent = hasLoadedData(currentState)
+    const hasPortableContent = hasData
       || Boolean(currentState?.manualOverrides?.length)
       || Boolean(Object.keys(currentState?.workingAssignments || {}).length);
     exportStateBtn.disabled = !hasPortableContent;
@@ -623,6 +816,7 @@ function applyPortableStateBundle(bundle) {
   state.liveCache = sanitizeLiveCache(parsed.liveCache);
   state.liveProfiles = state.liveCache.players ? { ...state.liveCache.players } : {};
   state.liveRequests = {};
+  state.liveRefreshMessage = hasGoogleSheetSnapshot(parsed.appState) ? 'Google Sheets snapshot loaded' : '';
   state.selectedOwner = null;
   state.selectedPlayerKey = null;
 
@@ -2305,11 +2499,9 @@ function renderOwnerView(unifiedState) {
   `;
 
   const draftValidationReport = buildDraftValidationReport(unifiedState);
-  const draftStatusHtml = renderDraftStatusPanel(unifiedState, draftValidationReport);
   const ownerListMarkup = renderOwnerList(ownerData, draftValidationReport);
   const ownerDetailMarkup = renderOwnerDetails(ownerData, draftValidationReport);
   const rosterIndex = buildRosterIndex(unifiedState);
-  const compactMode = isCompactViewport();
 
   // compute aggregates once
   const aggregates = computeOwnerAggregates(unifiedState);
@@ -2320,18 +2512,6 @@ function renderOwnerView(unifiedState) {
   const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
   const availablePlayerHtml = renderAvailablePlayerCenter(draftValidationReport);
   const overrideAuditHtml = renderManualOverridePanel(draftValidationReport, unifiedState);
-  const secondaryPanelsHtml = `
-    <details class="panel secondary-sections"${compactMode ? '' : ' open'}>
-      <summary>${compactMode ? 'More league/admin panels' : 'Additional league and admin panels'}</summary>
-      <div class="secondary-sections-body">
-        ${leagueHtml}
-        ${dataQualityHtml}
-        ${workspaceHtml}
-        ${availablePlayerHtml}
-        ${overrideAuditHtml}
-      </div>
-    </details>
-  `;
 
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -2339,11 +2519,14 @@ function renderOwnerView(unifiedState) {
     <div class="owner-layout">
       ${ownerListMarkup}
       <div>
-        ${draftStatusHtml}
+        ${leagueHtml}
+        ${dataQualityHtml}
         ${validationCenterHtml}
         ${bestAvailableHtml}
+        ${workspaceHtml}
+        ${availablePlayerHtml}
+        ${overrideAuditHtml}
         ${ownerDetailMarkup}
-        ${secondaryPanelsHtml}
       </div>
     </div>
   `;
@@ -2587,6 +2770,7 @@ function handleImport(csvText, fileName) {
     persistState(next);
 
     state.importedData = next;
+    state.liveRefreshMessage = hasGoogleSheetSnapshot(next) ? state.liveRefreshMessage : '';
     // render owner view with unified state
     renderOwnerView(next);
   });
@@ -2594,7 +2778,36 @@ function handleImport(csvText, fileName) {
 
 function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
+  const liveRefreshBtn = document.getElementById('liveRefreshBtn');
   const topbarCsvFileInput = document.getElementById('topbarCsvFileInput');
+  const liveRefreshStatus = document.getElementById('liveRefreshStatus');
+
+  if (liveRefreshBtn && liveRefreshStatus) {
+    liveRefreshBtn.addEventListener('click', async () => {
+      liveRefreshBtn.disabled = true;
+      liveRefreshBtn.textContent = 'Refreshing...';
+      liveRefreshStatus.textContent = 'Downloading current league data';
+
+      try {
+        const nextState = await refreshGoogleSheetState(state.importedData || loadState());
+        persistState(nextState);
+        state.importedData = nextState;
+        state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+        state.liveRefreshMessage = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        state.selectedPlayerKey = null;
+        renderOwnerView(nextState);
+      } catch (error) {
+        console.error('Google Sheet refresh failed', error);
+        state.liveRefreshMessage = 'Refresh failed';
+        liveRefreshStatus.textContent = state.liveRefreshMessage;
+        alert(error instanceof Error ? error.message : 'Google Sheet refresh failed.');
+      } finally {
+        liveRefreshBtn.disabled = false;
+        liveRefreshBtn.textContent = 'Refresh Google Sheets';
+      }
+    });
+  }
+
   backToImportBtn.addEventListener('click', () => {
     if (topbarCsvFileInput) {
       topbarCsvFileInput.value = '';
@@ -2667,6 +2880,7 @@ function initialize() {
   state.importedData = stored;
   state.manualOverrides = Array.isArray(stored.manualOverrides) ? stored.manualOverrides : [];
   state.liveProfiles = state.liveCache?.players ? { ...state.liveCache.players } : {};
+  state.liveRefreshMessage = hasGoogleSheetSnapshot(stored) ? 'Google Sheets snapshot loaded' : '';
   state.selectedOwner = null;
   state.selectedPlayerKey = null;
 
@@ -2693,6 +2907,7 @@ export {
   createManualOverrideDraft,
   getSnapshotAgeInfo,
   getLiveCacheStatus,
+  refreshGoogleSheetState,
   serializePortableStateBundle,
   parsePortableStateBundle,
 };

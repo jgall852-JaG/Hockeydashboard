@@ -15,9 +15,11 @@
           <h1>Live Hockey Intelligence</h1>
         </div>
         <div class="topbar-actions">
+          <span id="liveRefreshStatus" class="live-refresh-status" aria-live="polite"></span>
+          <button id="liveRefreshBtn" class="primary">Refresh Google Sheets</button>
           <button id="backToImportBtn" class="secondary">Upload CSV</button>
           <button id="importStateBtn" class="secondary">Import Saved State</button>
-          <button id="exportStateBtn" class="primary">Export State</button>
+          <button id="exportStateBtn" class="secondary">Export State</button>
           <input id="topbarCsvFileInput" class="hidden" type="file" accept=".csv,text/csv" />
           <input id="stateFileInput" class="hidden" type="file" accept=".json,application/json" />
         </div>
