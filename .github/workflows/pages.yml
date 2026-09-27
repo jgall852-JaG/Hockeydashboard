@@ -30,7 +30,13 @@ jobs:
       - name: Prepare static site
         run: |
           mkdir -p _site
-          cp index.html styles.css app.js liveNhlApi.js prospectParser.js rosterParser.js veteranParser.js _site/
+          rsync -av --delete \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '_site/' \
+            --exclude 'node_modules/' \
+            --exclude 'tests/' \
+            ./ _site/
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

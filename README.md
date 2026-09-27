@@ -20,8 +20,8 @@ Use the app to answer four questions:
 4. Can I trust this data right now?
 
 ## How to launch locally
-1. Open the repository root.
-2. Start a static server from `/home/runner/work/Hockeydashboard/Hockeydashboard`.
+1. Open the repository root on your machine.
+2. Start a static server from the project root (the folder containing `index.html`).
 3. Open the served URL in your browser.
 
 Example:

@@ -20,7 +20,7 @@
 
 ## If hosted access fails
 1. Open the repository on your laptop.
-2. Start a static server from `/home/runner/work/Hockeydashboard/Hockeydashboard`.
+2. Start a static server from the project root (the folder containing `index.html`).
 3. Open the local URL in your browser.
 4. Import your saved state JSON.
 

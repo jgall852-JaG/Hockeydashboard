@@ -582,6 +582,16 @@ button.secondary {
   font-size: 0.85rem;
 }
 
+.mobile-readonly-action {
+  display: grid;
+  gap: 6px;
+}
+
+.compact-action-note {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .data-quality .dq-row {
   display: flex;
   align-items: center;
@@ -805,14 +815,6 @@ button.secondary {
   .data-quality .dq-row {
     flex-direction: column;
     align-items: flex-start;
-  }
-
-  .workspace-inline-actions,
-  .save-assignment-btn,
-  .clear-assignment-btn,
-  .manual-override-form,
-  .remove-override-btn {
-    display: none !important;
   }
 
   .mobile-only-note {

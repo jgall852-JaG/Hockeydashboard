@@ -579,6 +579,19 @@ function isCompactViewport() {
     && window.matchMedia('(max-width: 760px)').matches;
 }
 
+function renderResponsiveActionButton({ label, className = 'secondary', attributes = '' }) {
+  if (isCompactViewport()) {
+    return `
+      <div class="mobile-readonly-action">
+        <button type="button" class="${className}" disabled aria-disabled="true">${escapeHtml(label)}</button>
+        <div class="compact-action-note">Laptop only in phone lookup mode</div>
+      </div>
+    `;
+  }
+
+  return `<button type="button" class="${className}" ${attributes}>${escapeHtml(label)}</button>`;
+}
+
 function downloadPortableState(stateObj) {
   const bundle = serializePortableStateBundle(stateObj);
   const fileName = `hockey-dashboard-state-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -1507,6 +1520,7 @@ function renderDraftValidationCenter(report) {
 }
 
 function renderBestAvailablePanel(report) {
+  const compactMode = isCompactViewport();
   const players = (report.availablePlayers || [])
     .filter((player) => !player.manualOverride)
     .slice(0, 12);
@@ -1520,7 +1534,11 @@ function renderBestAvailablePanel(report) {
             <span class="meta-pill">${escapeHtml(player.type || 'Unknown')}</span>
           </div>
           <div class="workspace-inline-actions">
-            <button type="button" class="secondary draft-assign-open-btn" data-assign-player-key="${escapeHtml(player.key)}" data-assign-name="${escapeHtml(player.name)}" data-assign-position="${escapeHtml(player.position || '—')}" data-assign-type="${escapeHtml(player.type || 'Rookie')}">Assign</button>
+            ${renderResponsiveActionButton({
+              label: compactMode ? 'Assign on laptop' : 'Assign',
+              className: 'secondary draft-assign-open-btn',
+              attributes: `data-assign-player-key="${escapeHtml(player.key)}" data-assign-name="${escapeHtml(player.name)}" data-assign-position="${escapeHtml(player.position || '—')}" data-assign-type="${escapeHtml(player.type || 'Rookie')}"`
+            })}
           </div>
         </div>
       `).join('')
@@ -1543,6 +1561,7 @@ function renderBestAvailablePanel(report) {
 }
 
 function renderDraftWorkspacePanel(report) {
+  const compactMode = isCompactViewport();
   const assignedPlayers = report.assignedPlayers || [];
   const grouped = Object.entries(report.assignedByTeam || {}).sort((a, b) => a[0].localeCompare(b[0]));
   const groupsHtml = grouped.length
@@ -1561,8 +1580,12 @@ function renderDraftWorkspacePanel(report) {
                       <span class="player-chip">${escapeHtml(entry.status)}</span>
                     </div>
                   </div>
-                  <button type="button" class="secondary clear-assignment-btn" data-clear-player-key="${escapeHtml(entry.playerKey)}">Clear</button>
-                </div>
+                    ${renderResponsiveActionButton({
+                      label: compactMode ? 'Clear on laptop' : 'Clear',
+                      className: 'secondary clear-assignment-btn',
+                      attributes: `data-clear-player-key="${escapeHtml(entry.playerKey)}"`
+                    })}
+                  </div>
               </li>
             `).join('')}
           </ul>
@@ -1628,6 +1651,7 @@ function saveWorkingAssignmentFromButton(unifiedState, button) {
 }
 
 function renderAvailablePlayerCenter(report) {
+  const compactMode = isCompactViewport();
   const search = String(state.availablePlayerSearch || '').trim().toLowerCase();
   const assignmentMap = report.workingAssignments || {};
   const players = report.availablePlayers
@@ -1648,21 +1672,25 @@ function renderAvailablePlayerCenter(report) {
           <td>${escapeHtml(player.type)}</td>
           <td>${escapeHtml(player.status)}</td>
           <td>${escapeHtml(player.owner || '—')}</td>
-          <td><input type="text" class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" placeholder="Team" value="${escapeHtml(assignmentMap[player.key]?.team || '')}" /></td>
-          <td><input type="number" class="workspace-bid-input" data-workspace-bid-key="${escapeHtml(player.key)}" min="${DRAFT_ROSTER_RULES.minSlotCost}" step="0.5" placeholder="0.50" value="${escapeHtml(String(assignmentMap[player.key]?.bid ?? ''))}" /></td>
+          <td><input type="text" class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" placeholder="Team" value="${escapeHtml(assignmentMap[player.key]?.team || '')}" ${compactMode ? 'disabled aria-disabled="true"' : ''} /></td>
+          <td><input type="number" class="workspace-bid-input" data-workspace-bid-key="${escapeHtml(player.key)}" min="${DRAFT_ROSTER_RULES.minSlotCost}" step="0.5" placeholder="0.50" value="${escapeHtml(String(assignmentMap[player.key]?.bid ?? ''))}" ${compactMode ? 'disabled aria-disabled="true"' : ''} /></td>
           <td>
-            <select class="workspace-classification-select" data-workspace-classification-key="${escapeHtml(player.key)}">
+            <select class="workspace-classification-select" data-workspace-classification-key="${escapeHtml(player.key)}" ${compactMode ? 'disabled aria-disabled="true"' : ''}>
               ${['Rookie', 'Veteran', 'Farm'].map((option) => `<option value="${option}" ${normalizeWorkingClassification(assignmentMap[player.key]?.classification || player.type, player.type) === option ? 'selected' : ''}>${option}</option>`).join('')}
             </select>
           </td>
           <td>
-            <select class="workspace-status-select" data-workspace-status-key="${escapeHtml(player.key)}">
+            <select class="workspace-status-select" data-workspace-status-key="${escapeHtml(player.key)}" ${compactMode ? 'disabled aria-disabled="true"' : ''}>
               ${['Assigned', 'Winning Team', 'Winning Bid', 'TBD'].map((option) => `<option value="${option}" ${normalizeWorkingStatus(assignmentMap[player.key]?.status || 'Assigned') === option ? 'selected' : ''}>${option}</option>`).join('')}
             </select>
           </td>
           <td>
             <div class="workspace-inline-actions">
-              <button type="button" class="secondary save-assignment-btn" data-save-player-key="${escapeHtml(player.key)}" data-player-name="${escapeHtml(player.name)}" data-player-position="${escapeHtml(player.position || '—')}" data-player-type="${escapeHtml(player.type || 'Rookie')}">Save</button>
+              ${renderResponsiveActionButton({
+                label: compactMode ? 'Save on laptop' : 'Save',
+                className: 'secondary save-assignment-btn',
+                attributes: `data-save-player-key="${escapeHtml(player.key)}" data-player-name="${escapeHtml(player.name)}" data-player-position="${escapeHtml(player.position || '—')}" data-player-type="${escapeHtml(player.type || 'Rookie')}"`
+              })}
             </div>
           </td>
         </tr>
@@ -1738,6 +1766,7 @@ function renderAvailablePlayerCenter(report) {
 }
 
 function renderManualOverridePanel(report, stateObj) {
+  const compactMode = isCompactViewport();
   const overrides = report.manualOverrides || [];
   const rows = overrides.length ? overrides.map((override) => `
     <div class="override-card">
@@ -1746,7 +1775,11 @@ function renderManualOverridePanel(report, stateObj) {
           <div class="override-player-name">${escapeHtml(override.name)}</div>
           <div class="manual-override-tag">MANUAL OVERRIDE</div>
         </div>
-        <button class="secondary remove-override-btn" data-override-id="${escapeHtml(override.id)}">Remove</button>
+        ${renderResponsiveActionButton({
+          label: compactMode ? 'Remove on laptop' : 'Remove',
+          className: 'secondary remove-override-btn',
+          attributes: `data-override-id="${escapeHtml(override.id)}"`
+        })}
       </div>
       <div class="override-meta">
         <span class="meta-pill">${escapeHtml(override.position || '—')}</span>
@@ -1768,32 +1801,38 @@ function renderManualOverridePanel(report, stateObj) {
           <span class="meta-pill">Overrides ${overrides.length}</span>
         </div>
       </div>
-      <form id="manualOverrideForm" class="manual-override-form">
-        <div class="manual-grid">
-          <label>
-            <span>Name</span>
-            <input name="name" type="text" required />
-          </label>
-          <label>
-            <span>Position</span>
-            <input name="position" type="text" required />
-          </label>
-          <label>
-            <span>Classification</span>
-            <select name="classification" required>
-              <option value="">Select</option>
-              <option value="Veteran">Veteran</option>
-              <option value="Rookie">Rookie</option>
-              <option value="Farm">Farm</option>
-            </select>
-          </label>
-          <label class="manual-notes">
-            <span>Notes</span>
-            <textarea name="notes" rows="3" placeholder="Why this override is needed"></textarea>
-          </label>
+      ${compactMode ? `
+        <div class="mobile-readonly-note">
+          Manual overrides are available on laptop mode only so phone access stays read-only and trustworthy.
         </div>
-        <button type="submit" class="primary">Add Manual Override</button>
-      </form>
+      ` : `
+        <form id="manualOverrideForm" class="manual-override-form">
+          <div class="manual-grid">
+            <label>
+              <span>Name</span>
+              <input name="name" type="text" required />
+            </label>
+            <label>
+              <span>Position</span>
+              <input name="position" type="text" required />
+            </label>
+            <label>
+              <span>Classification</span>
+              <select name="classification" required>
+                <option value="">Select</option>
+                <option value="Veteran">Veteran</option>
+                <option value="Rookie">Rookie</option>
+                <option value="Farm">Farm</option>
+              </select>
+            </label>
+            <label class="manual-notes">
+              <span>Notes</span>
+              <textarea name="notes" rows="3" placeholder="Why this override is needed"></textarea>
+            </label>
+          </div>
+          <button type="submit" class="primary">Add Manual Override</button>
+        </form>
+      `}
       <div class="override-list">
         ${rows}
       </div>
@@ -2563,14 +2602,25 @@ function initialize() {
         await importPortableStateFile(file);
       } catch (err) {
         alert(`Unable to import saved state: ${err.message}`);
+      } finally {
+        stateFileInput.value = '';
       }
     });
   }
 
   if (typeof window !== 'undefined') {
+    let compactViewport = isCompactViewport();
     window.addEventListener('resize', () => {
+      const nextCompactViewport = isCompactViewport();
+      if (nextCompactViewport === compactViewport) {
+        return;
+      }
+
+      compactViewport = nextCompactViewport;
       if (hasLoadedData(state.importedData || DEFAULT_STATE)) {
         renderOwnerView(state.importedData || loadState());
+      } else {
+        renderImportScreen();
       }
     });
   }

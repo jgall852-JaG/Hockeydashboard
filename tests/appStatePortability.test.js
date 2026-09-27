@@ -68,6 +68,34 @@ describe('portable state helpers', () => {
     expect(parsed.liveCache.players.roster.status).toBe('ok');
   });
 
+  test('accepts a legacy raw app-state object without wrapper metadata', () => {
+    const parsed = parsePortableStateBundle({
+      version: 2,
+      datasets: {
+        prospects: null,
+        veterans: {
+          veterans: {
+            one: { name: 'Veteran One', owner: 'TEAM A', currentCost: 10 },
+          },
+        },
+        roster: null,
+        transactions: null,
+      },
+      metadata: {
+        prospects: { status: 'empty' },
+        veterans: { status: 'ok', importedAt: '2026-09-27T11:00:00.000Z', records: 1, sourceName: 'veterans.csv' },
+        roster: { status: 'empty' },
+        transactions: { status: 'empty' },
+      },
+      manualOverrides: [],
+      workingAssignments: {},
+    });
+
+    expect(parsed.format).toBe('legacy');
+    expect(parsed.appState.metadata.veterans.status).toBe('ok');
+    expect(parsed.appState.datasets.veterans.veterans.one.name).toBe('Veteran One');
+  });
+
   test('rejects files that do not contain a saved dashboard state', () => {
     expect(() => parsePortableStateBundle({ nope: true })).toThrow('This file does not contain a Hockey Dashboard saved state.');
   });
