@@ -190,4 +190,41 @@ describe('draft validation report', () => {
     expect(report.availablePlayers.some((player) => player.name === 'Available Wing')).toBe(false);
     expect(report.details.availableIntegrityIssues).toHaveLength(0);
   });
+
+  test('does not collapse distinct same-name players across roster snapshots', () => {
+    const ownerlessRosterCsv = [
+      'name,position,nhlteam',
+      'Alex Smith,C,ANA',
+    ].join('\n');
+    const ownedRosterCsv = [
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Alex Smith,D,$7.00,1,Other Player,LW,$3.00',
+      ',TOTAL SPENT,,$7.00,,TOTAL SPENT,,$3.00',
+    ].join('\n');
+
+    let state = {
+      version: 2,
+      datasets: { prospects: null, veterans: null, roster: null, transactions: null },
+      metadata: {
+        prospects: { status: 'empty' },
+        veterans: { status: 'empty' },
+        roster: { status: 'empty' },
+        transactions: { status: 'empty' },
+      },
+      manualOverrides: [],
+      workingAssignments: {},
+    };
+
+    [ownerlessRosterCsv, ownedRosterCsv].forEach((csv, index) => {
+      state = mergeDataset(state, 'roster', parseRoster(csv), `duplicate-${index + 1}.csv`);
+    });
+
+    const rosterPlayers = Object.values(state.datasets.roster.players || {});
+    expect(rosterPlayers.filter((player) => player.name === 'Alex Smith')).toHaveLength(2);
+
+    const report = buildDraftValidationReport(state);
+    expect(report.availablePlayers.some((player) => player.name === 'Alex Smith')).toBe(true);
+    expect(report.details.availableIntegrityIssues).toHaveLength(0);
+  });
 });

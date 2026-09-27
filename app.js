@@ -419,15 +419,26 @@ function findRosterMergeTargetKey(players, incomingPlayer) {
   const incomingNameKey = normalizeLookupKey(incomingPlayer?.name || '');
   if (!incomingNameKey) return null;
   const incomingOwnerKey = normalizeLookupKey(incomingPlayer?.owner || '');
+  const incomingPositionKey = normalizeDraftPositionText(incomingPlayer?.poolposition || incomingPlayer?.position || '');
+  const incomingTeamKey = normalizeLookupKey(incomingPlayer?.nhlteam || '');
 
-  return Object.entries(players).find(([, existingPlayer]) => {
+  const matches = Object.entries(players).filter(([, existingPlayer]) => {
     const existingNameKey = normalizeLookupKey(existingPlayer?.name || '');
     if (!existingNameKey || existingNameKey !== incomingNameKey) return false;
 
     const existingOwnerKey = normalizeLookupKey(existingPlayer?.owner || '');
-    if (!existingOwnerKey || !incomingOwnerKey) return true;
-    return existingOwnerKey === incomingOwnerKey;
-  })?.[0] || null;
+    if (existingOwnerKey && incomingOwnerKey && existingOwnerKey !== incomingOwnerKey) return false;
+
+    const existingPositionKey = normalizeDraftPositionText(existingPlayer?.poolposition || existingPlayer?.position || '');
+    if (existingPositionKey && incomingPositionKey && existingPositionKey !== incomingPositionKey) return false;
+
+    const existingTeamKey = normalizeLookupKey(existingPlayer?.nhlteam || '');
+    if (existingTeamKey && incomingTeamKey && existingTeamKey !== incomingTeamKey) return false;
+
+    return true;
+  });
+
+  return matches.length === 1 ? matches[0][0] : null;
 }
 
 function mergeRosterPlayerRecords(existingPlayer, incomingPlayer) {
