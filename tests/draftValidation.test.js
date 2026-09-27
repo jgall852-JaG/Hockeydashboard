@@ -197,10 +197,9 @@ describe('draft validation report', () => {
       'Alex Smith,C,ANA',
     ].join('\n');
     const ownedRosterCsv = [
-      'TEAM A,,,,TEAM B,,,',
-      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
-      '1,Alex Smith,D,$7.00,1,Other Player,LW,$3.00',
-      ',TOTAL SPENT,,$7.00,,TOTAL SPENT,,$3.00',
+      'name,owner,position,nhlteam,cost',
+      'Alex Smith,TEAM A,D,BOS,7',
+      'Other Player,TEAM B,LW,SEA,3',
     ].join('\n');
 
     let state = {
@@ -222,9 +221,10 @@ describe('draft validation report', () => {
 
     const rosterPlayers = Object.values(state.datasets.roster.players || {});
     expect(rosterPlayers.filter((player) => player.name === 'Alex Smith')).toHaveLength(2);
-
     expect(rosterPlayers.some((player) => player.name === 'Alex Smith' && player.owner === '')).toBe(true);
     expect(rosterPlayers.some((player) => player.name === 'Alex Smith' && player.owner === 'TEAM A')).toBe(true);
+    expect(state.datasets.roster.teams.ANA).toHaveLength(1);
+    expect(state.datasets.roster.teams.BOS).toHaveLength(1);
   });
 
   test('does not merge name-only roster rows without a matching secondary identifier', () => {

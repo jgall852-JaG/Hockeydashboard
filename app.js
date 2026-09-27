@@ -493,7 +493,7 @@ function mergeRosterDataset(existingDataset, incomingDataset) {
   });
 
   merged.players = players;
-  merged.teams = mergeRosterTeamMaps(existingDataset.teams, incomingDataset.teams, players);
+  merged.teams = buildMergedRosterTeams(players);
   merged.goalieFranchises = [...new Set([...(existingDataset.goalieFranchises || []), ...(incomingDataset.goalieFranchises || [])])];
   merged.contacts = {
     ...(existingDataset.contacts || {}),
@@ -511,28 +511,6 @@ function buildMergedRosterTeams(players) {
     acc[nhlTeam].push(playerKey);
     return acc;
   }, {});
-}
-
-function mergeRosterTeamMaps(existingTeams, incomingTeams, players) {
-  const merged = {};
-  [existingTeams, incomingTeams].forEach((teamMap) => {
-    Object.entries(teamMap || {}).forEach(([teamKey, playerKeys]) => {
-      if (!merged[teamKey]) merged[teamKey] = [];
-      (playerKeys || []).forEach((playerKey) => {
-        if (!merged[teamKey].includes(playerKey)) merged[teamKey].push(playerKey);
-      });
-    });
-  });
-
-  const derivedTeams = buildMergedRosterTeams(players);
-  Object.entries(derivedTeams).forEach(([teamKey, playerKeys]) => {
-    if (!merged[teamKey]) merged[teamKey] = [];
-    playerKeys.forEach((playerKey) => {
-      if (!merged[teamKey].includes(playerKey)) merged[teamKey].push(playerKey);
-    });
-  });
-
-  return merged;
 }
 
 function createUniqueRosterPlayerKey(players, preferredKey, player) {
