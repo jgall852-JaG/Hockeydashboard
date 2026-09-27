@@ -3,6 +3,7 @@ import { parseVeterans } from './veteranParser.js';
 import { parseRoster } from './rosterParser.js';
 import {
   loadLiveCache,
+  persistLiveCache,
   resolveLivePlayerProfile,
   normalizeLookupKey,
   pickRecordValue,
@@ -11,6 +12,7 @@ import {
 
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
+const PORTABLE_STATE_VERSION = 1;
 const MAX_PREVIEW_ROWS = 10;
 const DRAFT_ROSTER_RULES = Object.freeze({
   budgetCap: 250,
@@ -468,6 +470,158 @@ function getSnapshotAgeInfo(stateObj) {
     status,
     details: `Latest refresh ${ageMinutes} minute${ageMinutes === 1 ? '' : 's'} ago`,
   };
+}
+
+function hasLoadedData(stateObj) {
+  return ['prospects', 'veterans', 'roster', 'transactions']
+    .some((key) => stateObj?.metadata?.[key]?.status === 'ok');
+}
+
+function formatTimestamp(value) {
+  if (!value) return 'Not available';
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : 'Not available';
+}
+
+function formatAgeLabel(ageMinutes) {
+  if (!Number.isFinite(ageMinutes)) return 'Not available';
+  if (ageMinutes < 60) return `${ageMinutes} minute${ageMinutes === 1 ? '' : 's'} ago`;
+
+  const hours = Math.round(ageMinutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function sanitizeLiveCache(cacheObj) {
+  const source = cacheObj && typeof cacheObj === 'object' ? cacheObj : {};
+  return {
+    version: source.version || 1,
+    updatedAt: source.updatedAt || null,
+    players: source.players && typeof source.players === 'object' ? source.players : {},
+    teams: source.teams && typeof source.teams === 'object' ? source.teams : {},
+  };
+}
+
+function getLiveCacheStatus(cacheObj = state.liveCache) {
+  const cache = sanitizeLiveCache(cacheObj);
+  if (!cache.updatedAt) {
+    return {
+      status: 'warning',
+      label: 'Local data only',
+      details: 'No cached NHL enrichment has been saved on this device yet.',
+      updatedAt: null,
+    };
+  }
+
+  const updatedAtMs = new Date(cache.updatedAt).getTime();
+  if (!Number.isFinite(updatedAtMs)) {
+    return {
+      status: 'warning',
+      label: 'Cached live data unreadable',
+      details: 'The saved live-data cache timestamp could not be read.',
+      updatedAt: cache.updatedAt,
+    };
+  }
+
+  const ageMinutes = Math.max(0, Math.round((Date.now() - updatedAtMs) / 60000));
+  const status = ageMinutes > 240 ? 'warning' : 'valid';
+  const label = ageMinutes > 240 ? 'Cached live data is aging' : 'Cached live data ready';
+
+  return {
+    status,
+    label,
+    details: `Last live cache refresh ${formatAgeLabel(ageMinutes)}`,
+    updatedAt: cache.updatedAt,
+  };
+}
+
+function serializePortableStateBundle(stateObj, liveCacheObj = state.liveCache) {
+  return {
+    format: 'hockey-dashboard-portable-state',
+    version: PORTABLE_STATE_VERSION,
+    exportedAt: new Date().toISOString(),
+    appState: normalizeState(stateObj || state.importedData || DEFAULT_STATE),
+    liveCache: sanitizeLiveCache(liveCacheObj),
+  };
+}
+
+function parsePortableStateBundle(bundle) {
+  const candidate = bundle && typeof bundle === 'object' ? bundle : null;
+  const appStateSource = candidate?.appState || (candidate?.datasets ? candidate : null);
+
+  if (!appStateSource) {
+    throw new Error('This file does not contain a Hockey Dashboard saved state.');
+  }
+
+  return {
+    appState: normalizeState(appStateSource),
+    liveCache: sanitizeLiveCache(candidate?.liveCache),
+    exportedAt: candidate?.exportedAt || null,
+    format: candidate?.format || 'legacy',
+  };
+}
+
+function updateTopbarActions(currentState = state.importedData || DEFAULT_STATE) {
+  const exportStateBtn = document.getElementById('exportStateBtn');
+  if (exportStateBtn) {
+    const hasPortableContent = hasLoadedData(currentState)
+      || Boolean(currentState?.manualOverrides?.length)
+      || Boolean(Object.keys(currentState?.workingAssignments || {}).length);
+    exportStateBtn.disabled = !hasPortableContent;
+  }
+}
+
+function isCompactViewport() {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(max-width: 760px)').matches;
+}
+
+function downloadPortableState(stateObj) {
+  const bundle = serializePortableStateBundle(stateObj);
+  const fileName = `hockey-dashboard-state-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function applyPortableStateBundle(bundle) {
+  const parsed = parsePortableStateBundle(bundle);
+  persistState(parsed.appState);
+  persistLiveCache(parsed.liveCache);
+
+  state.importedData = parsed.appState;
+  state.manualOverrides = Array.isArray(parsed.appState.manualOverrides) ? parsed.appState.manualOverrides : [];
+  state.liveCache = sanitizeLiveCache(parsed.liveCache);
+  state.liveProfiles = state.liveCache.players ? { ...state.liveCache.players } : {};
+  state.liveRequests = {};
+  state.selectedOwner = null;
+  state.selectedPlayerKey = null;
+
+  if (hasLoadedData(parsed.appState)) {
+    renderOwnerView(parsed.appState);
+  } else {
+    renderImportScreen();
+  }
+
+  return parsed;
+}
+
+async function importPortableStateFile(file) {
+  if (!file) return null;
+
+  const rawText = await file.text();
+  const parsedJson = JSON.parse(rawText);
+  return applyPortableStateBundle(parsedJson);
 }
 
 function normalizeClassification(value) {
@@ -1186,6 +1340,79 @@ function renderDataQualityPanel(stateObj) {
       <h3>Data Quality</h3>
       <div style="margin-top:10px;">${rows}</div>
       <div style="margin-top:8px;color:var(--muted);font-size:0.9rem;">Last updated: ${escapeHtml(lastUpdated)}</div>
+    </section>
+  `;
+}
+
+function renderDraftStatusPanel(stateObj, report) {
+  const snapshot = getSnapshotAgeInfo(stateObj);
+  const liveCache = getLiveCacheStatus(state.liveCache);
+  const compactMode = isCompactViewport();
+  const latestImportAt = ['prospects', 'veterans', 'roster', 'transactions']
+    .map((dataset) => stateObj?.metadata?.[dataset]?.importedAt)
+    .filter(Boolean)
+    .sort()
+    .pop() || null;
+  const trustStatus = report.validationHealth === 'error'
+    ? { label: 'Review before draft use', detail: 'Validation errors are present. Refresh or fix the snapshot first.', tone: 'danger' }
+    : report.validationHealth === 'warning'
+      ? { label: 'Usable with caution', detail: 'Warnings exist. Double-check the flagged rows before making live decisions.', tone: 'warning' }
+      : { label: 'Ready for draft decisions', detail: 'Snapshot, ownership, and roster rules are aligned with the current checks.', tone: 'success' };
+
+  const datasetRows = ['prospects', 'veterans', 'roster', 'transactions'].map((dataset) => {
+    const metadata = stateObj?.metadata?.[dataset] || { status: 'empty' };
+    const label = dataset.charAt(0).toUpperCase() + dataset.slice(1);
+    const statusText = metadata.status === 'ok' ? 'Loaded' : 'Missing';
+    const sourceText = metadata.sourceName ? ` · ${escapeHtml(metadata.sourceName)}` : '';
+    return `
+      <div class="status-row">
+        <span>${escapeHtml(label)}</span>
+        <strong>${statusText}</strong>
+        <span class="status-row-meta">${metadata.records ?? 0} record${metadata.records === 1 ? '' : 's'}${sourceText}</span>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <section class="panel draft-status-panel">
+      <div class="preview-header">
+        <div>
+          <h2>Draft-Day Control Center</h2>
+          <div class="panel-subtitle">Use a laptop for editing. Use a phone for lookup, freshness checks, and emergency access.</div>
+        </div>
+        <div class="preview-meta">
+          <span class="meta-pill">${compactMode ? 'Phone Lookup Mode' : 'Laptop Draft Mode'}</span>
+          <span class="meta-pill">${snapshot.label}</span>
+          <span class="meta-pill">${liveCache.label}</span>
+        </div>
+      </div>
+      <div class="status-grid">
+        <article class="status-card">
+          <h3>Trust this snapshot?</h3>
+          <div class="status-callout tone-${trustStatus.tone}">
+            <strong>${trustStatus.label}</strong>
+            <div>${trustStatus.detail}</div>
+          </div>
+          <div class="status-detail-list">
+            <div><strong>Snapshot:</strong> ${escapeHtml(snapshot.details)}</div>
+            <div><strong>Latest import:</strong> ${escapeHtml(formatTimestamp(latestImportAt))}</div>
+            <div><strong>Live cache:</strong> ${escapeHtml(liveCache.details)}</div>
+          </div>
+        </article>
+        <article class="status-card">
+          <h3>What is loaded?</h3>
+          <div class="status-list">${datasetRows}</div>
+        </article>
+        <article class="status-card">
+          <h3>Portable backup</h3>
+          <div class="status-detail-list">
+            <div><strong>Export State:</strong> save this dashboard before leaving your main machine.</div>
+            <div><strong>Import Saved State:</strong> reopen the same working state on another laptop or browser.</div>
+            <div><strong>Fallback:</strong> if live data is missing, the local CSV snapshot still drives the app.</div>
+          </div>
+          <div class="mobile-only-note">Phone mode is read-only on purpose. Use your laptop for assignments and manual overrides.</div>
+        </article>
+      </div>
     </section>
   `;
 }
@@ -2018,9 +2245,11 @@ function renderOwnerView(unifiedState) {
   `;
 
   const draftValidationReport = buildDraftValidationReport(unifiedState);
+  const draftStatusHtml = renderDraftStatusPanel(unifiedState, draftValidationReport);
   const ownerListMarkup = renderOwnerList(ownerData, draftValidationReport);
   const ownerDetailMarkup = renderOwnerDetails(ownerData, draftValidationReport);
   const rosterIndex = buildRosterIndex(unifiedState);
+  const compactMode = isCompactViewport();
 
   // compute aggregates once
   const aggregates = computeOwnerAggregates(unifiedState);
@@ -2031,6 +2260,18 @@ function renderOwnerView(unifiedState) {
   const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
   const availablePlayerHtml = renderAvailablePlayerCenter(draftValidationReport);
   const overrideAuditHtml = renderManualOverridePanel(draftValidationReport, unifiedState);
+  const secondaryPanelsHtml = `
+    <details class="panel secondary-sections"${compactMode ? '' : ' open'}>
+      <summary>${compactMode ? 'More league/admin panels' : 'Additional league and admin panels'}</summary>
+      <div class="secondary-sections-body">
+        ${leagueHtml}
+        ${dataQualityHtml}
+        ${workspaceHtml}
+        ${availablePlayerHtml}
+        ${overrideAuditHtml}
+      </div>
+    </details>
+  `;
 
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -2038,21 +2279,16 @@ function renderOwnerView(unifiedState) {
     <div class="owner-layout">
       ${ownerListMarkup}
       <div>
-        ${leagueHtml}
-        ${dataQualityHtml}
+        ${draftStatusHtml}
         ${validationCenterHtml}
         ${bestAvailableHtml}
-        ${workspaceHtml}
-        ${availablePlayerHtml}
-        ${overrideAuditHtml}
         ${ownerDetailMarkup}
+        ${secondaryPanelsHtml}
       </div>
     </div>
   `;
 
-  const backToImportBtn = document.getElementById('backToImportBtn');
-  backToImportBtn.textContent = 'Refresh Snapshot';
-  backToImportBtn.classList.remove('hidden');
+  updateTopbarActions(unifiedState);
 
   // owner click handlers
   document.querySelectorAll('.owner-item').forEach((button) => {
@@ -2216,7 +2452,7 @@ function renderImportScreen() {
     <section class="panel import-card">
       <div class="dropzone">
         <strong>Upload a CSV Snapshot</strong>
-        <p>Import prospects, veterans, roster, or transactions data to refresh the league state.</p>
+        <p>Import prospects, veterans, roster, or transactions data to refresh the league state. Use the header buttons to import or export a saved dashboard state between devices.</p>
         <div class="file-input-wrap">
           <input id="csvFileInput" type="file" accept=".csv,text/csv" />
           <span class="file-placeholder">Choose CSV File</span>
@@ -2224,8 +2460,7 @@ function renderImportScreen() {
       </div>
     </section>
   `;
-
-  document.getElementById('backToImportBtn').classList.add('hidden');
+  updateTopbarActions(state.importedData || loadState());
 
   const fileInput = document.getElementById('csvFileInput');
   fileInput.addEventListener('change', async (event) => {
@@ -2302,36 +2537,43 @@ function initialize() {
   backToImportBtn.addEventListener('click', () => {
     state.selectedOwner = null;
     state.selectedPlayerKey = null;
+    renderImportScreen();
+  });
 
-    document.addEventListener('click', (event) => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (!target) return;
+  const exportStateBtn = document.getElementById('exportStateBtn');
+  if (exportStateBtn) {
+    exportStateBtn.addEventListener('click', () => {
+      downloadPortableState(state.importedData || loadState());
+    });
+  }
 
-      const saveButton = target.closest('.save-assignment-btn');
-      if (saveButton) {
-        event.preventDefault();
-        saveWorkingAssignmentFromButton(state.importedData || loadState(), saveButton);
-        return;
+  const importStateBtn = document.getElementById('importStateBtn');
+  const stateFileInput = document.getElementById('stateFileInput');
+  if (importStateBtn && stateFileInput) {
+    importStateBtn.addEventListener('click', () => {
+      stateFileInput.value = '';
+      stateFileInput.click();
+    });
+
+    stateFileInput.addEventListener('change', async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      try {
+        await importPortableStateFile(file);
+      } catch (err) {
+        alert(`Unable to import saved state: ${err.message}`);
       }
+    });
+  }
 
-      const clearButton = target.closest('.clear-assignment-btn');
-      if (clearButton) {
-        event.preventDefault();
-        const nextState = removeWorkingAssignment(state.importedData || loadState(), clearButton.dataset.clearPlayerKey);
-        state.importedData = nextState;
-        renderOwnerView(nextState);
-        return;
-      }
-
-      const openAssignButton = target.closest('.draft-assign-open-btn');
-      if (openAssignButton) {
-        event.preventDefault();
-        state.availablePlayerSearch = openAssignButton.dataset.assignName || '';
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', () => {
+      if (hasLoadedData(state.importedData || DEFAULT_STATE)) {
         renderOwnerView(state.importedData || loadState());
       }
     });
-    renderImportScreen();
-  });
+  }
 
   const stored = loadState();
   state.importedData = stored;
@@ -2341,8 +2583,7 @@ function initialize() {
   state.selectedPlayerKey = null;
 
   // if any dataset is present (status ok), show owner view
-  const anyLoaded = ['prospects','veterans','roster','transactions'].some(k => stored?.metadata?.[k]?.status === 'ok');
-  if (anyLoaded) {
+  if (hasLoadedData(stored)) {
     renderOwnerView(stored);
   } else {
     renderImportScreen();
@@ -2363,4 +2604,7 @@ export {
   buildOwnerDraftPlan,
   createManualOverrideDraft,
   getSnapshotAgeInfo,
+  getLiveCacheStatus,
+  serializePortableStateBundle,
+  parsePortableStateBundle,
 };
