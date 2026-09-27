@@ -427,15 +427,19 @@ function findRosterMergeTargetKey(players, incomingPlayer) {
     if (!existingNameKey || existingNameKey !== incomingNameKey) return false;
 
     const existingOwnerKey = normalizeLookupKey(existingPlayer?.owner || '');
-    if (existingOwnerKey && incomingOwnerKey && existingOwnerKey !== incomingOwnerKey) return false;
-
     const existingPositionKey = normalizeDraftPositionText(existingPlayer?.poolposition || existingPlayer?.position || '');
-    if (existingPositionKey && incomingPositionKey && existingPositionKey !== incomingPositionKey) return false;
-
     const existingTeamKey = normalizeLookupKey(existingPlayer?.nhlteam || '');
-    if (existingTeamKey && incomingTeamKey && existingTeamKey !== incomingTeamKey) return false;
+    const ownerMatches = existingOwnerKey && incomingOwnerKey && existingOwnerKey === incomingOwnerKey;
+    if (existingOwnerKey && incomingOwnerKey && !ownerMatches) return false;
 
-    return true;
+    const positionMatches = existingPositionKey && incomingPositionKey && existingPositionKey === incomingPositionKey;
+    if (existingPositionKey && incomingPositionKey && !positionMatches) return false;
+
+    const teamMatches = existingTeamKey && incomingTeamKey && existingTeamKey === incomingTeamKey;
+    if (existingTeamKey && incomingTeamKey && !teamMatches) return false;
+
+    if (ownerMatches) return true;
+    return positionMatches || teamMatches;
   });
 
   return matches.length === 1 ? matches[0][0] : null;
@@ -489,7 +493,7 @@ function mergeRosterDataset(existingDataset, incomingDataset) {
   });
 
   merged.players = players;
-  merged.teams = buildMergedRosterTeams(players);
+  merged.teams = mergeRosterTeamMaps(existingDataset.teams, incomingDataset.teams, players);
   merged.goalieFranchises = [...new Set([...(existingDataset.goalieFranchises || []), ...(incomingDataset.goalieFranchises || [])])];
   merged.contacts = {
     ...(existingDataset.contacts || {}),
@@ -507,6 +511,28 @@ function buildMergedRosterTeams(players) {
     acc[nhlTeam].push(playerKey);
     return acc;
   }, {});
+}
+
+function mergeRosterTeamMaps(existingTeams, incomingTeams, players) {
+  const merged = {};
+  [existingTeams, incomingTeams].forEach((teamMap) => {
+    Object.entries(teamMap || {}).forEach(([teamKey, playerKeys]) => {
+      if (!merged[teamKey]) merged[teamKey] = [];
+      (playerKeys || []).forEach((playerKey) => {
+        if (!merged[teamKey].includes(playerKey)) merged[teamKey].push(playerKey);
+      });
+    });
+  });
+
+  const derivedTeams = buildMergedRosterTeams(players);
+  Object.entries(derivedTeams).forEach(([teamKey, playerKeys]) => {
+    if (!merged[teamKey]) merged[teamKey] = [];
+    playerKeys.forEach((playerKey) => {
+      if (!merged[teamKey].includes(playerKey)) merged[teamKey].push(playerKey);
+    });
+  });
+
+  return merged;
 }
 
 function createUniqueRosterPlayerKey(players, preferredKey, player) {

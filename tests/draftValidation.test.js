@@ -226,4 +226,35 @@ describe('draft validation report', () => {
     expect(rosterPlayers.some((player) => player.name === 'Alex Smith' && player.owner === '')).toBe(true);
     expect(rosterPlayers.some((player) => player.name === 'Alex Smith' && player.owner === 'TEAM A')).toBe(true);
   });
+
+  test('does not merge name-only roster rows without a matching secondary identifier', () => {
+    const nameOnlyCsv = [
+      'name',
+      'Jordan Green',
+    ].join('\n');
+    const detailedCsv = [
+      'name,position,nhlteam',
+      'Jordan Green,D,BOS',
+    ].join('\n');
+
+    let state = {
+      version: 2,
+      datasets: { prospects: null, veterans: null, roster: null, transactions: null },
+      metadata: {
+        prospects: { status: 'empty' },
+        veterans: { status: 'empty' },
+        roster: { status: 'empty' },
+        transactions: { status: 'empty' },
+      },
+      manualOverrides: [],
+      workingAssignments: {},
+    };
+
+    [nameOnlyCsv, detailedCsv].forEach((csv, index) => {
+      state = mergeDataset(state, 'roster', parseRoster(csv), `name-only-${index + 1}.csv`);
+    });
+
+    const rosterPlayers = Object.values(state.datasets.roster.players || {});
+    expect(rosterPlayers.filter((player) => player.name === 'Jordan Green')).toHaveLength(2);
+  });
 });
