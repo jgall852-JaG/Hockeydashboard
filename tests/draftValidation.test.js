@@ -1,7 +1,10 @@
 import {
   buildDraftValidationReport,
   createManualOverrideDraft,
+  detectDatasetType,
+  mergeDataset,
 } from '../app.js';
+import { parseRoster } from '../rosterParser.js';
 
 describe('draft validation report', () => {
   test('detects ownership conflicts and builds the available-player pool', () => {
@@ -136,5 +139,55 @@ describe('draft validation report', () => {
     });
     expect(entry.id).toContain('manual-');
     expect(entry.createdAt).toBeDefined();
+  });
+
+  test('merges sequential roster snapshots instead of overwriting draft availability state', () => {
+    const inventoryCsv = [
+      'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
+      'Available Wing,ANA,Available Center,BOS,Available Right,CGY,Available Defender,DAL',
+    ].join('\n');
+    const utilityCsv = [
+      'UTILITY,,',
+      'Utility One,NYR,C/L',
+      'Utility Two,PIT,R/L',
+    ].join('\n');
+    const retainedCsv = [
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Available Wing,LW,$5.50,1,Retained Defender,D,$8.00',
+      ',TOTAL SPENT,,$5.50,,TOTAL SPENT,,$8.00',
+    ].join('\n');
+
+    let state = {
+      version: 2,
+      datasets: { prospects: null, veterans: null, roster: null, transactions: null },
+      metadata: {
+        prospects: { status: 'empty' },
+        veterans: { status: 'empty' },
+        roster: { status: 'empty' },
+        transactions: { status: 'empty' },
+      },
+      manualOverrides: [],
+      workingAssignments: {},
+    };
+
+    [inventoryCsv, utilityCsv, retainedCsv].forEach((csv, index) => {
+      const datasetType = detectDatasetType(csv);
+      expect(datasetType).toBe('roster');
+      state = mergeDataset(state, datasetType, parseRoster(csv), `snapshot-${index + 1}.csv`);
+    });
+
+    const rosterPlayers = Object.values(state.datasets.roster.players || {});
+    expect(rosterPlayers.some((player) => player.name === 'Utility One')).toBe(true);
+    expect(rosterPlayers.some((player) => player.name === 'Available Center')).toBe(true);
+    expect(rosterPlayers.some((player) => player.name === 'Retained Defender' && player.owner === 'TEAM B')).toBe(true);
+    expect(rosterPlayers.filter((player) => player.name === 'Available Wing')).toHaveLength(1);
+    expect(rosterPlayers.find((player) => player.name === 'Available Wing').owner).toBe('TEAM A');
+
+    const report = buildDraftValidationReport(state);
+    expect(report.availablePlayers.some((player) => player.name === 'Utility One')).toBe(true);
+    expect(report.availablePlayers.some((player) => player.name === 'Available Center')).toBe(true);
+    expect(report.availablePlayers.some((player) => player.name === 'Available Wing')).toBe(false);
+    expect(report.details.availableIntegrityIssues).toHaveLength(0);
   });
 });

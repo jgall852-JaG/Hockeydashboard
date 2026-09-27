@@ -400,7 +400,9 @@ function migrateOldState(oldObj) {
 function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
   const next = JSON.parse(JSON.stringify(stateObj));
   next.datasets = next.datasets || { prospects: null, veterans: null, roster: null, transactions: null };
-  next.datasets[datasetType] = parsedData;
+  next.datasets[datasetType] = datasetType === 'roster'
+    ? mergeRosterDataset(next.datasets[datasetType], parsedData)
+    : parsedData;
   next.metadata = next.metadata || {};
   next.metadata[datasetType] = {
     status: (parsedData ? 'ok' : 'empty'),
@@ -411,6 +413,88 @@ function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
   next.manualOverrides = Array.isArray(next.manualOverrides) ? next.manualOverrides : [];
   next.version = APP_STATE_VERSION;
   return normalizeState(next);
+}
+
+function findRosterMergeTargetKey(players, incomingPlayer) {
+  const incomingNameKey = normalizeLookupKey(incomingPlayer?.name || '');
+  if (!incomingNameKey) return null;
+  const incomingOwnerKey = normalizeLookupKey(incomingPlayer?.owner || '');
+
+  return Object.entries(players).find(([, existingPlayer]) => {
+    const existingNameKey = normalizeLookupKey(existingPlayer?.name || '');
+    if (!existingNameKey || existingNameKey !== incomingNameKey) return false;
+
+    const existingOwnerKey = normalizeLookupKey(existingPlayer?.owner || '');
+    if (!existingOwnerKey || !incomingOwnerKey) return true;
+    return existingOwnerKey === incomingOwnerKey;
+  })?.[0] || null;
+}
+
+function mergeRosterPlayerRecords(existingPlayer, incomingPlayer) {
+  const selectValue = (...values) => values.find((value) => value !== undefined && value !== null && String(value).trim() !== '') ?? '';
+  const merged = { ...(existingPlayer || {}) };
+
+  merged.name = selectValue(incomingPlayer?.name, existingPlayer?.name);
+  merged.owner = selectValue(incomingPlayer?.owner, existingPlayer?.owner);
+  merged.position = selectValue(incomingPlayer?.position, existingPlayer?.position);
+  merged.poolposition = selectValue(incomingPlayer?.poolposition, incomingPlayer?.position, existingPlayer?.poolposition, existingPlayer?.position);
+  merged.nhlteam = selectValue(incomingPlayer?.nhlteam, existingPlayer?.nhlteam);
+  merged.cost = selectValue(incomingPlayer?.cost, existingPlayer?.cost);
+  merged.source = [existingPlayer?.source, incomingPlayer?.source].filter(Boolean).filter((value, index, values) => values.indexOf(value) === index).join(' + ');
+
+  const mergedKeys = new Set([
+    ...Object.keys(existingPlayer || {}),
+    ...Object.keys(incomingPlayer || {}),
+  ]);
+  mergedKeys.forEach((key) => {
+    if (merged[key] !== undefined) return;
+    merged[key] = selectValue(incomingPlayer?.[key], existingPlayer?.[key]);
+  });
+
+  return merged;
+}
+
+function mergeRosterDataset(existingDataset, incomingDataset) {
+  if (!existingDataset) return parsedRosterDatasetClone(incomingDataset);
+  if (!incomingDataset) return parsedRosterDatasetClone(existingDataset);
+
+  const merged = parsedRosterDatasetClone(existingDataset);
+  const players = { ...(merged.players || {}) };
+  const incomingPlayers = Object.entries(incomingDataset.players || {});
+
+  incomingPlayers.forEach(([incomingKey, incomingPlayer]) => {
+    const targetKey = findRosterMergeTargetKey(players, incomingPlayer) || incomingKey;
+    if (players[targetKey]) {
+      players[targetKey] = mergeRosterPlayerRecords(players[targetKey], incomingPlayer);
+      return;
+    }
+    players[targetKey] = JSON.parse(JSON.stringify(incomingPlayer));
+  });
+
+  merged.players = players;
+  merged.teams = buildMergedRosterTeams(players);
+  merged.goalieFranchises = [...new Set([...(existingDataset.goalieFranchises || []), ...(incomingDataset.goalieFranchises || [])])];
+  merged.contacts = {
+    ...(existingDataset.contacts || {}),
+    ...(incomingDataset.contacts || {}),
+  };
+
+  return merged;
+}
+
+function buildMergedRosterTeams(players) {
+  return Object.entries(players || {}).reduce((acc, [playerKey, player]) => {
+    const nhlTeam = String(player?.nhlteam || '').trim();
+    if (!nhlTeam) return acc;
+    if (!acc[nhlTeam]) acc[nhlTeam] = [];
+    acc[nhlTeam].push(playerKey);
+    return acc;
+  }, {});
+}
+
+function parsedRosterDatasetClone(dataset) {
+  if (!dataset) return dataset;
+  return JSON.parse(JSON.stringify(dataset));
 }
 
 function normalizeState(stateObj) {
@@ -2363,4 +2447,5 @@ export {
   buildOwnerDraftPlan,
   createManualOverrideDraft,
   getSnapshotAgeInfo,
+  mergeDataset,
 };
