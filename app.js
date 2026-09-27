@@ -488,6 +488,52 @@ function getSnapshotAgeInfo(stateObj) {
   };
 }
 
+function getDataQualitySources(stateObj) {
+  const metadata = stateObj?.metadata || {};
+  const rosterSources = stateObj?.datasets?.roster?.sources || {};
+  const liveSourceLabels = {
+    inventory: 'Positions',
+    utility: 'Utility',
+    'retained-grid': 'Retention',
+    'league-layout': 'Roster',
+  };
+  const liveSources = Object.entries(liveSourceLabels)
+    .filter(([key]) => rosterSources[key])
+    .map(([key, label]) => ({
+      label,
+      status: 'ok',
+      records: countParsedRecords(rosterSources[key], 'roster'),
+      importedAt: metadata.roster?.importedAt,
+    }));
+
+  if (liveSources.length) {
+    return [
+      ...(metadata.prospects?.status === 'ok' ? [{
+        label: 'Prospects',
+        ...metadata.prospects,
+      }] : []),
+      ...liveSources,
+      ...(['veterans', 'transactions']
+        .filter((dataset) => metadata[dataset]?.status === 'ok')
+        .map((dataset) => ({
+          label: dataset.charAt(0).toUpperCase() + dataset.slice(1),
+          ...metadata[dataset],
+        }))),
+    ];
+  }
+
+  return ['prospects', 'veterans', 'roster', 'transactions'].map((dataset) => ({
+    label: dataset.charAt(0).toUpperCase() + dataset.slice(1),
+    ...(metadata[dataset] || { status: 'empty' }),
+  }));
+}
+
+function isRetentionListLoaded(stateObj) {
+  const veterans = stateObj?.datasets?.veterans?.veterans || {};
+  const retainedGrid = stateObj?.datasets?.roster?.sources?.['retained-grid']?.players || {};
+  return Object.keys(veterans).length > 0 || Object.keys(retainedGrid).length > 0;
+}
+
 function hasLoadedData(stateObj) {
   return ['prospects', 'veterans', 'roster', 'transactions']
     .some((key) => stateObj?.metadata?.[key]?.status === 'ok');
@@ -1344,7 +1390,7 @@ function buildDraftValidationReport(stateObj) {
     snapshot,
     validationRows,
     validationHealth: hasErrors ? 'error' : hasWarnings ? 'warning' : 'valid',
-    retentionListLoaded: veterans.length > 0,
+    retentionListLoaded: isRetentionListLoaded(nextState),
     counts: {
       ownershipCount: prospects.filter((player) => getRecordOwner(player)).length + veterans.filter((player) => getRecordOwner(player)).length,
       rosterCount: rosterPlayers.length,
@@ -1547,18 +1593,16 @@ function renderLeagueIntelligence(aggregates) {
 }
 
 function renderDataQualityPanel(stateObj) {
-  const md = stateObj.metadata || {};
-  const datasets = ['prospects','veterans','roster','transactions'];
-  const rows = datasets.map((d) => {
-    const m = md[d] || { status: 'empty' };
-    const status = m.status === 'ok' ? '✅' : '❌';
-    const records = m.records != null ? `(${m.records})` : '';
-    const when = m.importedAt ? `Imported: ${new Date(m.importedAt).toLocaleString()}` : '';
-    return `<div class="dq-row">${status} <strong>${d.charAt(0).toUpperCase()+d.slice(1)}</strong> ${records} <div class="dq-meta">${when}</div></div>`;
+  const sources = getDataQualitySources(stateObj);
+  const rows = sources.map((source) => {
+    const status = source.status === 'ok' ? '✅' : '❌';
+    const records = source.records != null ? `(${source.records})` : '';
+    const when = source.importedAt ? `Imported: ${new Date(source.importedAt).toLocaleString()}` : '';
+    return `<div class="dq-row">${status} <strong>${escapeHtml(source.label)}</strong> ${records} <div class="dq-meta">${when}</div></div>`;
   }).join('');
 
   const lastUpdated = (() => {
-    const times = datasets.map(d => md[d]?.importedAt).filter(Boolean).map(t => new Date(t).getTime());
+    const times = sources.map((source) => source.importedAt).filter(Boolean).map((time) => new Date(time).getTime());
     if (!times.length) return 'Never';
     return new Date(Math.max(...times)).toLocaleString();
   })();
@@ -1844,12 +1888,14 @@ function saveWorkingAssignmentFromButton(unifiedState, button) {
   const bidInput = getByDataValue('data-workspace-bid-key', playerKey);
   const classificationInput = getByDataValue('data-workspace-classification-key', playerKey);
   const statusInput = getByDataValue('data-workspace-status-key', playerKey);
+  const owners = buildOwnerViewData(unifiedState).owners;
+  const team = resolveWorkingAssignmentTeamName(teamInput?.value || '', owners);
 
   const result = upsertWorkingAssignment(unifiedState, {
     playerKey,
     name: playerName,
     position: playerPosition,
-    team: teamInput?.value || '',
+    team,
     bid: bidInput?.value || '',
     classification: classificationInput?.value || playerType,
     fallbackClassification: playerType,
@@ -1863,6 +1909,11 @@ function saveWorkingAssignmentFromButton(unifiedState, button) {
 
   state.importedData = result.state;
   renderOwnerView(result.state);
+}
+
+function resolveWorkingAssignmentTeamName(teamName, owners) {
+  const normalizedTeamName = normalizeLookupKey(teamName);
+  return owners.find((owner) => normalizeLookupKey(owner.name) === normalizedTeamName)?.name || String(teamName || '').trim();
 }
 
 function renderAvailablePlayerCenter(report) {
@@ -2310,13 +2361,9 @@ function renderPreviewSection(parsedData, datasetType) {
 }
 
 function renderOwnerList(ownerData, report) {
-  const meta = ownerData.metadata || {};
   const statusHtml = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-      <div class="meta-pill">Prospects ${meta.prospects?.status === 'ok' ? '✅' : '❌'}</div>
-      <div class="meta-pill">Veterans ${meta.veterans?.status === 'ok' ? '✅' : '❌'}</div>
-      <div class="meta-pill">Roster ${meta.roster?.status === 'ok' ? '✅' : '❌'}</div>
-      <div class="meta-pill">Transactions ${meta.transactions?.status === 'ok' ? '✅' : '❌'}</div>
+      ${getDataQualitySources(ownerData._rawState).map((source) => `<div class="meta-pill">${escapeHtml(source.label)} ${source.status === 'ok' ? '✅' : '❌'}</div>`).join('')}
     </div>
   `;
 
@@ -2514,6 +2561,15 @@ function renderOwnerView(unifiedState) {
   const overrideAuditHtml = renderManualOverridePanel(draftValidationReport, unifiedState);
 
   const app = document.getElementById('app');
+  const activeSearchInput = document.activeElement;
+  const searchFocus = ['ownerSearchInput', 'playerSearchInput', 'availablePlayerSearchInput']
+    .includes(activeSearchInput?.id)
+    ? {
+      id: activeSearchInput.id,
+      selectionStart: activeSearchInput.selectionStart,
+      selectionEnd: activeSearchInput.selectionEnd,
+    }
+    : null;
   app.innerHTML = `
     ${summaryHtml}
     <div class="owner-layout">
@@ -2532,6 +2588,14 @@ function renderOwnerView(unifiedState) {
   `;
 
   updateTopbarActions(unifiedState);
+
+  if (searchFocus) {
+    const replacement = document.getElementById(searchFocus.id);
+    replacement?.focus();
+    if (replacement && searchFocus.selectionStart !== null && searchFocus.selectionEnd !== null) {
+      replacement.setSelectionRange(searchFocus.selectionStart, searchFocus.selectionEnd);
+    }
+  }
 
   // owner click handlers
   document.querySelectorAll('.owner-item').forEach((button) => {
@@ -2905,8 +2969,11 @@ export {
   buildDraftValidationReport,
   buildOwnerDraftPlan,
   createManualOverrideDraft,
+  getDataQualitySources,
+  isRetentionListLoaded,
   getSnapshotAgeInfo,
   getLiveCacheStatus,
+  resolveWorkingAssignmentTeamName,
   refreshGoogleSheetState,
   serializePortableStateBundle,
   parsePortableStateBundle,

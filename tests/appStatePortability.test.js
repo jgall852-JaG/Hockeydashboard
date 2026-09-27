@@ -1,7 +1,10 @@
 import { jest } from '@jest/globals';
 import {
   getLiveCacheStatus,
+  getDataQualitySources,
+  isRetentionListLoaded,
   parsePortableStateBundle,
+  resolveWorkingAssignmentTeamName,
   refreshGoogleSheetState,
   serializePortableStateBundle,
 } from '../app.js';
@@ -112,6 +115,53 @@ describe('live cache status', () => {
     const status = getLiveCacheStatus({ players: {}, teams: {} });
     expect(status.label).toBe('Local data only');
     expect(status.status).toBe('warning');
+  });
+});
+
+describe('live refresh status mapping', () => {
+  test('uses refreshed retained-grid data as the retention list', () => {
+    expect(isRetentionListLoaded({
+      datasets: {
+        veterans: { veterans: {} },
+        roster: { sources: { 'retained-grid': { players: { player: { name: 'Retained Player' } } } } },
+      },
+    })).toBe(true);
+  });
+
+  test('does not report unsourced veteran and transaction imports as failed after live refresh', () => {
+    const sources = getDataQualitySources({
+      metadata: {
+        prospects: { status: 'ok', records: 2, sourceName: 'google-rookie-rights.csv' },
+        veterans: { status: 'empty' },
+        roster: { status: 'ok', records: 10, importedAt: '2026-09-27T12:00:00.000Z' },
+        transactions: { status: 'empty' },
+      },
+      datasets: {
+        roster: {
+          sources: {
+            inventory: { players: { one: {} } },
+            utility: { players: { two: {} } },
+            'retained-grid': { players: { three: {} } },
+            'league-layout': { players: { four: {} } },
+          },
+        },
+      },
+    });
+
+    expect(sources.map(({ label }) => label)).toEqual(['Prospects', 'Positions', 'Utility', 'Retention', 'Roster']);
+    expect(sources.every(({ status }) => status === 'ok')).toBe(true);
+  });
+});
+
+describe('working assignment team matching', () => {
+  test('uses the canonical owner name when team input differs only by case', () => {
+    expect(resolveWorkingAssignmentTeamName('Fighting Irish', [{ name: 'FIGHTING IRISH' }]))
+      .toBe('FIGHTING IRISH');
+  });
+
+  test('preserves a team name that does not match a known owner', () => {
+    expect(resolveWorkingAssignmentTeamName('Expansion Team', [{ name: 'FIGHTING IRISH' }]))
+      .toBe('Expansion Team');
   });
 });
 
