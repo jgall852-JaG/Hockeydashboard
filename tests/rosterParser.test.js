@@ -1,4 +1,5 @@
 import { parseRoster } from '../rosterParser.js';
+import { detectDatasetType } from '../app.js';
 
 describe('roster parser multi-sheet formats', () => {
   test('parses retained-owner grid with cost and position', () => {
@@ -13,8 +14,22 @@ describe('roster parser multi-sheet formats', () => {
     const players = Object.values(parsed.players);
 
     expect(players).toHaveLength(2);
+    expect(parsed.layout).toBe('retained-grid');
     expect(players.some((p) => p.name === 'Player One' && p.owner === 'TEAM A' && p.position === 'LW' && p.cost === 5.5)).toBe(true);
     expect(players.some((p) => p.name === 'Player Two' && p.owner === 'TEAM B' && p.position === 'D' && p.cost === 8)).toBe(true);
+    expect(players.every((p) => p.retained)).toBe(true);
+  });
+
+  test('detects the retained sheet as roster even when it contains farm deductions', () => {
+    const csv = [
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Player One,LW,$5.50,1,Player Two,D,$8.00',
+      ',TOTAL SPENT,,$5.50,,TOTAL SPENT,,$8.00',
+      'F,Farm deductions,,,,,,,',
+    ].join('\n');
+
+    expect(detectDatasetType(csv)).toBe('roster');
   });
 
   test('parses inventory matrix and utility baseline', () => {
@@ -36,6 +51,30 @@ describe('roster parser multi-sheet formats', () => {
     const utilityParsed = parseRoster(utilityCsv);
     const utilityPlayers = Object.values(utilityParsed.players);
     expect(utilityPlayers).toHaveLength(2);
+    expect(inventoryParsed.layout).toBe('inventory');
+    expect(utilityParsed.layout).toBe('utility');
     expect(utilityPlayers.some((p) => p.name === 'Utility One' && p.position === 'U' && p.poolposition === 'C/L')).toBe(true);
+  });
+
+  test('classifies farm rows in the league owner layout', () => {
+    const csv = [
+      ',TEAM A,TEAM B',
+      'C,Center One,Center Two',
+      'F,Farm One,Farm Two',
+      ',514-555-0100,514-555-0101',
+      ',Owner One,Owner Two',
+      ',owner1@example.com,owner2@example.com',
+    ].join('\n');
+
+    const parsed = parseRoster(csv);
+    const players = Object.values(parsed.players);
+
+    expect(parsed.layout).toBe('league-layout');
+    expect(players.find((player) => player.name === 'Farm One')).toMatchObject({
+      owner: 'TEAM A',
+      position: 'F',
+      classification: 'Farm',
+    });
+    expect(players.some((player) => player.name === 'Owner One')).toBe(false);
   });
 });
