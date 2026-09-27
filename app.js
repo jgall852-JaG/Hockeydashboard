@@ -474,7 +474,13 @@ function mergeRosterDataset(existingDataset, incomingDataset) {
   const incomingPlayers = Object.entries(incomingDataset.players || {});
 
   incomingPlayers.forEach(([incomingKey, incomingPlayer]) => {
-    const targetKey = findRosterMergeTargetKey(players, incomingPlayer) || incomingKey;
+    const matchedKey = findRosterMergeTargetKey(players, incomingPlayer);
+    if (matchedKey && players[matchedKey]) {
+      players[matchedKey] = mergeRosterPlayerRecords(players[matchedKey], incomingPlayer);
+      return;
+    }
+
+    const targetKey = createUniqueRosterPlayerKey(players, incomingKey, incomingPlayer);
     if (players[targetKey]) {
       players[targetKey] = mergeRosterPlayerRecords(players[targetKey], incomingPlayer);
       return;
@@ -501,6 +507,19 @@ function buildMergedRosterTeams(players) {
     acc[nhlTeam].push(playerKey);
     return acc;
   }, {});
+}
+
+function createUniqueRosterPlayerKey(players, preferredKey, player) {
+  const baseKey = normalizeLookupKey(preferredKey || player?.name || '') || 'player';
+  if (!players[baseKey]) return baseKey;
+
+  let suffix = 2;
+  let candidate = `${baseKey}-${suffix}`;
+  while (players[candidate]) {
+    suffix += 1;
+    candidate = `${baseKey}-${suffix}`;
+  }
+  return candidate;
 }
 
 function parsedRosterDatasetClone(dataset) {

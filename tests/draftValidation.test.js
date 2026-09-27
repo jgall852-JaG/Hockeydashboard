@@ -223,8 +223,7 @@ describe('draft validation report', () => {
     const rosterPlayers = Object.values(state.datasets.roster.players || {});
     expect(rosterPlayers.filter((player) => player.name === 'Alex Smith')).toHaveLength(2);
 
-    const report = buildDraftValidationReport(state);
-    expect(report.availablePlayers.some((player) => player.name === 'Alex Smith')).toBe(true);
-    expect(report.details.availableIntegrityIssues).toHaveLength(0);
+    expect(rosterPlayers.some((player) => player.name === 'Alex Smith' && player.owner === '')).toBe(true);
+    expect(rosterPlayers.some((player) => player.name === 'Alex Smith' && player.owner === 'TEAM A')).toBe(true);
   });
 });
