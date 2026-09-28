@@ -1315,7 +1315,6 @@ function buildDraftValidationReport(stateObj) {
   const veterans = Object.values(nextState.datasets.veterans?.veterans || {});
   const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
   const workingAssignments = nextState.workingAssignments && typeof nextState.workingAssignments === 'object' ? nextState.workingAssignments : {};
-  const assignedByPlayerKey = new Set(Object.keys(workingAssignments).map((key) => String(key || '').trim()).filter(Boolean));
   const zeroYearsProspectKeys = new Set(
     prospects
       .filter(hasZeroYearsAvailable)
@@ -1325,7 +1324,11 @@ function buildDraftValidationReport(stateObj) {
   const snapshot = getSnapshotAgeInfo(nextState);
   const ownerDraftPlans = ownerData.owners.map((owner) => buildOwnerDraftPlan(owner));
   const inventoryByKey = new Map();
-  [...Object.values(nextState.datasets.positions?.players || {}), ...Object.values(nextState.datasets.utility?.players || {})]
+  [
+    ...Object.values(nextState.datasets.positions?.players || {}),
+    ...Object.values(nextState.datasets.utility?.players || {}),
+    ...rosterPlayers.filter((player) => ['inventory', 'utility'].includes(String(player?.source || '').toLowerCase())),
+  ]
     .forEach((player) => {
       const key = normalizeLookupKey(getRecordName(player));
       if (key && !inventoryByKey.has(key)) {
@@ -1472,24 +1475,6 @@ function buildDraftValidationReport(stateObj) {
       owner: '—',
       status: 'Available',
       manualOverride: false,
-    });
-  });
-
-  manualOverrides.forEach((override) => {
-    const key = normalizeLookupKey(override.name);
-    if (!key) return;
-    if (zeroYearsProspectKeys.has(key)) return;
-    if (assignedByPlayerKey.has(override.id || `manual-${key}`)) return;
-    availablePlayers.push({
-      key: override.id || `manual-${key}`,
-      name: override.name,
-      position: override.position || '—',
-      type: normalizeClassification(override.classification) || 'Manual',
-      owner: '—',
-      status: 'MANUAL OVERRIDE',
-      manualOverride: true,
-      notes: override.notes || '',
-      createdAt: override.createdAt || null,
     });
   });
 
