@@ -29,7 +29,7 @@ Design notes
   - parseProspects(csvText) — for prospects
   - parseVeterans(csvText)  — for veterans
   - parseRoster(csvText) — rosterParser.js is imported as a module
-  - transactions handled by built-in parseTransactions in app.js
+  - transaction logs and live draft boards are maintained in Google Sheets and are not imported into the dashboard
 
 How to run locally (recommended)
 1) Place this project in a folder that contains the app/ parser files (already in this repo).
@@ -64,4 +64,4 @@ Troubleshooting
 - If live NHL data fails, the dashboard falls back to local CSV data and shows the API error inline.
 - If you see parser errors, the file might not match expected CSV structure; try the chooser when the app reports ambiguous header detection.
 
-If you want changes to detection rules (make veteran detection stricter or add synonyms), tell me which additional header tokens to match and I'll update app.js accordingly.
+Transaction logs and live draft boards are not player snapshots and should not be uploaded here. Import the Prospects, Veterans, or Roster CSV tab used by the dashboard.

@@ -1,6 +1,8 @@
 import {
   buildDraftValidationReport,
   createManualOverrideDraft,
+  detectDatasetType,
+  parseDraftBoard,
 } from '../app.js';
 
 describe('draft validation report', () => {
@@ -16,6 +18,7 @@ describe('draft validation report', () => {
             carol: { name: 'Carol Example', owner: 'TEAM B', position: 'LW', retained: 'true' },
             dana: { name: 'Dana Example', owner: 'TEAM C', position: 'RW', available: 'true' },
             erin: { name: 'Erin Example', owner: '', position: 'C', available: 'true' },
+            frank: { name: 'Frank Example', owner: '', position: 'C', available: 'false' },
           },
         },
         prospects: {
@@ -70,11 +73,81 @@ describe('draft validation report', () => {
     expect(report.snapshot.status).toBe('valid');
     expect(report.availablePlayers.some((player) => player.name === 'Bob Example' && !player.manualOverride)).toBe(false);
     expect(report.availablePlayers.some((player) => player.name === 'Erin Example' && !player.manualOverride)).toBe(false);
+    expect(report.availablePlayers.some((player) => player.name === 'Frank Example')).toBe(false);
     expect(report.assignedPlayers.some((player) => player.name === 'Erin Example' && player.team === 'YEAH TEAM')).toBe(true);
     expect(report.counts.workingAssignedCount).toBe(1);
     expect(report.assignedByTeam['YEAH TEAM']).toHaveLength(1);
-    expect(report.availablePlayers.some((player) => player.name === 'Missing Prospect' && player.manualOverride)).toBe(true);
+    expect(report.availablePlayers.some((player) => player.name === 'Missing Prospect')).toBe(false);
     expect(report.manualOverrides).toHaveLength(1);
+  });
+
+  test('derives availability from inventory minus ownership, retention, draft picks, and working assignments', () => {
+    const now = new Date().toISOString();
+    const report = buildDraftValidationReport({
+      version: 2,
+      datasets: {
+        positions: {
+          players: {
+            available: { name: 'Available Player', position: 'C', source: 'inventory' },
+            owned: { name: 'Owned Player', position: 'LW', source: 'inventory' },
+            retained: { name: 'Retained Player', position: 'D', source: 'inventory' },
+            drafted: { name: 'Drafted Player', position: 'RW', source: 'inventory' },
+            assigned: { name: 'Assigned Player', position: 'C', source: 'inventory' },
+            rightsOnly: { name: 'Rights Only Player', position: 'C', matchingRights: true, source: 'inventory' },
+          },
+        },
+        utility: {
+          players: {
+            duplicate: { name: 'Available Player', position: 'C/L', source: 'utility' },
+            utility: { name: 'Utility Player', position: 'U', source: 'utility' },
+          },
+        },
+        roster: {
+          players: {
+            owned: { name: 'O Player', owner: 'TEAM A', position: 'LW' },
+          },
+        },
+        prospects: {
+          prospects: {
+            retained: { name: 'Retained Player', owner: 'TEAM B', poolPosition: 'D', matchingRights: true },
+          },
+        },
+        veterans: { veterans: {} },
+        draft: {
+          players: {
+            pick: { name: 'D Player', owner: 'TEAM C', position: 'RW', pick: 1 },
+          },
+        },
+      },
+      metadata: {
+        positions: { status: 'ok', importedAt: now },
+        utility: { status: 'ok', importedAt: now },
+        roster: { status: 'ok', importedAt: now },
+        prospects: { status: 'ok', importedAt: now },
+        veterans: { status: 'empty' },
+        draft: { status: 'ok', importedAt: now },
+      },
+      manualOverrides: [
+        { id: 'manual-player', name: 'Outside Inventory', position: 'C', classification: 'Rookie' },
+      ],
+      workingAssignments: {
+        'assigned player': {
+          playerKey: 'assigned player',
+          name: 'Assigned Player',
+          team: 'TEAM D',
+          bid: 1,
+        },
+      },
+    });
+
+    expect(report.availablePlayers.map((player) => player.name).sort()).toEqual([
+      'Available Player',
+      'Rights Only Player',
+      'Utility Player',
+    ]);
+    expect(report.availablePlayers.filter((player) => player.name === 'Available Player')).toHaveLength(1);
+    expect(report.counts.availableCount).toBe(3);
+    expect(report.counts.workingAssignedCount).toBe(1);
   });
 
   test('flags roster-rule shortfall when $0.50 minimum slots cannot be funded', () => {
@@ -136,5 +209,40 @@ describe('draft validation report', () => {
     });
     expect(entry.id).toContain('manual-');
     expect(entry.createdAt).toBeDefined();
+  });
+
+  test('does not misclassify a transaction log as veteran data', () => {
+    const transactions = [
+      'TOYE SOLDIERS,,,,FIGHTING IRISH,,,,',
+      'Move,Player,Cost,Date,Move,Player,Cost,Date',
+      'TRADE,R Dahlin,$2.00,4-Sep,,,,',
+    ].join('\n');
+
+    expect(detectDatasetType(transactions)).toBe('unknown');
+  });
+
+  test('does not misclassify a live draft board as prospect data', () => {
+    const draftBoard = [
+      'DRUNKEN FLYBOYS,,,,FIGHTING IRISH,,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,J Guentzel,LW,$45.50,,R Dahlin,D,$28.00',
+    ].join('\n');
+
+    expect(detectDatasetType(draftBoard)).toBe('draft');
+    expect(Object.values(parseDraftBoard(draftBoard).players)).toEqual([
+      expect.objectContaining({ name: 'J Guentzel', owner: 'DRUNKEN FLYBOYS', pick: 1 }),
+      expect.objectContaining({ name: 'R Dahlin', owner: 'FIGHTING IRISH', pick: null }),
+    ]);
+  });
+
+  test('identifies the live Positions and Utility inventory snapshots', () => {
+    expect(detectDatasetType([
+      'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
+      'Player One,ANA,Player Two,BOS,Player Three,NYR,Player Four,MTL',
+    ].join('\n'))).toBe('positions');
+    expect(detectDatasetType([
+      'UTILITY,,',
+      'Utility Player,ANA,C/L',
+    ].join('\n'))).toBe('utility');
   });
 });
