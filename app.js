@@ -71,6 +71,8 @@ const state = {
   ownerSearch: '',
   playerSearch: '',
   availablePlayerSearch: '',
+  showAllAvailablePlayers: false,
+  activeDashboardTab: 'draft-night',
   manualOverrides: [],
   selectedPlayerKey: null,
   liveCache: loadLiveCache(),
@@ -212,11 +214,12 @@ export function buildOwnerViewData(rawState) {
   veteransArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
 
   const owners = [...ownerSet].sort((a, b) => a.localeCompare(b)).map((owner) => {
-    const ownerProspects = prospectsArr.filter((p) => p.owner === owner);
+    const sourceOwnerProspects = prospectsArr.filter((p) => p.owner === owner);
+    const ownerProspects = sourceOwnerProspects.filter((p) => !hasZeroYearsAvailable(p));
     const ownerVeterans = veteransArr.filter((p) => p.owner === owner);
     const ownerRosterPlayers = rosterArr.filter((p) => p.owner === owner);
     const farmPlayers = ownerProspects.filter((p) => p.farm);
-    const matchingRights = ownerProspects.filter((p) => p.matchingRights);
+    const matchingRights = sourceOwnerProspects.filter((p) => hasZeroYearsAvailable(p) && p.matchingRights);
 
     return {
       name: owner,
@@ -935,6 +938,11 @@ function getRecordOwner(record) {
   return String(pickRecordValue(record, ['owner', 'team', 'currentteam', 'club'])).trim();
 }
 
+function hasZeroYearsAvailable(record) {
+  const years = pickRecordValue(record, ['termRemaining', 'yearsAvailable', 'years_available']);
+  return years !== null && years !== undefined && String(years).trim() === '0';
+}
+
 function getRecordPosition(record) {
   return String(pickRecordValue(record, ['position', 'primaryposition', 'positioncode'])).trim();
 }
@@ -1194,6 +1202,12 @@ function buildDraftValidationReport(stateObj) {
   const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
   const workingAssignments = nextState.workingAssignments && typeof nextState.workingAssignments === 'object' ? nextState.workingAssignments : {};
   const assignedByPlayerKey = new Set(Object.keys(workingAssignments).map((key) => String(key || '').trim()).filter(Boolean));
+  const zeroYearsProspectKeys = new Set(
+    prospects
+      .filter(hasZeroYearsAvailable)
+      .map((player) => normalizeLookupKey(getRecordName(player)))
+      .filter(Boolean),
+  );
   const snapshot = getSnapshotAgeInfo(nextState);
   const ownerDraftPlans = ownerData.owners.map((owner) => buildOwnerDraftPlan(owner));
 
@@ -1275,7 +1289,12 @@ function buildDraftValidationReport(stateObj) {
       if (owners.length && rosterOwner && !owners.includes(rosterOwner)) {
         ownershipMismatches.push(`${getRecordName(rosterEntry) || key}: roster=${rosterOwner}, sheet=${owners.join(' / ')}`);
       }
-      if (availableState.status === 'available' && owners.length === 0 && !assignedByPlayerKey.has(key)) {
+      if (
+        availableState.status === 'available' &&
+        owners.length === 0 &&
+        !assignedByPlayerKey.has(key) &&
+        !zeroYearsProspectKeys.has(key)
+      ) {
         const recordType = getRecordType(rosterEntry) || 'Unknown';
         availablePlayers.push({
           key,
@@ -1293,6 +1312,7 @@ function buildDraftValidationReport(stateObj) {
   manualOverrides.forEach((override) => {
     const key = normalizeLookupKey(override.name);
     if (!key) return;
+    if (zeroYearsProspectKeys.has(key)) return;
     if (assignedByPlayerKey.has(override.id || `manual-${key}`)) return;
     availablePlayers.push({
       key: override.id || `manual-${key}`,
@@ -1450,7 +1470,7 @@ function computeDashboardSummary(stateObj) {
   const totalProspects = prospects.length;
   const totalVeterans = veterans.length;
   const totalFarmPlayers = prospects.filter((p) => p.farm).length;
-  const totalMatchingRights = prospects.filter((p) => p.matchingRights).length;
+  const totalMatchingRights = prospects.filter((p) => hasZeroYearsAvailable(p) && p.matchingRights).length;
 
   return { totalOwners, totalProspects, totalVeterans, totalFarmPlayers, totalMatchingRights };
 }
@@ -1829,52 +1849,52 @@ function renderBestAvailablePanel(report) {
 }
 
 function renderDraftWorkspacePanel(report) {
-  const compactMode = isCompactViewport();
   const assignedPlayers = report.assignedPlayers || [];
-  const grouped = Object.entries(report.assignedByTeam || {}).sort((a, b) => a[0].localeCompare(b[0]));
-  const groupsHtml = grouped.length
-    ? grouped.map(([team, entries]) => `
-        <div class="detail-card">
-          <h4>${escapeHtml(team)} (${entries.length})</h4>
-          <ul class="player-list">
-            ${entries.map((entry) => `
-              <li>
-                <div class="player-item" style="cursor:default;">
-                  <div>
-                    <div class="player-name">${escapeHtml(entry.name)}</div>
-                    <div class="player-meta">
-                      <span class="player-chip">$${formatValue(entry.bid)}</span>
-                      <span class="player-chip">${escapeHtml(entry.classification)}</span>
-                      <span class="player-chip">${escapeHtml(entry.status)}</span>
-                    </div>
-                  </div>
-                    ${renderResponsiveActionButton({
-                      label: compactMode ? 'Clear on laptop' : 'Clear',
-                      className: 'secondary clear-assignment-btn',
-                      attributes: `data-clear-player-key="${escapeHtml(entry.playerKey)}"`
-                    })}
-                  </div>
-              </li>
-            `).join('')}
-          </ul>
-        </div>
+  const rows = assignedPlayers.length
+    ? assignedPlayers.map((entry) => `
+        <tr>
+          <td>${escapeHtml(entry.team)}</td>
+          <td>${escapeHtml(entry.name)}</td>
+          <td>$${formatValue(entry.bid)}</td>
+          <td>${escapeHtml(entry.status)}</td>
+          <td>${escapeHtml(entry.classification)}</td>
+          <td>
+            ${renderResponsiveActionButton({
+              label: 'Clear',
+              className: 'secondary clear-assignment-btn',
+              attributes: `data-clear-player-key="${escapeHtml(entry.playerKey)}"`
+            })}
+          </td>
+        </tr>
       `).join('')
-    : '<div class="empty-state">No Working State assignments yet.</div>';
+    : '<tr><td colspan="6" class="empty-state">No Working State assignments yet.</td></tr>';
 
   return `
-    <section class="panel validation-panel">
+    <section class="panel validation-panel draft-workspace-panel">
       <div class="preview-header">
         <div>
           <h3>Draft Workspace</h3>
-          <div class="panel-subtitle">Working State assignments grouped by team.</div>
+          <div class="panel-subtitle">Projected ownership: each saved assignment updates the available pool immediately.</div>
         </div>
         <div class="preview-meta">
           <span class="meta-pill">Assigned Players ${assignedPlayers.length}</span>
           <span class="meta-pill">Available ${report.counts.availableCount}</span>
         </div>
       </div>
-      <div class="detail-grid">
-        ${groupsHtml}
+      <div class="table-wrap">
+        <table class="validation-table">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Player</th>
+              <th>Bid</th>
+              <th>Status</th>
+              <th>Class</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>
     </section>
   `;
@@ -1893,12 +1913,16 @@ function saveWorkingAssignmentFromButton(unifiedState, button) {
   const getByDataValue = (attributeName, value) => Array.from(document.querySelectorAll(`[${attributeName}]`))
     .find((element) => element.getAttribute(attributeName) === value) || null;
 
-  const teamInput = getByDataValue('data-workspace-team-key', playerKey);
+  const teamSelect = getByDataValue('data-workspace-team-key', playerKey);
   const bidInput = getByDataValue('data-workspace-bid-key', playerKey);
   const classificationInput = getByDataValue('data-workspace-classification-key', playerKey);
   const statusInput = getByDataValue('data-workspace-status-key', playerKey);
   const owners = buildOwnerViewData(unifiedState).owners;
-  const team = resolveWorkingAssignmentTeamName(teamInput?.value || '', owners);
+  const team = resolveWorkingAssignmentTeamName(teamSelect?.value || '', owners);
+  if (!owners.some((owner) => owner.name === team)) {
+    alert('Select a league team before saving the assignment.');
+    return;
+  }
 
   const result = upsertWorkingAssignment(unifiedState, {
     playerKey,
@@ -1917,6 +1941,8 @@ function saveWorkingAssignmentFromButton(unifiedState, button) {
   }
 
   state.importedData = result.state;
+  state.selectedOwner = team;
+  state.selectedPlayerKey = null;
   renderOwnerView(result.state);
 }
 
@@ -1925,16 +1951,17 @@ function resolveWorkingAssignmentTeamName(teamName, owners) {
   return owners.find((owner) => normalizeLookupKey(owner.name) === normalizedTeamName)?.name || String(teamName || '').trim();
 }
 
-function renderAvailablePlayerCenter(report) {
+function renderAvailablePlayerCenter(report, owners) {
   const compactMode = isCompactViewport();
   const search = String(state.availablePlayerSearch || '').trim().toLowerCase();
   const assignmentMap = report.workingAssignments || {};
   const players = report.availablePlayers
     .filter((player) => !search || player.name.toLowerCase().includes(search) || player.position.toLowerCase().includes(search) || player.type.toLowerCase().includes(search))
     .sort((a, b) => a.name.localeCompare(b.name));
+  const displayedPlayers = search || state.showAllAvailablePlayers ? players : players.slice(0, 10);
 
-  const officialPlayers = players.filter((player) => !player.manualOverride);
-  const manualPlayers = players.filter((player) => player.manualOverride);
+  const officialPlayers = displayedPlayers.filter((player) => !player.manualOverride);
+  const manualPlayers = displayedPlayers.filter((player) => player.manualOverride);
 
   const renderRows = (rows) => rows.length
     ? rows.map((player) => `
@@ -1947,7 +1974,12 @@ function renderAvailablePlayerCenter(report) {
           <td>${escapeHtml(player.type)}</td>
           <td>${escapeHtml(player.status)}</td>
           <td>${escapeHtml(player.owner || '—')}</td>
-          <td><input type="text" class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" placeholder="Team" value="${escapeHtml(assignmentMap[player.key]?.team || '')}" ${compactMode ? 'disabled aria-disabled="true"' : ''} /></td>
+          <td>
+            <select class="workspace-team-input" data-workspace-team-key="${escapeHtml(player.key)}" aria-label="Team for ${escapeHtml(player.name)}" ${compactMode ? 'disabled aria-disabled="true"' : ''}>
+              <option value="">Select team</option>
+              ${owners.map((owner) => `<option value="${escapeHtml(owner.name)}" ${assignmentMap[player.key]?.team === owner.name ? 'selected' : ''}>${escapeHtml(owner.name)}</option>`).join('')}
+            </select>
+          </td>
           <td><input type="number" class="workspace-bid-input" data-workspace-bid-key="${escapeHtml(player.key)}" min="${DRAFT_ROSTER_RULES.minSlotCost}" step="0.5" placeholder="0.50" value="${escapeHtml(String(assignmentMap[player.key]?.bid ?? ''))}" ${compactMode ? 'disabled aria-disabled="true"' : ''} /></td>
           <td>
             <select class="workspace-classification-select" data-workspace-classification-key="${escapeHtml(player.key)}" ${compactMode ? 'disabled aria-disabled="true"' : ''}>
@@ -1983,10 +2015,15 @@ function renderAvailablePlayerCenter(report) {
           <span class="meta-pill">Official ${officialPlayers.length}</span>
           <span class="meta-pill">Manual ${manualPlayers.length}</span>
           <span class="meta-pill">Conflicts ${report.counts.availableIntegrityCount}</span>
+          <span class="meta-pill">Showing ${displayedPlayers.length} of ${players.length}</span>
         </div>
       </div>
       <div style="margin:12px 0;">
         <input id="availablePlayerSearchInput" placeholder="Search available players..." value="${escapeHtml(state.availablePlayerSearch || '')}" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--text);" />
+      </div>
+      <div class="available-player-actions">
+        <button type="button" class="secondary" id="toggleAvailablePlayersBtn">${state.showAllAvailablePlayers ? 'Show Top 10' : 'View All Players'}</button>
+        ${search ? '<span class="panel-subtitle">Search displays every matching player.</span>' : '<span class="panel-subtitle">Showing the first 10 available players.</span>'}
       </div>
       <div class="table-wrap">
         <table class="validation-table">
@@ -2566,7 +2603,7 @@ function renderOwnerView(unifiedState) {
   const validationCenterHtml = renderDraftValidationCenter(draftValidationReport);
   const bestAvailableHtml = renderBestAvailablePanel(draftValidationReport);
   const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
-  const availablePlayerHtml = renderAvailablePlayerCenter(draftValidationReport);
+  const availablePlayerHtml = renderAvailablePlayerCenter(draftValidationReport, ownerData.owners);
   const overrideAuditHtml = renderManualOverridePanel(draftValidationReport, unifiedState);
 
   const app = document.getElementById('app');
@@ -2580,23 +2617,38 @@ function renderOwnerView(unifiedState) {
     }
     : null;
   app.innerHTML = `
-    ${summaryHtml}
-    <div class="owner-layout">
-      ${ownerListMarkup}
-      <div>
-        ${leagueHtml}
-        ${dataQualityHtml}
-        ${validationCenterHtml}
-        ${bestAvailableHtml}
-        ${workspaceHtml}
-        ${availablePlayerHtml}
-        ${overrideAuditHtml}
-        ${ownerDetailMarkup}
-      </div>
+    <div class="dashboard-tabs" role="tablist" aria-label="Dashboard views">
+      <button type="button" id="draftNightTab" role="tab" aria-controls="draftNightPanel" aria-selected="${state.activeDashboardTab === 'draft-night'}" data-dashboard-tab="draft-night">Draft Night</button>
+      <button type="button" id="qualityCheckTab" role="tab" aria-controls="qualityCheckPanel" aria-selected="${state.activeDashboardTab === 'quality-check'}" data-dashboard-tab="quality-check">Quality Check</button>
     </div>
+    <section id="draftNightPanel" role="tabpanel" aria-labelledby="draftNightTab" ${state.activeDashboardTab === 'draft-night' ? '' : 'hidden'}>
+      ${workspaceHtml}
+      ${summaryHtml}
+      ${availablePlayerHtml}
+      ${bestAvailableHtml}
+      <div class="owner-layout">
+        ${ownerListMarkup}
+        <div>
+          ${leagueHtml}
+          ${overrideAuditHtml}
+          ${ownerDetailMarkup}
+        </div>
+      </div>
+    </section>
+    <section id="qualityCheckPanel" role="tabpanel" aria-labelledby="qualityCheckTab" ${state.activeDashboardTab === 'quality-check' ? '' : 'hidden'}>
+      ${dataQualityHtml}
+      ${validationCenterHtml}
+    </section>
   `;
 
   updateTopbarActions(unifiedState);
+
+  document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.activeDashboardTab = button.dataset.dashboardTab || 'draft-night';
+      renderOwnerView(unifiedState);
+    });
+  });
 
   if (searchFocus) {
     const replacement = document.getElementById(searchFocus.id);
@@ -2646,6 +2698,13 @@ function renderOwnerView(unifiedState) {
   if (availablePlayerSearchInput) {
     availablePlayerSearchInput.addEventListener('input', (e) => {
       state.availablePlayerSearch = e.target.value || '';
+      renderOwnerView(unifiedState);
+    });
+  }
+  const toggleAvailablePlayersBtn = document.getElementById('toggleAvailablePlayersBtn');
+  if (toggleAvailablePlayersBtn) {
+    toggleAvailablePlayersBtn.addEventListener('click', () => {
+      state.showAllAvailablePlayers = !state.showAllAvailablePlayers;
       renderOwnerView(unifiedState);
     });
   }
