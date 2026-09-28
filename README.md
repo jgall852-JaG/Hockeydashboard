@@ -1,22 +1,11 @@
-Hockey Dashboard v0.8 — Live Hockey Intelligence
+# Hockey Dashboard
 
-Overview
-- This lightweight client is pure HTML/CSS/JavaScript (no frameworks).
-- It uses the existing parsers in the repo:
-  - prospectParser.js (ESM — imported by app.js)
-  - veteranParser.js (ESM — imported by app.js)
-  - rosterParser.js (ESM/CommonJS compatible)
-- liveNhlApi.js provides optional NHL API enrichment and local caching.
-- Pool Position and NHL Position are displayed separately in player intelligence.
-- Local NHL Team identity and live current team metadata are displayed separately.
-- loadLeagueData.js is a Node utility and is NOT used by the browser UI.
+Hockey Dashboard is a browser-first draft aid for hockey pool management.
 
-Files added
-- index.html        — main UI
-- styles.css        — minimal styling
-- app.js            — main client logic (type="module")
-- liveNhlApi.js     — optional NHL API enrichment helpers
-- README.md         — this file
+## What it is
+- A static HTML/CSS/JavaScript app
+- A local-first dashboard for importing league CSV snapshots
+- A draft-day workspace for checking availability, ownership, player context, and data trust
 
 Design notes
 - Header-first detection: the app reads the CSV header (first non-empty line) and matches tokens to identify dataset type. No parser trial-and-error is performed.
@@ -31,37 +20,61 @@ Design notes
   - parseRoster(csvText) — rosterParser.js is imported as a module
   - transaction logs and live draft boards are maintained in Google Sheets and are not imported into the dashboard
 
-How to run locally (recommended)
-1) Place this project in a folder that contains the app/ parser files (already in this repo).
-2) Start a static HTTP server from the project root. ESM imports (used by app.js) typically require serving files over HTTP.
+## What it is not
+- Not a backend app
+- Not a live-sync league manager
+- Not dependent on live NHL API access to function
 
-Recommended quick options:
-- Python 3 (if installed):
-  - Open PowerShell or cmd in the project root (the folder containing index.html) and run:
-    python -m http.server 8000
-  - Then open http://localhost:8000 in your browser.
+## Core draft workflow
+Use the app to answer four questions:
+1. Who is available?
+2. Who owns what?
+3. What is this player’s draft value/context?
+4. Can I trust this data right now?
 
-- Node (http-server) (if you prefer):
-  - npm install -g http-server
-  - http-server -p 8000
-  - Open http://localhost:8000
+## How to launch locally
+1. Open the repository root on your machine.
+2. Start a static server from the project root (the folder containing `index.html`).
+3. Open the served URL in your browser.
 
-- VS Code Live Server extension: right-click index.html and "Open with Live Server".
+Example:
+```bash
+python -m http.server 8000
+```
+Then open `http://localhost:8000`.
 
-Notes
-- rosterParser.js is intentionally loaded as a classic <script> (not module) so it exposes parseRoster on window and requires no changes to the parser source.
-- loadLeagueData.js is Node-only and will not work in the browser — do not include it in index.html.
-- If you open index.html directly via file:// URLs, module imports (import ... from './app/xxx.js') may fail due to browser restrictions. Use an HTTP server as above.
+## How to access away from your desktop
+- **Hosted access:** enable GitHub Pages for this repository and use the published URL on laptop or phone.
+- **Portable access:** use **Export State** before leaving your main machine, then **Import Saved State** on another browser or laptop.
+- **Phone use:** treat phone mode as lookup/emergency mode, not your main drafting workspace.
 
-Usage
-- Drag and drop a CSV or click to select.
-- App reads the header, identifies type, and calls the proper parser.
-- Preview shows dataset type, record count and the first 10 parsed records.
-- Click Confirm Import to finalize — the data is persisted locally.
-- Click Upload Another to reset.
+## Data you need
+To work reliably, the app expects current CSV snapshots for any of these datasets:
+- Prospects
+- Veterans
+- Roster
 
-Troubleshooting
-- If live NHL data fails, the dashboard falls back to local CSV data and shows the API error inline.
-- If you see parser errors, the file might not match expected CSV structure; try the chooser when the app reports ambiguous header detection.
+## Source-of-truth rules
+- Local CSV data remains authoritative.
+- NHL API data is optional enrichment only.
+- Cached live data may help, but the app must remain useful without it.
+- Browser `localStorage` is convenience state, not the only backup path.
+
+## Portable state workflow
+- Click **Export State** to download your saved dashboard state.
+- Move that JSON file to another device.
+- Click **Import Saved State** to restore the same working view elsewhere.
 
 Transaction logs and live draft boards are not player snapshots and should not be uploaded here. Import the Prospects, Veterans, or Roster CSV tab used by the dashboard.
+
+## Hosted deployment
+A GitHub Pages workflow is included in `.github/workflows/pages.yml`.
+It publishes the static dashboard files without adding a backend.
+
+## Active docs
+- `README.md`
+- `DRAFT_DAY_RUNBOOK.md`
+- `PRODUCT_SCOPE.md`
+- `TECHNICAL_NOTES.md`
+
+Older planning and status docs are preserved in `docs/archive/`.

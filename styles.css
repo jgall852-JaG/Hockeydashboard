@@ -54,6 +54,21 @@ button, input {
   margin-bottom: 20px;
 }
 
+.topbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+   align-items: center;
+  gap: 10px;
+}
+
+.live-refresh-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 0.92rem;
+  text-align: right;
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--accent);
@@ -81,6 +96,13 @@ button {
 button:hover {
   transform: translateY(-1px);
   border-color: var(--accent);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  transform: none;
+  border-color: var(--line);
 }
 
 button.primary {
@@ -423,6 +445,11 @@ button.secondary {
     flex-direction: column;
     align-items: flex-start;
   }
+
+  .topbar-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
 }
 
 /* v0.3a summary and owner-stats */
@@ -470,6 +497,107 @@ button.secondary {
 
 .league-intel {
   margin-bottom: 12px;
+}
+
+.draft-status-panel {
+  margin-bottom: 12px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.status-card {
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.status-card h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
+.status-callout {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line-soft);
+  margin-bottom: 12px;
+}
+
+.tone-success {
+  border-color: rgba(67, 195, 139, 0.28);
+  background: rgba(67, 195, 139, 0.08);
+}
+
+.tone-warning {
+  border-color: rgba(243, 201, 105, 0.3);
+  background: rgba(243, 201, 105, 0.08);
+}
+
+.tone-danger {
+  border-color: rgba(245, 108, 108, 0.34);
+  background: rgba(245, 108, 108, 0.1);
+}
+
+.status-detail-list,
+.status-list {
+  display: grid;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.status-row {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: var(--text);
+}
+
+.status-row-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.secondary-sections {
+  margin-top: 12px;
+}
+
+.secondary-sections summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.secondary-sections-body {
+  margin-top: 14px;
+}
+
+.mobile-only-note {
+  display: none;
+  margin-top: 12px;
+  color: var(--warning);
+  font-size: 0.85rem;
+}
+
+.mobile-readonly-action {
+  display: grid;
+  gap: 6px;
+}
+
+.compact-action-note {
+  color: var(--muted);
+  font-size: 0.76rem;
 }
 
 .data-quality .dq-row {
@@ -672,4 +800,32 @@ button.secondary {
 
 .manual-override-row {
   background: rgba(245, 108, 108, 0.05);
+}
+
+@media (max-width: 760px) {
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .topbar-actions button:last-of-type {
+    grid-column: 1 / -1;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .validation-row,
+  .override-card-header,
+  .player-item,
+  .data-quality .dq-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .mobile-only-note {
+    display: block;
+  }
 }
