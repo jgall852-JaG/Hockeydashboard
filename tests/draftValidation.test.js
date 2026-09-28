@@ -1,6 +1,7 @@
 import {
   buildDraftValidationReport,
   buildOwnerDraftPlan,
+  buildOwnerViewData,
   createManualOverrideDraft,
   detectDatasetType,
   parseDraftBoard,
@@ -240,6 +241,113 @@ describe('draft validation report', () => {
 
     expect(plan.skaters).toBe(3);
     expect(plan.unclassified).toBe(0);
+  });
+
+  test('working assignments immediately remove a player from the available pool', () => {
+    const state = {
+      version: 2,
+      datasets: {
+        roster: {
+          players: {
+            'connor-mcdavid': { name: 'Connor McDavid', position: 'C', source: 'inventory' },
+          },
+        },
+        prospects: { prospects: {} },
+        veterans: { veterans: {} },
+      },
+      manualOverrides: [],
+      workingAssignments: {
+        'connor mcdavid': {
+          playerKey: 'connor mcdavid',
+          name: 'Connor McDavid',
+          team: 'FIGHTING IRISH',
+          bid: 60.5,
+          status: 'Winning Bid',
+        },
+      },
+    };
+
+    const availableReport = buildDraftValidationReport({ ...state, workingAssignments: {} });
+    const assignedReport = buildDraftValidationReport(state);
+
+    expect(availableReport.counts.availableCount).toBe(1);
+    expect(assignedReport.counts.availableCount).toBe(0);
+    expect(assignedReport.assignedByTeam['FIGHTING IRISH'][0]).toMatchObject({
+      name: 'Connor McDavid',
+      bid: 60.5,
+      status: 'Winning Bid',
+    });
+  });
+
+  test('zero-years prospects move to matching rights only when eligible', () => {
+    const ownerData = buildOwnerViewData({
+      version: 2,
+      datasets: {
+        prospects: {
+          prospects: {
+            expiredRights: {
+              name: 'Expired Rights',
+              owner: 'TEAM A',
+              termRemaining: 0,
+              matchingRights: true,
+            },
+            expiredNoRights: {
+              name: 'Expired No Rights',
+              owner: 'TEAM B',
+              termRemaining: '0',
+              matchingRights: false,
+            },
+            activeRights: {
+              name: 'Active Rights',
+              owner: 'TEAM A',
+              termRemaining: 1,
+              matchingRights: true,
+            },
+          },
+        },
+        veterans: { veterans: {} },
+        roster: { players: {} },
+      },
+    });
+    const teamA = ownerData.owners.find((owner) => owner.name === 'TEAM A');
+    const teamB = ownerData.owners.find((owner) => owner.name === 'TEAM B');
+
+    expect(teamA.prospects.map((player) => player.name)).toEqual(['Active Rights']);
+    expect(teamA.matchingRights.map((player) => player.name)).toEqual(['Expired Rights']);
+    expect(teamB.prospects).toEqual([]);
+    expect(teamB.matchingRights).toEqual([]);
+  });
+
+  test('zero-years prospects are excluded from available inventory and manual overrides', () => {
+    const report = buildDraftValidationReport({
+      version: 2,
+      datasets: {
+        roster: {
+          players: {
+            expired: { name: 'Expired Player', position: 'C', source: 'inventory', available: 'true' },
+            active: { name: 'Active Player', position: 'LW', source: 'inventory', available: 'true' },
+          },
+        },
+        prospects: {
+          prospects: {
+            expired: { name: 'Expired Player', termRemaining: 0, matchingRights: true },
+          },
+        },
+        veterans: { veterans: {} },
+      },
+      manualOverrides: [
+        {
+          id: 'expired-override',
+          name: 'Expired Player',
+          position: 'C',
+          classification: 'Rookie',
+        },
+      ],
+      workingAssignments: {},
+    });
+
+    expect(report.availablePlayers.map((player) => player.name)).toEqual(['Active Player']);
+    expect(report.counts.availableCount).toBe(1);
   });
 
   test('creates a normalized manual override draft', () => {

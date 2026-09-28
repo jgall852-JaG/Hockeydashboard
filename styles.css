@@ -124,6 +124,36 @@ button.secondary {
   display: block;
 }
 
+.dashboard-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.dashboard-tabs [aria-selected="true"] {
+  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  border-color: transparent;
+  color: #0b1523;
+  font-weight: 700;
+}
+
+#draftNightPanel[hidden],
+#qualityCheckPanel[hidden] {
+  display: none !important;
+}
+
+.draft-workspace-panel {
+  border-color: rgba(103, 183, 255, 0.3);
+}
+
+.available-player-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--line-soft);
