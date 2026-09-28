@@ -1,5 +1,6 @@
 import {
   buildDraftValidationReport,
+  buildOwnerDraftPlan,
   createManualOverrideDraft,
 } from '../app.js';
 
@@ -116,6 +117,56 @@ describe('draft validation report', () => {
     expect(report.ownerDraftPlans[0].slotsNeeded).toBe(24);
     expect(report.ownerDraftPlans[0].minimumRequired).toBe(12);
     expect(report.ownerDraftPlans[0].budgetShortfall).toBe(11.75);
+  });
+
+  test('does not treat inventory parser defaults as explicit availability', () => {
+    const report = buildDraftValidationReport({
+      version: 2,
+      datasets: {
+        roster: {
+          players: {
+            'connor-bedard': {
+              name: 'Connor Bedard',
+              owner: '',
+              position: 'C',
+              source: 'inventory',
+              drafted: false,
+              retained: false,
+              available: '',
+            },
+          },
+        },
+        prospects: {
+          prospects: {
+            'connor-bedard': {
+              name: 'Connor Bedard',
+              owner: 'HEBREW HAMMERS',
+              poolPosition: 'C',
+            },
+          },
+        },
+      },
+      manualOverrides: [],
+      workingAssignments: {},
+    });
+
+    expect(report.details.availableIntegrityIssues).toEqual([]);
+    expect(report.counts.availableIntegrityCount).toBe(0);
+    expect(report.availablePlayers.some((player) => player.name === 'Connor Bedard')).toBe(false);
+  });
+
+  test('classifies sheet L and R abbreviations as skater roster positions', () => {
+    const plan = buildOwnerDraftPlan({
+      name: 'SHEET ABBREVIATIONS',
+      rosterPlayers: [
+        { name: 'Left Wing', position: 'L' },
+        { name: 'Right Wing', position: 'R' },
+        { name: 'Utility Skater', position: 'C/L' },
+      ],
+    });
+
+    expect(plan.skaters).toBe(3);
+    expect(plan.unclassified).toBe(0);
   });
 
   test('creates a normalized manual override draft', () => {
