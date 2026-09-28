@@ -61,7 +61,7 @@ const GOALIE_TEAM_CITY_KEYS = new Set([
   'washington',
   'winnipeg',
 ]);
-const SKATER_POSITION_KEYS = new Set(['c', 'lw', 'rw', 'd', 'ld', 'rd', 'f']);
+const SKATER_POSITION_KEYS = new Set(['c', 'l', 'lw', 'r', 'rw', 'd', 'ld', 'rd', 'f']);
 const GOALIE_TEAM_POSITION_KEYS = new Set(['g', 'goalie', 'goalieteam', 'goalie team', 'team goalie', 'gt']);
 
 const state = {
@@ -917,6 +917,16 @@ function isFalsyRecordValue(value) {
   return text === 'n' || text === 'no' || text === 'false' || text === '0';
 }
 
+function hasExplicitAvailableSignal(record) {
+  const availableField = pickRecordValue(record, ['available', 'isavailable', 'undrafted']);
+  if (isTruthyRecordValue(availableField)) return true;
+
+  const source = normalizeLookupKey(pickRecordValue(record, ['source']));
+  if (source === 'inventory' || source === 'utility') return false;
+
+  return isFalsyRecordValue(pickRecordValue(record, ['drafted', 'draftstatus', 'draft_status']));
+}
+
 function getRecordName(record) {
   return String(pickRecordValue(record, ['name', 'fullname', 'playername', 'displayname', 'player'])).trim();
 }
@@ -1025,10 +1035,9 @@ function getAvailableStatus(record) {
   const owner = getRecordOwner(record);
   const draftedField = pickRecordValue(record, ['drafted', 'draftstatus', 'draft_status']);
   const retainedField = pickRecordValue(record, ['retained', 'retention', 'kept']);
-  const availableField = pickRecordValue(record, ['available', 'isavailable', 'undrafted']);
   const drafted = isTruthyRecordValue(draftedField);
   const retained = isTruthyRecordValue(retainedField);
-  const explicitlyAvailable = isTruthyRecordValue(availableField) || isFalsyRecordValue(draftedField);
+  const explicitlyAvailable = hasExplicitAvailableSignal(record);
 
   if (owner && explicitlyAvailable) {
     return { status: 'conflict', label: 'Assigned but marked available' };
@@ -1260,7 +1269,7 @@ function buildDraftValidationReport(stateObj) {
       if (availableState.status === 'conflict') {
         availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: ${availableState.label}`);
       }
-      if (availableState.status === 'available' && owners.length) {
+      if (availableState.status === 'available' && owners.length && hasExplicitAvailableSignal(rosterEntry)) {
         availableIntegrityIssues.push(`${getRecordName(rosterEntry) || key}: owned in sheet but flagged available in roster`);
       }
       if (owners.length && rosterOwner && !owners.includes(rosterOwner)) {
