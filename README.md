@@ -42,6 +42,12 @@ To work reliably, the app expects current CSV snapshots for any of these dataset
 - Roster
 - Transactions (optional)
 
+## Draft Intelligence data
+- The dashboard loads the five static JSON outputs from `data/` and shows available NHL production context in the existing Player Intelligence panel.
+- Run `node scripts/generate-draft-intelligence.mjs <nhl-skater-stats.csv> [normalized-source-metrics.json]` from this directory to refresh those outputs from the current Google Sheets, a provided NHL skater-stat snapshot, and optional normalized source metrics.
+- Optional metrics are keyed by player ID (normalized name with hyphens) under `players`, with `deployment`, `production`, `prospect`, and `keeper` objects; position scarcity inputs use top-level `rosterSlotsByPosition` and optional `viablePlayersByPosition`. Component inputs must be normalized 0–1.
+- Current outputs are explicitly partial: unavailable source metrics and dependent scores/auction values remain `null`; supplied complete inputs are scored by the engine.
+
 ## Source-of-truth rules
 - Local CSV data remains authoritative.
 - NHL API data is optional enrichment only.

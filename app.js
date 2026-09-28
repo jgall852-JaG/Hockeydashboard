@@ -79,7 +79,25 @@ const state = {
   liveProfiles: {},
   liveRequests: {},
   liveRefreshMessage: '',
+  draftIntelligence: null,
 };
+
+export async function loadDraftIntelligenceFiles(fetchImpl = globalThis.fetch) {
+  if (typeof fetchImpl !== 'function') {
+    throw new Error('Fetch is unavailable for Draft Intelligence files.');
+  }
+
+  const filenames = ['players.json', 'auction.json', 'tiers.json', 'keepers.json', 'prospects.json'];
+  const entries = await Promise.all(filenames.map(async (filename) => {
+    const response = await fetchImpl(`./data/${filename}`);
+    if (!response.ok) {
+      throw new Error(`Unable to load Draft Intelligence ${filename} (${response.status}).`);
+    }
+    return [filename.replace('.json', ''), await response.json()];
+  }));
+
+  return Object.fromEntries(entries);
+}
 
 function parseCSVLine(line) {
   const result = [];
@@ -2325,6 +2343,27 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
       </ul>
     `
     : '<div class="empty-state">No live schedule data.</div>';
+  const draftPlayer = state.draftIntelligence?.players?.players?.find(
+    (entry) => normalizeLookupKey(entry.name) === normalizeLookupKey(player.name),
+  );
+  const draftIntelligenceHtml = draftPlayer
+    ? `
+      <article class="detail-card">
+        <h3>Draft Intelligence</h3>
+        ${renderKeyValueList([
+          ['Status', draftPlayer.valuationStatus === 'unpriced-missing-source-inputs' ? 'Partial data; scoring inputs pending' : draftPlayer.valuationStatus],
+          ['Category', draftPlayer.category],
+          ['2025-26 GP', draftPlayer.seasonStats?.gamesPlayed],
+          ['Goals', draftPlayer.seasonStats?.goals],
+          ['Assists', draftPlayer.seasonStats?.assists],
+          ['Fantasy Points (G + 0.5A)', draftPlayer.seasonStats?.fantasyPoints],
+          ['DraftIQ', draftPlayer.draftIQ],
+          ['Auction Value', draftPlayer.auctionValue === null ? 'Unpriced' : `$${formatValue(draftPlayer.auctionValue)}`],
+          ['Tier', draftPlayer.tier],
+        ])}
+      </article>
+    `
+    : '';
 
   return `
     <section class="panel player-intel">
@@ -2359,6 +2398,7 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
           <h3>Team Intelligence</h3>
           ${renderKeyValueList(teamRows)}
         </article>
+        ${draftIntelligenceHtml}
       </div>
     </section>
   `;
@@ -2913,6 +2953,7 @@ function initialize() {
   const liveRefreshBtn = document.getElementById('liveRefreshBtn');
   const topbarCsvFileInput = document.getElementById('topbarCsvFileInput');
   const liveRefreshStatus = document.getElementById('liveRefreshStatus');
+  const draftIntelligenceStatus = document.getElementById('draftIntelligenceStatus');
 
   if (liveRefreshBtn && liveRefreshStatus) {
     liveRefreshBtn.addEventListener('click', async () => {
@@ -3022,6 +3063,24 @@ function initialize() {
   } else {
     renderImportScreen();
   }
+
+  if (draftIntelligenceStatus) draftIntelligenceStatus.textContent = 'Loading Draft Intelligence';
+  void loadDraftIntelligenceFiles()
+    .then((draftIntelligence) => {
+      state.draftIntelligence = draftIntelligence;
+      if (draftIntelligenceStatus) {
+        draftIntelligenceStatus.textContent = draftIntelligence.players.status === 'partial'
+          ? 'Draft Intelligence partial'
+          : 'Draft Intelligence loaded';
+      }
+      if (hasLoadedData(state.importedData || DEFAULT_STATE)) {
+        renderOwnerView(state.importedData || loadState());
+      }
+    })
+    .catch((error) => {
+      console.error('Draft Intelligence files failed to load', error);
+      if (draftIntelligenceStatus) draftIntelligenceStatus.textContent = 'Draft Intelligence unavailable';
+    });
 }
 
 if (typeof document !== 'undefined') {
