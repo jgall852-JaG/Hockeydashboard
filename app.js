@@ -110,13 +110,87 @@ function parseCSVLine(line) {
   return result;
 }
 
+const DATASET_NAMES = Object.freeze([
+  'prospects',
+  'veterans',
+  'roster',
+  'transactions',
+  'positions',
+  'utility',
+  'draft',
+]);
+
+function createEmptyDatasets() {
+  return Object.fromEntries(DATASET_NAMES.map((name) => [name, null]));
+}
+
+function createEmptyMetadata() {
+  return Object.fromEntries(DATASET_NAMES.map((name) => [name, { status: 'empty' }]));
+}
+
+function getRosterPlayerIdentityAliases(name) {
+  const normalized = normalizeLookupKey(name);
+  if (!normalized) return [];
+  const parts = normalized.split(' ').filter(Boolean);
+  if (parts.length < 2) return [normalized];
+  return [...new Set([normalized, `${parts[0][0]} ${parts.slice(1).join(' ')}`])];
+}
+
+function parseDraftBoard(csvText) {
+  const rows = String(csvText || '').split(/\r?\n/).filter((row) => row.trim()).map(parseCSVLine);
+  const players = {};
+  let teams = [];
+
+  rows.forEach((row, index) => {
+    if (row[0] === '#') {
+      const teamRow = rows[index - 1] || [];
+      teams = [];
+      for (let column = 0; column < row.length; column += 4) {
+        teams.push(String(teamRow[column] || '').trim());
+      }
+      return;
+    }
+
+    if (!teams.length) return;
+
+    for (let group = 0; group < teams.length; group += 1) {
+      const column = group * 4;
+      const pick = String(row[column] || '').trim();
+      const name = String(row[column + 1] || '').trim();
+      if (!name || ['PLAYER NAME', 'TOTAL SPENT', 'BALANCE'].includes(name.toUpperCase())) continue;
+
+      const key = `${normalizeLookupKey(name)}-${teams[group].toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${pick || 'drafted'}`;
+      players[key] = {
+        name,
+        owner: teams[group],
+        position: String(row[column + 2] || '').trim(),
+        cost: row[column + 3] || '',
+        pick: /^\d+$/.test(pick) ? Number(pick) : null,
+        source: 'draft',
+      };
+    }
+  });
+
+  return { players };
+}
+
 export function detectDatasetType(csvText) {
   const text = String(csvText || '');
   const rows = text.split(/\r?\n/).filter((row) => row.trim());
   const normalized = rows.join('\n').toUpperCase();
   const rosterCandidate = parseRoster(text);
-  const isStructuredRosterLayout = rosterCandidate?.layout && rosterCandidate.layout !== 'flat-table' && rosterCandidate.layout !== 'unknown';
 
+  if (isTransactionsSnapshot(rows)) {
+    return 'unknown';
+  }
+  if (isDraftBoardSnapshot(rows)) return 'draft';
+
+  const firstCell = parseCSVLine(rows[0] || '')[0]?.trim().toUpperCase();
+  if (firstCell === 'UTILITY') return 'utility';
+  if (firstCell === 'LEFT WING') return 'positions';
+
+  const isStructuredRosterLayout = rosterCandidate?.layout
+    && !['flat-table', 'unknown', 'inventory', 'utility'].includes(rosterCandidate.layout);
   if (isStructuredRosterLayout && Object.keys(rosterCandidate.players || {}).length > 0) {
     return 'roster';
   }
@@ -141,7 +215,14 @@ export function detectDatasetType(csvText) {
     return 'veterans';
   }
 
-  if (Object.keys(rosterCandidate?.players || {}).length > 0) {
+  const rosterPlayers = Object.values(rosterCandidate?.players || {});
+  if (rosterPlayers.some((player) => player.source === 'inventory')) {
+    return 'positions';
+  }
+  if (rosterPlayers.some((player) => player.source === 'utility')) {
+    return 'utility';
+  }
+  if (rosterPlayers.length > 0) {
     return 'roster';
   }
 
@@ -163,17 +244,44 @@ export function detectDatasetType(csvText) {
   return 'unknown';
 }
 
+function isTransactionsSnapshot(rows) {
+  if (rows.length < 2) return false;
+  const columns = parseCSVLine(rows[1]).map((value) => value.toLowerCase());
+  let matchingGroups = 0;
+
+  for (let index = 0; index + 3 < columns.length; index += 4) {
+    if (columns.slice(index, index + 4).join('|') === 'move|player|cost|date') {
+      matchingGroups += 1;
+    }
+  }
+
+  return matchingGroups >= 2;
+}
+
+function isDraftBoardSnapshot(rows) {
+  if (rows.length < 2) return false;
+  const columns = parseCSVLine(rows[1]).map((value) => value.toLowerCase().replace(/\./g, ''));
+  let matchingGroups = 0;
+  const upperRows = rows.map((row) => parseCSVLine(row).map((value) => String(value).trim().toUpperCase()));
+  const hasBalance = upperRows.some((values) => values.includes('BALANCE'));
+  const hasTotalSpent = upperRows.some((values) => values.includes('TOTAL SPENT'));
+  const hasFarmDeductions = upperRows.some((values) => values.some((value) => value.includes('FARM DEDUCTIONS')));
+
+  for (let index = 0; index + 3 < columns.length; index += 4) {
+    if (columns.slice(index, index + 4).join('|') === '#|player name|pos|cost') {
+      matchingGroups += 1;
+    }
+  }
+
+  return matchingGroups >= 2 && !hasFarmDeductions && (hasBalance || !hasTotalSpent);
+}
+
 export function buildOwnerViewData(rawState) {
   // Accept either legacy importedData (flat) or the new unified state with datasets
   const DEFAULT = {
     version: 1,
-    datasets: { prospects: null, veterans: null, roster: null, transactions: null },
-    metadata: {
-      prospects: { status: 'empty' },
-      veterans: { status: 'empty' },
-      roster: { status: 'empty' },
-      transactions: { status: 'empty' },
-    },
+    datasets: createEmptyDatasets(),
+    metadata: createEmptyMetadata(),
   };
 
   let stateObj = rawState && rawState.datasets ? rawState : null;
@@ -250,7 +358,7 @@ function countParsedRecords(parsed, type) {
     return Object.keys(parsed).length;
   }
 
-  if (type === 'roster' || type === 'transactions') {
+  if (type === 'roster' || type === 'transactions' || type === 'positions' || type === 'utility' || type === 'draft') {
     if (parsed.players && typeof parsed.players === 'object') return Object.keys(parsed.players).length;
     if (Array.isArray(parsed)) return parsed.length;
     return Object.keys(parsed).length;
@@ -302,6 +410,12 @@ function getPreviewHeaders(parsedData, datasetType) {
     return available.length ? available : Object.keys(sample).slice(0, 8);
   }
 
+  if (['positions', 'utility', 'draft'].includes(datasetType)) {
+    const sample = Object.values(parsedData?.players || {})[0] || {};
+    return ['name', 'owner', 'position', 'cost', 'pick', 'source']
+      .filter((header) => Object.prototype.hasOwnProperty.call(sample, header));
+  }
+
   return ['name', 'owner', 'cost', 'termRemaining', 'matchingRights', 'farm'];
 }
 
@@ -347,13 +461,8 @@ function findRosterMatchForPlayer(player, rosterIndex) {
 // Unified persistence helpers and migration
 const DEFAULT_STATE = {
   version: APP_STATE_VERSION,
-  datasets: { prospects: null, veterans: null, roster: null, transactions: null },
-  metadata: {
-    prospects: { status: 'empty' },
-    veterans: { status: 'empty' },
-    roster: { status: 'empty' },
-    transactions: { status: 'empty' },
-  },
+  datasets: createEmptyDatasets(),
+  metadata: createEmptyMetadata(),
   manualOverrides: [],
   workingAssignments: {},
 };
@@ -415,7 +524,7 @@ function migrateOldState(oldObj) {
 
 function mergeDataset(stateObj, datasetType, parsedData, sourceName) {
   const next = JSON.parse(JSON.stringify(stateObj));
-  next.datasets = next.datasets || { prospects: null, veterans: null, roster: null, transactions: null };
+  next.datasets = { ...createEmptyDatasets(), ...(next.datasets || {}) };
   next.datasets[datasetType] = datasetType === 'roster'
     ? mergeRosterDataset(next.datasets.roster, parsedData, sourceName)
     : parsedData;
@@ -438,8 +547,8 @@ function normalizeState(stateObj) {
   }
 
   next.version = APP_STATE_VERSION;
-  next.datasets = stateObj.datasets || next.datasets;
-  next.metadata = stateObj.metadata || next.metadata;
+  next.datasets = { ...next.datasets, ...(stateObj.datasets || {}) };
+  next.metadata = { ...next.metadata, ...(stateObj.metadata || {}) };
   next.manualOverrides = Array.isArray(stateObj.manualOverrides) ? stateObj.manualOverrides : [];
   next.workingAssignments = stateObj.workingAssignments && typeof stateObj.workingAssignments === 'object' && !Array.isArray(stateObj.workingAssignments)
     ? stateObj.workingAssignments
@@ -448,7 +557,7 @@ function normalizeState(stateObj) {
 }
 
 function getSnapshotAgeInfo(stateObj) {
-  const datasets = ['prospects', 'veterans', 'roster', 'transactions'];
+  const datasets = DATASET_NAMES;
   const importedTimes = datasets
     .map((dataset) => stateObj?.metadata?.[dataset]?.importedAt)
     .filter(Boolean)
@@ -535,7 +644,7 @@ function isRetentionListLoaded(stateObj) {
 }
 
 function hasLoadedData(stateObj) {
-  return ['prospects', 'veterans', 'roster', 'transactions']
+  return DATASET_NAMES
     .some((key) => stateObj?.metadata?.[key]?.status === 'ok');
 }
 
@@ -1033,6 +1142,7 @@ function getRecordType(record) {
 
 function getAvailableStatus(record) {
   const owner = getRecordOwner(record);
+  const availableField = pickRecordValue(record, ['available', 'isavailable', 'undrafted']);
   const draftedField = pickRecordValue(record, ['drafted', 'draftstatus', 'draft_status']);
   const retainedField = pickRecordValue(record, ['retained', 'retention', 'kept']);
   const drafted = isTruthyRecordValue(draftedField);
@@ -1052,6 +1162,10 @@ function getAvailableStatus(record) {
       status: retained ? 'retained' : drafted ? 'drafted' : 'owned',
       label: retained ? 'Retained' : drafted ? 'Drafted' : 'Owned',
     };
+  }
+
+  if (isFalsyRecordValue(availableField)) {
+    return { status: 'unavailable', label: 'Not available' };
   }
 
   if (explicitlyAvailable || !owner) {
@@ -1193,9 +1307,55 @@ function buildDraftValidationReport(stateObj) {
   const veterans = Object.values(nextState.datasets.veterans?.veterans || {});
   const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
   const workingAssignments = nextState.workingAssignments && typeof nextState.workingAssignments === 'object' ? nextState.workingAssignments : {};
-  const assignedByPlayerKey = new Set(Object.keys(workingAssignments).map((key) => String(key || '').trim()).filter(Boolean));
   const snapshot = getSnapshotAgeInfo(nextState);
   const ownerDraftPlans = ownerData.owners.map((owner) => buildOwnerDraftPlan(owner));
+  const inventoryByKey = new Map();
+  [...Object.values(nextState.datasets.positions?.players || {}), ...Object.values(nextState.datasets.utility?.players || {})]
+    .forEach((player) => {
+      const key = normalizeLookupKey(getRecordName(player));
+      if (key && !inventoryByKey.has(key)) {
+        inventoryByKey.set(key, player);
+      }
+    });
+  const inventoryKeyByAlias = new Map();
+  inventoryByKey.forEach((player, key) => {
+    getRosterPlayerIdentityAliases(getRecordName(player)).forEach((alias) => {
+      const current = inventoryKeyByAlias.get(alias);
+      inventoryKeyByAlias.set(alias, current === undefined || current === key ? key : null);
+    });
+  });
+  const resolveInventoryKey = (name) => {
+    const aliases = getRosterPlayerIdentityAliases(name);
+    for (const alias of aliases) {
+      if (inventoryByKey.has(alias)) return alias;
+    }
+    for (const alias of aliases) {
+      const match = inventoryKeyByAlias.get(alias);
+      if (match) return match;
+    }
+    return null;
+  };
+  const ownedInventoryKeys = new Set();
+  const retainedInventoryKeys = new Set();
+  const draftedInventoryKeys = new Set();
+  const workingInventoryKeys = new Set();
+  [...rosterPlayers, ...prospects, ...veterans].forEach((player) => {
+    if (!getRecordOwner(player)) return;
+    const key = resolveInventoryKey(getRecordName(player));
+    if (key) ownedInventoryKeys.add(key);
+  });
+  [...prospects, ...veterans].forEach((player) => {
+    const key = resolveInventoryKey(getRecordName(player));
+    if (key) retainedInventoryKeys.add(key);
+  });
+  Object.values(nextState.datasets.draft?.players || {}).forEach((player) => {
+    const key = resolveInventoryKey(getRecordName(player));
+    if (key) draftedInventoryKeys.add(key);
+  });
+  Object.entries(workingAssignments).forEach(([assignmentKey, assignment]) => {
+    const key = resolveInventoryKey(assignment?.name) || resolveInventoryKey(assignmentKey);
+    if (key) workingInventoryKeys.add(key);
+  });
 
   const rosterByKey = new Map();
   rosterPlayers.forEach((player) => {
@@ -1275,35 +1435,27 @@ function buildDraftValidationReport(stateObj) {
       if (owners.length && rosterOwner && !owners.includes(rosterOwner)) {
         ownershipMismatches.push(`${getRecordName(rosterEntry) || key}: roster=${rosterOwner}, sheet=${owners.join(' / ')}`);
       }
-      if (availableState.status === 'available' && owners.length === 0 && !assignedByPlayerKey.has(key)) {
-        const recordType = getRecordType(rosterEntry) || 'Unknown';
-        availablePlayers.push({
-          key,
-          name: getRecordName(rosterEntry) || key,
-          position: getRecordPosition(rosterEntry) || '—',
-          type: recordType,
-          owner: rosterOwner || '—',
-          status: 'Available',
-          manualOverride: false,
-        });
-      }
     }
   });
 
-  manualOverrides.forEach((override) => {
-    const key = normalizeLookupKey(override.name);
-    if (!key) return;
-    if (assignedByPlayerKey.has(override.id || `manual-${key}`)) return;
+  inventoryByKey.forEach((record, key) => {
+    if (
+      ownedInventoryKeys.has(key)
+      || retainedInventoryKeys.has(key)
+      || draftedInventoryKeys.has(key)
+      || workingInventoryKeys.has(key)
+    ) {
+      return;
+    }
+
     availablePlayers.push({
-      key: override.id || `manual-${key}`,
-      name: override.name,
-      position: override.position || '—',
-      type: normalizeClassification(override.classification) || 'Manual',
+      key,
+      name: getRecordName(record) || key,
+      position: getDraftSlotPosition(record) || getRecordPosition(record) || '—',
+      type: getRecordType(record) || 'Unknown',
       owner: '—',
-      status: 'MANUAL OVERRIDE',
-      manualOverride: true,
-      notes: override.notes || '',
-      createdAt: override.createdAt || null,
+      status: 'Available',
+      manualOverride: false,
     });
   });
 
@@ -2005,7 +2157,7 @@ function renderAvailablePlayerCenter(report) {
             </tr>
           </thead>
           <tbody>
-            ${renderRows(officialPlayers)}
+            ${renderRows(players)}
           </tbody>
         </table>
       </div>
@@ -2597,7 +2749,6 @@ function renderOwnerView(unifiedState) {
   `;
 
   updateTopbarActions(unifiedState);
-
   if (searchFocus) {
     const replacement = document.getElementById(searchFocus.id);
     replacement?.focus();
@@ -2605,7 +2756,6 @@ function renderOwnerView(unifiedState) {
       replacement.setSelectionRange(searchFocus.selectionStart, searchFocus.selectionEnd);
     }
   }
-
   // owner click handlers
   document.querySelectorAll('.owner-item').forEach((button) => {
     button.addEventListener('click', () => {
@@ -2768,7 +2918,7 @@ function renderImportScreen() {
     <section class="panel import-card">
       <div class="dropzone">
         <strong>Upload a CSV Snapshot</strong>
-        <p>Import prospects, veterans, roster, or transactions data to refresh the league state. Use the header buttons to import or export a saved dashboard state between devices.</p>
+        <p>Import the latest prospects, veterans, or roster CSV snapshot to refresh the league state. Use the header buttons to import or export a saved dashboard state between devices.</p>
         <div class="file-input-wrap">
           <input id="csvFileInput" type="file" accept=".csv,text/csv" />
           <span class="file-placeholder">Choose CSV File</span>
@@ -2793,10 +2943,16 @@ function handleImport(csvText, fileName) {
 
   if (datasetType === 'unknown') {
     const app = document.getElementById('app');
+    const rows = String(csvText || '').split(/\r?\n/).filter((row) => row.trim());
+    const message = isTransactionsSnapshot(rows)
+      ? 'This is a transaction log, not a player snapshot. Keep it in Google Sheets and import Prospects, Veterans, or Roster data here.'
+      : isDraftBoardSnapshot(rows)
+        ? 'This is a draft board, not a player snapshot. Keep the draft board in Google Sheets and import Prospects, Veterans, or Roster data here.'
+        : 'The uploaded CSV does not match the expected prospect, veteran, or roster structure.';
     app.innerHTML = `
       <section class="panel import-card">
         <h2>Unable to detect dataset type</h2>
-        <p>The uploaded CSV does not match the expected prospect or veteran structure.</p>
+        <p>${message}</p>
         <button class="primary" id="retryImportBtn">Try Another File</button>
       </section>
     `;
@@ -2811,8 +2967,10 @@ function handleImport(csvText, fileName) {
     parsedData = parseProspects(csvText);
   } else if (datasetType === 'veterans') {
     parsedData = parseVeterans(csvText);
-  } else if (datasetType === 'roster') {
+  } else if (datasetType === 'roster' || datasetType === 'positions' || datasetType === 'utility') {
     parsedData = parseRoster(csvText);
+  } else if (datasetType === 'draft') {
+    parsedData = parseDraftBoard(csvText);
   } else {
     parsedData = null;
   }
@@ -2981,6 +3139,7 @@ export {
   getDataQualitySources,
   isRetentionListLoaded,
   getSnapshotAgeInfo,
+  parseDraftBoard,
   getLiveCacheStatus,
   resolveWorkingAssignmentTeamName,
   refreshGoogleSheetState,
