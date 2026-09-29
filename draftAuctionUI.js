@@ -12,11 +12,16 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL';
 
 function getAhlPlayerPositions(player) {
-  const utilityPositions = String(player.utilityPosition || '')
+  const finalPosition = String(player.finalPosition || player.utilityPosition || player.ahlPosition || player.position || '')
     .split(/[\/,\s]+/)
     .filter(Boolean)
-    .map((position) => position === 'L' ? 'LW' : position === 'R' ? 'RW' : position);
-  return [...new Set([player.ahlPosition || player.position, ...utilityPositions].filter(Boolean))];
+    .map((position) => {
+      if (position === 'L') return 'LW';
+      if (position === 'R') return 'RW';
+      if (position === 'LD' || position === 'RD') return 'D';
+      return position;
+    });
+  return [...new Set(finalPosition)];
 }
 
 function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, { showAvailable = true } = {}) {
@@ -26,7 +31,7 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
     const isPersonal = personalDraftList.some((entry) => entry.playerId === player.id);
     return `<tr>
       <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button></td>
-      <td>${escapeHtml(player.ahlPosition || player.position || 'NULL')}</td>
+      <td>${escapeHtml(player.finalPosition || player.utilityPosition || player.ahlPosition || player.position || 'NULL')}</td>
       <td>${escapeHtml(player.category || 'NULL')}</td>
       <td>${player.tier ?? 'NULL'}</td>
       <td>${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}</td>
@@ -42,7 +47,7 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
 
 function renderPlayerTable(players, shortlist, availableKeys, personalDraftList, options = { showAvailable: true }) {
   return `<div class="table-wrap"><table class="validation-table">
-    <thead><tr><th>Name</th><th>AHL Pos</th><th>Category</th><th>Tier</th><th>Auction Value</th><th>Max Bid</th><th>Value/Risk</th>${options.showAvailable ? '<th>Availability</th>' : ''}<th>Shortlist</th><th>Insights</th><th>Personal List</th></tr></thead>
+    <thead><tr><th>Name</th><th>Final Position</th><th>Category</th><th>Tier</th><th>Auction Value</th><th>Max Bid</th><th>Value/Risk</th>${options.showAvailable ? '<th>Availability</th>' : ''}<th>Shortlist</th><th>Insights</th><th>Personal List</th></tr></thead>
     <tbody>${renderPlayerRows(players, shortlist, availableKeys, personalDraftList, options)}</tbody>
   </table></div>`;
 }
@@ -50,7 +55,9 @@ function renderPlayerTable(players, shortlist, availableKeys, personalDraftList,
 function renderTeamBudgets(teamBudgets) {
   const rows = teamBudgets.map((team) => `<tr>
     <td>${escapeHtml(team.team)}</td>
+    <td>${money(team.retained)}</td>
     <td>${money(team.remainingBudget)}</td>
+    <td>${team.skaters ? `${team.skaters.count}/${team.skaters.max}` : 'NULL'}</td>
     <td>${team.playersDrafted}</td>
     <td>${team.openSlots}</td>
     <td>${money(team.averageSpendRemaining)}</td>
@@ -61,8 +68,8 @@ function renderTeamBudgets(teamBudgets) {
     <td>${money(team.adjustments)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table class="validation-table">
-    <thead><tr><th>Team</th><th>Budget Remaining</th><th>Players Drafted</th><th>Open Slots</th><th>Avg Spend Remaining</th><th>Max Possible Bid</th><th>Keeper Costs</th><th>Rookie/Farm Costs</th><th>Penalties</th><th>Adjustments</th></tr></thead>
-    <tbody>${rows || '<tr><td colspan="10" class="empty-state">No AHL Draft budget data is available.</td></tr>'}</tbody>
+    <thead><tr><th>Team</th><th>Retained</th><th>Budget Remaining</th><th>Skaters</th><th>Players Drafted</th><th>Open Slots</th><th>Avg Spend Remaining</th><th>Max Possible Bid</th><th>Keeper Costs</th><th>Rookie/Farm Costs</th><th>Penalties</th><th>Adjustments</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="12" class="empty-state">No AHL Draft budget data is available.</td></tr>'}</tbody>
   </table></div>`;
 }
 
@@ -74,14 +81,14 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
     .map((entry) => ({ entry, player: playersById.get(entry.playerId) || null }))
     .filter(({ player }) => {
       const isAvailable = Boolean(player && availableKeys.has(normalizeLookupKey(player.name)));
-      return (!positionFilter || (player?.ahlPosition || player?.position) === positionFilter)
+      return (!positionFilter || (player && getAhlPlayerPositions(player).includes(positionFilter)))
         && (!categoryFilter || player?.category === categoryFilter)
         && (availabilityFilter === 'all'
           || (availabilityFilter === 'available' ? isAvailable : !isAvailable));
     })
     .sort((left, right) => {
       if (sort === 'name') return (left.player?.name || left.entry.playerId).localeCompare(right.player?.name || right.entry.playerId);
-      if (sort === 'position') return (left.player?.ahlPosition || left.player?.position || '').localeCompare(right.player?.ahlPosition || right.player?.position || '');
+      if (sort === 'position') return (left.player?.finalPosition || left.player?.utilityPosition || left.player?.ahlPosition || left.player?.position || '').localeCompare(right.player?.finalPosition || right.player?.utilityPosition || right.player?.ahlPosition || right.player?.position || '');
       if (sort === 'team') return (left.player?.team || '').localeCompare(right.player?.team || '');
       return left.entry.rank - right.entry.rank;
     });
@@ -91,10 +98,14 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
     return `<tr>
       <td><input aria-label="Rank for ${escapeHtml(name)}" type="number" min="1" max="${entries.length}" step="1" value="${entry.rank}" data-personal-rank="${escapeHtml(entry.playerId)}" /></td>
       <td>${player ? `<button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(name)}</button>` : escapeHtml(name)}</td>
-      <td>${escapeHtml(player?.ahlPosition || player?.position || 'NULL')}</td>
+      <td>${escapeHtml(player?.finalPosition || player?.utilityPosition || player?.ahlPosition || player?.position || 'NULL')}</td>
       <td>${escapeHtml(player?.category || 'NULL')}</td>
       <td>${escapeHtml(player?.team || 'NULL')}</td>
       <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
+      ${[['Target', 'target'], ['Avoid', 'avoid'], ['Keeper target', 'keeperTarget'], ['Breakout target', 'breakoutTarget']].map(([label, field]) => `
+        <td><input aria-label="${label} for ${escapeHtml(name)}" type="checkbox" data-personal-flag="${field}" data-personal-player="${escapeHtml(entry.playerId)}" ${entry[field] ? 'checked' : ''} /></td>
+      `).join('')}
+      <td><input aria-label="Max bid note for ${escapeHtml(name)}" type="text" value="${escapeHtml(entry.maxBidNote || '')}" data-personal-max-bid="${escapeHtml(entry.playerId)}" /></td>
       <td><input aria-label="Notes for ${escapeHtml(name)}" type="text" value="${escapeHtml(entry.notes)}" data-personal-notes="${escapeHtml(entry.playerId)}" /></td>
       <td><button type="button" class="secondary" data-personal-remove="${escapeHtml(entry.playerId)}">Remove</button></td>
     </tr>`;
@@ -103,13 +114,17 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
   return `<section class="dashboard-panel" role="tabpanel" id="personal-draft-list-panel">
     <div class="panel">
       <div class="preview-header"><div><h2>Personal Draft List</h2><p class="panel-subtitle">Private to this browser; rankings and notes do not update AHL Sheets.</p></div>
-        <button type="button" class="secondary" data-personal-export>Export JSON</button></div>
+        <div class="personal-list-file-actions">
+          <button type="button" class="secondary" data-personal-export>Export JSON</button>
+          <button type="button" class="secondary" data-personal-import-trigger>Import JSON</button>
+          <input class="hidden" type="file" accept=".json,application/json" data-personal-import-file />
+        </div></div>
       <div class="draft-board-filters">
         <label>Sort by <select id="personalDraftSort">
           <option value="rank" ${selected('rank', sort)}>Rank</option><option value="name" ${selected('name', sort)}>Name</option>
           <option value="position" ${selected('position', sort)}>Position</option><option value="team" ${selected('team', sort)}>Team</option>
         </select></label>
-        <label>AHL Position <select id="personalDraftPositionFilter"><option value="">All positions</option>
+        <label>Final Position <select id="personalDraftPositionFilter"><option value="">All positions</option>
           ${allPositions.map((position) => `<option value="${escapeHtml(position)}" ${selected(position, positionFilter)}>${escapeHtml(position)}</option>`).join('')}
         </select></label>
         <label>Category <select id="personalDraftCategoryFilter"><option value="">All categories</option>
@@ -122,8 +137,8 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
         </select></label>
       </div>
       <div class="table-wrap"><table class="validation-table">
-        <thead><tr><th>Rank</th><th>Name</th><th>AHL Position</th><th>Category</th><th>Team</th><th>Availability</th><th>Notes</th><th>Actions</th></tr></thead>
-        <tbody>${rowMarkup || `<tr><td colspan="8" class="empty-state">${entries.length ? 'No list entries match these filters.' : 'Add players from Draft Board or Best Available.'}</td></tr>`}</tbody>
+        <thead><tr><th>Rank</th><th>Name</th><th>Final Position</th><th>Category</th><th>Team</th><th>Availability</th><th>Target</th><th>Avoid</th><th>Keeper Target</th><th>Breakout Target</th><th>Max Bid Note</th><th>Notes</th><th>Actions</th></tr></thead>
+        <tbody>${rowMarkup || `<tr><td colspan="13" class="empty-state">${entries.length ? 'No list entries match these filters.' : 'Add players from Draft Board or Best Available.'}</td></tr>`}</tbody>
       </table></div>
     </div>
   </section>`;
@@ -138,6 +153,14 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
   const sourceRows = Object.entries(player.sourcesUsed || {})
     .map(([source, loaded]) => `<li>${escapeHtml(source)}: ${loaded ? 'loaded' : 'missing'}</li>`).join('');
   const missingRows = Object.keys(player.missingSources || {}).map((source) => `<li>${escapeHtml(source)}</li>`).join('');
+  const intelEdgeRows = player.intelEdge
+    ? [
+      ['Pedigree', player.intelEdge.pedigree],
+      ['Projection Confidence', player.intelEdge.projectionConfidence],
+      ['Sleeper Tag', player.intelEdge.sleeperTag],
+      ['Bust Tag', player.intelEdge.bustTag],
+    ].map(([label, value]) => `<div><dt>${label}</dt><dd>${value ?? 'NULL'}</dd></div>`).join('')
+    : '<div><dt>Dobber PDF intelligence</dt><dd>NULL</dd></div>';
   const scoreRows = [
     ['DS', player.deployment?.DS], ['RSS', player.deployment?.RSS], ['OS', player.deployment?.OS],
     ['RRS', player.deployment?.RRS], ['PPS', player.production?.PPS], ['BPS', player.prospect?.BPS],
@@ -151,11 +174,14 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     <section class="draft-modal panel" role="dialog" aria-modal="true" aria-labelledby="draftModalTitle">
       <button type="button" class="modal-close secondary" aria-label="Close player insights" data-close-player-details>Close</button>
       <h2 id="draftModalTitle">${escapeHtml(player.name)}</h2>
-      <p>${escapeHtml(player.team || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || player.position || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | NHL Position ${escapeHtml(player.nhlPosition || 'NULL')} | ${escapeHtml(player.category || 'NULL')} | Tier ${player.tier ?? 'NULL'}</p>
+      <p>${escapeHtml(player.team || 'NULL')} | Final Position ${escapeHtml(player.finalPosition || player.utilityPosition || player.ahlPosition || player.position || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | NHL Position ${escapeHtml(player.nhlPosition || 'NULL')} | ${escapeHtml(player.category || 'NULL')} | Tier ${player.tier ?? 'NULL'}</p>
       <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
         <strong>Recommended max bid:</strong> ${money(recommendation)}</p>
+      <p><strong>Dobber salary:</strong> ${money(player.salary)} <strong>AAV:</strong> ${money(player.aav)}</p>
       ${player.valuationStatus !== 'priced' ? '<p class="warning-banner">UNPRICED - required source-backed inputs are missing. No auction value or max bid is estimated.</p>' : ''}
       <div class="draft-score-grid">${scoreMarkup}</div>
+      <h3>Dobber Intelligence Edge</h3>
+      <div class="draft-score-grid">${intelEdgeRows}</div>
       <div class="detail-grid">
         <article class="detail-card"><h3>WHY VALUE?</h3><ul>${(player.strengths || []).map(escapeHtml).map((text) => `<li>${text}</li>`).join('') || '<li>No source-backed strengths available.</li>'}</ul></article>
         <article class="detail-card"><h3>WHY RISK?</h3><ul>${(player.risks || []).map(escapeHtml).map((text) => `<li>${text}</li>`).join('') || '<li>No source-backed risks available.</li>'}</ul></article>
@@ -209,7 +235,7 @@ export function renderDraftAuctionDashboard({
   toolsHtml,
   workspaceHtml,
 }) {
-  const allPositions = [...new Set(players.map((player) => player.ahlPosition || player.position).filter(Boolean))].sort();
+  const allPositions = [...new Set(players.flatMap(getAhlPlayerPositions))].sort();
   const filtered = players.filter((player) => {
     const matchesSearch = !search || `${player.name} ${player.team || ''}`.toLowerCase().includes(search.toLowerCase());
     const matchesPosition = !positionFilter || getAhlPlayerPositions(player).includes(positionFilter);

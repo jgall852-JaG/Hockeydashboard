@@ -8,6 +8,7 @@ export const AHL_SHEET_SOURCES = Object.freeze([
   { name: 'AHL Position', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '663280764', datasetType: 'roster', expectedLayout: 'inventory' },
   { name: 'AHL Utility', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1551984288', datasetType: 'roster', expectedLayout: 'utility' },
   { name: 'AHL Draft', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1727331506', datasetType: 'roster', expectedLayout: 'retained-grid' },
+  { name: 'AHL Budget', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1727331506', datasetType: 'budget', expectedLayout: 'budget' },
   { name: 'AHL Roster', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '910545566', datasetType: 'roster', expectedLayout: 'league-layout' },
   { name: 'AHL Keeper Rights', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1065921002', datasetType: 'prospects' },
   { name: 'AHL Scores', spreadsheetId: AHL_SCORES_SPREADSHEET_ID, gid: '0', datasetType: 'scores' },
@@ -20,7 +21,9 @@ function createUnpricedPlayer(name, id, rosterRecord, prospectRecord, currentPla
   const utilityPosition = rosterRecord?.utilityPosition || null;
   const ownership = rosterRecord?.owner || prospectRecord?.owner || null;
   const category = rosterRecord?.classification
-    || (prospectRecord?.farm ? 'Farm' : Number(prospectRecord?.termRemaining) > 0 ? 'Rookie' : null);
+    || (prospectRecord?.farm ? 'Farm' : Number(prospectRecord?.termRemaining) > 0 ? 'Rookie' : null)
+    || currentPlayer?.category
+    || null;
   const missingSources = { 'AHLSheets metric inputs': true };
   if (!sourceAvailability.DobberExcel) missingSources.DobberExcel = true;
   if (currentPlayer?.scarcityMultiplier === null) missingSources['Position scarcity rules'] = true;
@@ -69,6 +72,21 @@ function getSourceRecords(roster, sourceKey) {
   return Object.values(roster?.sources?.[sourceKey]?.players || {});
 }
 
+function normalizeUtilityPosition(value) {
+  return String(value || '')
+    .split(/[\/,\s]+/)
+    .filter(Boolean)
+    .map((position) => {
+      const normalized = position.toUpperCase();
+      if (normalized === 'L') return 'LW';
+      if (normalized === 'R') return 'RW';
+      if (normalized === 'LD' || normalized === 'RD') return 'D';
+      return normalized;
+    })
+    .filter((position, index, positions) => positions.indexOf(position) === index)
+    .join('/');
+}
+
 export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePlayers = []) {
   if (!outputs?.players || !outputs?.auction || !outputs?.tiers || !outputs?.keepers || !outputs?.prospects) {
     throw new Error('All five Draft Intelligence outputs must be loaded before AHL sheet ingestion.');
@@ -102,18 +120,26 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
     const rosterRecord = rosterByName.get(key) || record;
     const prospectRecord = prospectByName.get(key) || null;
     const id = currentByName.get(key)?.id || key.replace(/\s+/g, '-');
+    const ahlPosition = positionRecord?.position || positionRecord?.poolposition || null;
+    const utilityPosition = normalizeUtilityPosition(utilityRecord?.poolposition);
+    const finalPosition = utilityPosition || ahlPosition;
     const player = createUnpricedPlayer(
       positionRecord?.name || utilityRecord?.name || record.name,
       id,
       {
         ...rosterRecord,
-        position: positionRecord?.position || positionRecord?.poolposition || null,
-        utilityPosition: utilityRecord?.poolposition || null,
+        position: finalPosition,
+        ahlPosition,
+        utilityPosition: utilityPosition || null,
       },
       prospectRecord,
       currentByName.get(key),
       sourceAvailability,
     );
+    player.position = finalPosition;
+    player.finalPosition = finalPosition;
+    player.ahlPosition = ahlPosition;
+    player.utilityPosition = utilityPosition || null;
     player.available = availableNames.has(key);
     player.nhlPosition = null;
     player.sourcesUsed = { ...sourceAvailability };
@@ -153,6 +179,9 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
     name: player.name,
     category: player.category,
     position: player.position,
+    finalPosition: player.finalPosition,
+    ahlPosition: player.ahlPosition,
+    utilityPosition: player.utilityPosition,
     draftIQ: player.draftIQ,
     adjustedDraftIQ: player.adjustedDraftIQ,
     scarcityMultiplier: player.scarcityMultiplier,
@@ -176,6 +205,9 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
       owner: player.ownership,
       team: player.team,
       position: player.position,
+      finalPosition: player.finalPosition,
+      ahlPosition: player.ahlPosition,
+      utilityPosition: player.utilityPosition,
       category: player.category,
       currentCost: player.keeperCost,
       termRemaining: player.termRemaining,
@@ -189,7 +221,9 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
       id: player?.id || normalizeLookupKey(record.name).replace(/\s+/g, '-'),
       owner: record.owner || player?.ownership || null,
       category: player?.category || null,
-      position: player?.position || null,
+      position: player?.finalPosition || null,
+      finalPosition: player?.finalPosition || null,
+      ahlPosition: player?.ahlPosition || null,
       utilityPosition: player?.utilityPosition || null,
       nhlPosition: null,
       activeRookieEligible: !record.farm && Number.isFinite(record.termRemaining) && record.termRemaining > 0,

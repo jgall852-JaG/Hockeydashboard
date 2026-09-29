@@ -23,6 +23,7 @@ const PRICE_BANDS = Object.freeze({
 const SOURCE_REGISTRY = Object.freeze({
   AHLSheets: false,
   DobberExcel: false,
+  DobberPDFs: false,
 });
 
 function normalizeName(value) {
@@ -110,7 +111,7 @@ function sourcesAvailable(sources, required) {
   return required.every((source) => sources[source] === true);
 }
 
-function getTier(auctionValue) {
+export function getTier(auctionValue) {
   if (auctionValue === null) return null;
   if (auctionValue >= 40) return 1;
   if (auctionValue >= 25) return 2;
@@ -145,7 +146,7 @@ function getRisks({ deployment, prospect, keeper }, sources) {
   return risks;
 }
 
-function getClassification({ auctionValue, tier, regressionRisk, usageDrop, ageDecline }) {
+export function getClassification({ auctionValue, tier, regressionRisk, usageDrop, ageDecline }) {
   if (auctionValue === null || tier === null) return 'UNPRICED';
   const band = PRICE_BANDS[tier];
   const midpointTolerance = Math.max(0.5, (band.max - band.min) * CLASSIFICATION_THRESHOLDS.bandMidpointTolerance);
@@ -197,17 +198,46 @@ export function calculateRecommendedMaxBid(auctionValue, tier, remainingBudget, 
   return Math.min(recommended, Math.floor(teamMaxPossibleBid / 0.5) * 0.5);
 }
 
-function getCategoryMultiplier(category, { RSS, BPS, RRS, KVS }) {
+export function getCategoryMultiplier(category, { RSS, BPS, RRS, KVS }) {
   if (!category) return null;
   if (category === 'Veteran') {
     return RSS === null || RRS === null ? null : 1 + (RSS / 100) * 0.03 - (RRS / 100) * 0.02;
   }
+
   if (category === 'Rookie') {
     return BPS === null || RRS === null ? null : 1 + (BPS / 100) * 0.05 - (RRS / 100) * 0.03;
   }
   return BPS === null || KVS === null || RRS === null
     ? null
     : 1 + (BPS / 100) * 0.1 + (KVS / 100) * 0.1 - (RRS / 100) * 0.05;
+}
+
+export function calculateDraftIqScores({ category, PPS, RSS, BPS, RRS, KVS }) {
+  const metrics = [PPS, RSS, BPS, RRS, KVS];
+  if (metrics.some((value) => !Number.isFinite(value))) {
+    return { draftIQ: null, categoryMultiplier: null, adjustedDraftIQ: null };
+  }
+  const categoryMultiplier = getCategoryMultiplier(category, { RSS, BPS, RRS, KVS });
+  if (categoryMultiplier === null) {
+    return { draftIQ: null, categoryMultiplier: null, adjustedDraftIQ: null };
+  }
+  const draftIQ = Math.max(0, Math.min(100,
+    (0.45 * PPS) + (0.2 * RSS) + (0.15 * BPS) - (0.1 * RRS) + (0.1 * KVS)));
+  return {
+    draftIQ,
+    categoryMultiplier,
+    adjustedDraftIQ: Math.max(0, Math.min(100, draftIQ * categoryMultiplier)),
+  };
+}
+
+export function calculateAuctionValue(adjustedDraftIQ, scarcityMultiplier, keeperInflation, priceCurveFactor) {
+  if (![adjustedDraftIQ, scarcityMultiplier, keeperInflation, priceCurveFactor].every(Number.isFinite)) {
+    return null;
+  }
+  return Math.max(1, Math.min(
+    60,
+    adjustedDraftIQ * scarcityMultiplier * keeperInflation * priceCurveFactor,
+  ));
 }
 
 function parseNhlStats(csvText) {
@@ -417,23 +447,14 @@ export function buildDraftIntelligence({
     const keeperValueScore = sourcesAvailable(sources, ['AHLSheets'])
       ? weightedScore([ageCurve, contractSecurity, orgCommitment, multiYearProj, keeperScarcity], [25, 25, 20, 20, 10])
       : null;
-    const categoryMultiplier = getCategoryMultiplier(category, {
+    const { draftIQ, categoryMultiplier, adjustedDraftIQ } = calculateDraftIqScores({
+      category,
+      PPS: projectedProductionScore,
       RSS: roleSecurityScore,
       BPS: breakoutProbabilityScore,
       RRS: regressionRiskScore,
       KVS: keeperValueScore,
     });
-    const draftIQRaw = weightedScore([
-      projectedProductionScore,
-      roleSecurityScore,
-      breakoutProbabilityScore,
-      regressionRiskScore,
-      keeperValueScore,
-    ], [0.45, 0.2, 0.15, -0.1, 0.1]);
-    const draftIQ = draftIQRaw === null ? null : Math.max(0, Math.min(100, draftIQRaw));
-    const adjustedDraftIQ = draftIQ === null || categoryMultiplier === null
-      ? null
-      : Math.max(0, Math.min(100, draftIQ * categoryMultiplier));
     const missingSources = getMissingSources({
       DS: deploymentScore,
       RSS: roleSecurityScore,
@@ -667,9 +688,9 @@ export function buildDraftIntelligence({
       : null;
     const scarcityMultiplier = scarcityNorm === null ? null : 1 + (scarcityNorm * 0.2);
     const keeperInflation = player.keeper.KVS === null ? null : 1 + ((player.keeper.KVS / 100) * 0.08);
-    const auctionValue = !sources.AHLSheets || scarcityMultiplier === null || keeperInflation === null
+    const auctionValue = !sources.AHLSheets
       ? null
-      : Math.max(1, Math.min(60, player.adjustedDraftIQ * scarcityMultiplier * keeperInflation * priceCurveFactor));
+      : calculateAuctionValue(player.adjustedDraftIQ, scarcityMultiplier, keeperInflation, priceCurveFactor);
     const tier = getTier(auctionValue);
 
     Object.assign(player, {

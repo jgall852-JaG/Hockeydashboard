@@ -6,6 +6,9 @@ describe('draft auction dashboard rendering', () => {
       id: 'player-one',
       name: 'Player One',
       position: 'C',
+      finalPosition: 'C/LW',
+      ahlPosition: 'C',
+      utilityPosition: 'C/LW',
       category: 'Rookie',
       tier: null,
       auctionValue: null,
@@ -39,6 +42,24 @@ describe('draft auction dashboard rendering', () => {
       toolsHtml: '',
       workspaceHtml: '',
     });
+    const personalHtml = renderDraftAuctionDashboard({
+      activeTab: 'personal-draft-list',
+      players: [player],
+      availableKeys: new Set(['player one']),
+      shortlist: new Set(),
+      search: '',
+      positionFilter: '',
+      categoryFilter: '',
+      availabilityFilter: 'all',
+      bestAvailableSort: 'AuctionValue',
+      teamBudgets: [{ team: 'TEAM A', remainingBudget: 250, openSlots: 25 }],
+      teamNames: ['TEAM A'],
+      selectedPlayer: null,
+      selectedTeam: '',
+      sourceAvailability: { AHLSheets: true, DobberExcel: false },
+      toolsHtml: '',
+      workspaceHtml: '',
+    });
 
     expect(html).toContain('Draft Board');
     expect(html).toContain('Best Available');
@@ -52,5 +73,11 @@ describe('draft auction dashboard rendering', () => {
     expect(html).toContain('Personal Draft List');
     expect(html).toContain('Add to Personal List');
     expect(html).toContain('NHL Position NULL');
+    expect(html).toContain('Final Position C/LW');
+    expect(html).toContain('Final Position</th>');
+    expect(personalHtml).toContain('Keeper Target');
+    expect(personalHtml).toContain('Breakout Target');
+    expect(personalHtml).toContain('Max Bid Note');
+    expect(personalHtml).toContain('data-personal-import-file');
   });
 });

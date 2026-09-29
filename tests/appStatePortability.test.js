@@ -1,10 +1,12 @@
 import { jest } from '@jest/globals';
+import { readFileSync } from 'node:fs';
 import {
   getLiveCacheStatus,
   getDataQualitySources,
   isRetentionListLoaded,
   parsePortableStateBundle,
   resolveWorkingAssignmentTeamName,
+  refreshDobberState,
   refreshGoogleSheetState,
   serializePortableStateBundle,
 } from '../app.js';
@@ -183,6 +185,12 @@ describe('google sheet refresh integration', () => {
         ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
       ].join('\n'),
       [
+        'TEAM A,,,,TEAM B,,,',
+        '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+        '1,Connor Bedard,C,$5.00,1,Matthew Knies,LW,$3.00',
+        ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
+      ].join('\n'),
+      [
         ',TEAM A,TEAM B',
         'C,Connor Bedard,',
         'LW,,Matthew Knies',
@@ -221,7 +229,7 @@ describe('google sheet refresh integration', () => {
       },
     }, fetchMock);
 
-    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(fetchMock).toHaveBeenCalledTimes(9);
     expect(next.datasets.roster.layout).toBe('merged');
     expect(Object.keys(next.datasets.roster.sources)).toEqual(expect.arrayContaining([
       'inventory',
@@ -250,5 +258,66 @@ describe('google sheet refresh integration', () => {
     ]);
     expect(next.manualOverrides).toHaveLength(1);
     expect(next.workingAssignments['nick perbix'].name).toBe('Nick Perbix');
+  });
+});
+
+describe('Dobber source status', () => {
+  test('marks blocked remote sources unavailable without treating them as loaded', async () => {
+    const fetchMock = jest.fn(async () => ({ ok: false, status: 403 }));
+    const next = await refreshDobberState(null, fetchMock);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(next.state.metadata).toMatchObject({
+      dobberStatus: 'unavailable',
+      dobberExcel: { status: 'unavailable', sourceType: 'remote', records: 0 },
+      dobberPdfs: { status: 'unavailable', sourceType: 'remote', records: 0 },
+    });
+    expect(next.state.datasets.dobber).toMatchObject({
+      players: {},
+      intelByPlayerKey: {},
+    });
+  });
+
+  test('preserves local imports while reporting failed remote attempts', async () => {
+    const fetchMock = jest.fn(async () => ({ ok: false, status: 401 }));
+    const next = await refreshDobberState({
+      datasets: {
+        dobber: {
+          players: { player: { player: 'Player' } },
+          intelByPlayerKey: { player: { sleeperTag: true } },
+          excelSourceName: 'dobber.xlsx',
+          excelImportedAt: '2026-09-29T12:00:00.000Z',
+          pdfSourceName: 'guide.pdf',
+          pdfImportedAt: '2026-09-29T12:01:00.000Z',
+        },
+      },
+      metadata: {
+        dobberExcel: { status: 'loaded-local', sourceType: 'local' },
+        dobberPdfs: { status: 'loaded-local', sourceType: 'local' },
+      },
+    }, fetchMock);
+
+    expect(next.state.metadata).toMatchObject({
+      dobberStatus: 'loaded-local',
+      dobberExcel: { status: 'loaded-local', sourceType: 'local', records: 1 },
+      dobberPdfs: { status: 'loaded-local', sourceType: 'local', records: 1 },
+    });
+    expect(next.state.datasets.dobber.players.player.player).toBe('Player');
+    expect(next.message).toContain('HTTP 401');
+  });
+});
+
+describe('import control wiring', () => {
+  test('registers Dobber file listeners outside the CSV upload click handler', () => {
+    const source = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+    const csvUploadHandler = source.indexOf("backToImportBtn.addEventListener('click'");
+    const csvUploadHandlerEnd = source.indexOf('\n  });', csvUploadHandler);
+    const dobberExcelListener = source.indexOf("dobberExcelFileInput?.addEventListener('change'");
+    const dobberPdfListener = source.indexOf("dobberPdfFileInput?.addEventListener('change'");
+
+    expect(csvUploadHandler).toBeGreaterThan(-1);
+    expect(csvUploadHandlerEnd).toBeGreaterThan(csvUploadHandler);
+    expect(dobberExcelListener).toBeGreaterThan(csvUploadHandlerEnd);
+    expect(dobberPdfListener).toBeGreaterThan(csvUploadHandlerEnd);
   });
 });

@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#101826" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="apple-touch-icon" href="./icons/hockey-dashboard-192.png" />
     <title>Hockey Dashboard</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -17,18 +21,26 @@
         <div class="topbar-actions">
           <span id="liveRefreshStatus" class="live-refresh-status" aria-live="polite"></span>
           <span id="draftIntelligenceStatus" class="live-refresh-status" aria-live="polite"></span>
+          <span id="pwaStatus" class="live-refresh-status" aria-live="polite"></span>
+          <button id="installAppBtn" class="secondary hidden" type="button">Install Dashboard</button>
           <button id="liveRefreshBtn" class="primary">Refresh AHL Sheets</button>
+          <button id="importDobberExcelBtn" class="secondary" type="button">Import Dobber Excel</button>
+          <button id="importDobberPdfsBtn" class="secondary" type="button">Import Dobber PDFs</button>
           <button id="backToImportBtn" class="secondary">Upload CSV</button>
           <button id="importStateBtn" class="secondary">Import Saved State</button>
           <button id="exportStateBtn" class="secondary">Export State</button>
           <input id="topbarCsvFileInput" class="hidden" type="file" accept=".csv,text/csv" />
           <input id="stateFileInput" class="hidden" type="file" accept=".json,application/json" />
+          <input id="dobberExcelFileInput" class="hidden" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          <input id="dobberPdfFileInput" class="hidden" type="file" accept=".pdf,application/pdf" multiple />
         </div>
       </header>
 
       <main id="app" class="app" aria-live="polite"></main>
     </div>
 
+    <script src="./vendor/xlsx.mini.min.js"></script>
     <script type="module" src="./app.js"></script>
+    <script type="module" src="./pwa.js"></script>
   </body>
 </html>

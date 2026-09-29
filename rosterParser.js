@@ -29,6 +29,23 @@ function parseCost(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function parseMoney(value) {
+  const text = String(value ?? '').replace(/[$,\s]/g, '');
+  if (!text) return null;
+  const parsed = Number.parseFloat(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseSkaters(value) {
+  const match = String(value ?? '').trim().match(/^(\d+)\s*\/\s*(\d+)$/);
+  if (!match) return null;
+  const count = Number(match[1]);
+  const max = Number(match[2]);
+  return Number.isInteger(count) && Number.isInteger(max) && count >= 0 && max > 0 && count <= max
+    ? { count, max }
+    : null;
+}
+
 function parseCSVLine(line) {
   const values = [];
   let current = '';
@@ -252,6 +269,7 @@ function parseRetainedGrid(lines) {
             rookieFarmCosts: null,
             hasFarmDeductionRow: false,
             playersDrafted: 0,
+            skaters: { count: 0, max: 23 },
             openSlots: null,
             penalties: null,
             adjustments: null,
@@ -302,18 +320,68 @@ function parseRetainedGrid(lines) {
       }, fallback++);
       const budget = teamBudgets.get(owner);
       budget.playersDrafted += 1;
+      if (!['G', 'GT', 'GOALIE', 'GOALIE TEAM'].includes(position.toUpperCase())) {
+        budget.skaters.count += 1;
+      }
       budget.keeperCosts = (budget.keeperCosts || 0) + parseCost(rawCost);
     }
   }
 
   result.teamBudgets = [...teamBudgets.values()].map((budget) => ({
     ...budget,
+    retained: budget.totalSpent,
     rookieFarmCosts: budget.hasFarmDeductionRow
       ? Number(Math.max(0, (budget.totalSpent ?? 0) - (budget.keeperCosts ?? 0)).toFixed(2))
       : null,
     openSlots: Math.max(0, 25 - budget.playersDrafted),
   })).map(({ hasFarmDeductionRow, ...budget }) => budget);
   return result;
+}
+
+function parseAhlBudgetSheet(csvData) {
+  const lines = String(csvData || '').split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) throw new Error('AHL Budget sheet is empty.');
+  const retainedGrid = parseRoster(csvData);
+  if (retainedGrid.teamBudgets.length) {
+    return { layout: 'budget', teamBudgets: retainedGrid.teamBudgets };
+  }
+
+  const headers = parseCSVLine(lines[0]).map((header) => String(header || '').trim());
+  const normalized = headers.map((header) => header.replace(/[^a-z0-9]+/gi, '').toLowerCase());
+  const column = (names) => normalized.findIndex((header) => names.includes(header));
+  const ownerColumn = column(['owner', 'team']);
+  const retainedColumn = column(['retained', 'totalspent']);
+  const remainingColumn = column(['remaining', 'remainingbudget', 'balance']);
+  const skatersColumn = column(['skaters']);
+  if ([ownerColumn, retainedColumn, remainingColumn, skatersColumn].some((index) => index < 0)) {
+    throw new Error('AHL Budget sheet must include Owner, Retained, Remaining, and Skaters columns.');
+  }
+
+  const teamBudgets = lines.slice(1).map(parseCSVLine).flatMap((row) => {
+    const team = String(row[ownerColumn] || '').trim();
+    if (!team) return [];
+    const retained = parseMoney(row[retainedColumn]);
+    const remainingBudget = parseMoney(row[remainingColumn]);
+    const skaters = parseSkaters(row[skatersColumn]);
+    if (retained === null || remainingBudget === null || skaters === null) {
+      throw new Error(`AHL Budget row for ${team} contains invalid money or skater values.`);
+    }
+    return [{
+      team,
+      retained,
+      totalSpent: retained,
+      remainingBudget,
+      skaters,
+      playersDrafted: skaters.count,
+      openSlots: Math.max(0, skaters.max - skaters.count),
+      keeperCosts: null,
+      rookieFarmCosts: null,
+      penalties: null,
+      adjustments: null,
+    }];
+  });
+  if (!teamBudgets.length) throw new Error('AHL Budget sheet contains no owner rows.');
+  return { layout: 'budget', teamBudgets };
 }
 
 function parseFlatTable(lines) {
@@ -451,7 +519,10 @@ if (typeof window !== 'undefined') {
 
 export {
   parseRoster,
+  parseAhlBudgetSheet,
   parseCSVLine,
+  parseMoney,
+  parseSkaters,
   filterByPosition,
   filterByNHLTeam,
   filterByOwner,
@@ -463,7 +534,10 @@ export {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     parseRoster,
+    parseAhlBudgetSheet,
     parseCSVLine,
+    parseMoney,
+    parseSkaters,
     filterByPosition,
     filterByNHLTeam,
     filterByOwner,

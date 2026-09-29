@@ -10,6 +10,7 @@ describe('AHL sheet ingestion', () => {
       'AHL Position',
       'AHL Utility',
       'AHL Draft',
+      'AHL Budget',
       'AHL Roster',
       'AHL Keeper Rights',
       'AHL Scores',
@@ -39,6 +40,7 @@ describe('AHL sheet ingestion', () => {
       id: 'player-one',
       name: 'Player One',
       position: 'LW',
+      category: 'Veteran',
       auctionValue: 22,
       draftIQ: 80,
       classification: 'VALUE',
@@ -71,7 +73,6 @@ describe('AHL sheet ingestion', () => {
               poolposition: 'LW',
               nhlteam: 'AAA',
               cost: '',
-              classification: 'Rookie',
             },
             'player-two': {
               name: 'Player Two',
@@ -90,6 +91,7 @@ describe('AHL sheet ingestion', () => {
             },
             utility: {
               players: {
+                'player-one': { name: 'Player One', position: 'U', poolposition: 'C/LW', nhlteam: 'AAA' },
                 'player-two': { name: 'Player Two', position: 'U', poolposition: 'C/L', nhlteam: 'BBB' },
               },
             },
@@ -112,11 +114,15 @@ describe('AHL sheet ingestion', () => {
     expect(next.players.sourceCoverage.ahlSheets.scoreTabs).toEqual(['AHL Scores']);
     expect(available).toMatchObject({
       ahlPosition: 'LW',
-      utilityPosition: null,
+      utilityPosition: 'C/LW',
+      finalPosition: 'C/LW',
+      position: 'C/LW',
+      category: 'Veteran',
       available: true,
       auctionValue: null,
       draftIQ: null,
       classification: 'UNPRICED',
+      nhlPosition: null,
     });
     expect(keeper).toMatchObject({
       ownership: 'TEAM A',

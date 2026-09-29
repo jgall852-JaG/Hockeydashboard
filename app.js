@@ -1,6 +1,6 @@
 import { parseProspects } from './prospectParser.js';
 import { parseVeterans } from './veteranParser.js';
-import { parseRoster } from './rosterParser.js';
+import { parseAhlBudgetSheet, parseRoster } from './rosterParser.js';
 import { renderDraftAuctionDashboard } from './draftAuctionUI.js';
 import {
   AHL_SHEET_SOURCES,
@@ -14,6 +14,16 @@ import {
   setPersonalDraftListRank,
   updatePersonalDraftListEntry,
 } from './personalDraftList.js';
+import { loadAhlSnapshot, saveAhlSnapshot } from './offlineSnapshotStore.js';
+import {
+  applyDobberIntelligence,
+  attachDobberIntel,
+  extractDobberIntelFromText,
+  extractPdfText,
+  fetchDobberPdfIntel,
+  fetchDobberWorkbook,
+  parseDobberWorkbook,
+} from './dobberIngestion.js';
 import {
   loadLiveCache,
   persistLiveCache,
@@ -84,6 +94,7 @@ const state = {
   liveRequests: {},
   liveRefreshMessage: '',
   draftIntelligence: null,
+  draftIntelligenceFromOfflineSnapshot: false,
   shortlist: new Set(),
   shortlistStorageError: '',
   draftBoardSearch: '',
@@ -158,6 +169,8 @@ const DATASET_NAMES = Object.freeze([
   'positions',
   'utility',
   'draft',
+  'budget',
+  'dobber',
   'ahlScores',
 ]);
 
@@ -169,6 +182,7 @@ function createEmptyMetadata() {
   return {
     ...Object.fromEntries(DATASET_NAMES.map((name) => [name, { status: 'empty' }])),
     ahlSheets: { status: 'empty' },
+    dobberStatus: 'unavailable',
   };
 }
 
@@ -409,6 +423,9 @@ function countParsedRecords(parsed, type) {
     return Object.keys(parsed).length;
   }
 
+  if (type === 'budget') return Array.isArray(parsed.teamBudgets) ? parsed.teamBudgets.length : 0;
+  if (type === 'dobber') return parsed.players && typeof parsed.players === 'object' ? Object.keys(parsed.players).length : 0;
+
   return 0;
 }
 
@@ -604,11 +621,12 @@ function normalizeState(stateObj) {
 function applyAhlSheetIntelligence(stateObj) {
   if (!state.draftIntelligence || stateObj?.metadata?.ahlSheets?.status !== 'ok') return;
   const report = buildDraftValidationReport(stateObj);
-  state.draftIntelligence = buildAhlDraftIntelligenceOutputs(
+  const ahlOutputs = buildAhlDraftIntelligenceOutputs(
     state.draftIntelligence,
     stateObj,
     report.availablePlayers,
   );
+  state.draftIntelligence = applyDobberIntelligence(ahlOutputs, stateObj);
   state.draftIntelligenceStorageError = '';
 }
 
@@ -631,6 +649,117 @@ function downloadDraftIntelligenceBundle() {
   URL.revokeObjectURL(url);
 }
 
+async function persistOfflineAhlSnapshot(stateObj) {
+  try {
+    await saveAhlSnapshot(stateObj, state.draftIntelligence);
+    return '';
+  } catch (error) {
+    console.error('Unable to save the offline AHL snapshot', error);
+    return error instanceof Error
+      ? `Offline snapshot was not saved: ${error.message}`
+      : 'Offline snapshot was not saved.';
+  }
+}
+
+let pdfJsPromise = null;
+
+async function loadPdfJs() {
+  if (!pdfJsPromise) {
+    pdfJsPromise = import('./vendor/pdf.min.mjs').then((pdfjs) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = new URL('./vendor/pdf.worker.min.mjs', import.meta.url).href;
+      return pdfjs;
+    });
+  }
+  return pdfJsPromise;
+}
+
+function getDobberPlayerNames(stateObj) {
+  return Object.values(stateObj?.datasets?.roster?.players || {})
+    .map((player) => String(player.name || '').trim())
+    .filter(Boolean);
+}
+
+function hasLocalDobberImport(metadata, sourceName, records) {
+  if (!sourceName) return false;
+  if (metadata?.status === 'loaded-local' || metadata?.sourceType === 'local') return true;
+  if (!records) return false;
+  return ['ok', 'cached'].includes(metadata?.status)
+    && !/onedrive|dobber excel everything|fantasy guide and prospect report/i.test(sourceName);
+}
+
+async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
+  const next = normalizeState(stateObj);
+  const current = next.datasets.dobber && typeof next.datasets.dobber === 'object'
+    ? next.datasets.dobber
+    : { players: {}, intelByPlayerKey: {} };
+  let players = current.players || {};
+  let intelByPlayerKey = current.intelByPlayerKey || {};
+  let excelError = '';
+  let pdfError = '';
+  const hasLocalExcel = hasLocalDobberImport(
+    next.metadata.dobberExcel,
+    current.excelSourceName || next.metadata.dobberExcel?.sourceName,
+    Object.keys(players).length,
+  );
+  const hasLocalPdfs = hasLocalDobberImport(
+    next.metadata.dobberPdfs,
+    current.pdfSourceName || next.metadata.dobberPdfs?.sourceName,
+    Object.keys(intelByPlayerKey).length,
+  );
+  if (!hasLocalExcel) players = {};
+  if (!hasLocalPdfs) intelByPlayerKey = {};
+
+  try {
+    await fetchDobberWorkbook(fetchImpl);
+    excelError = 'Remote Dobber Excel is not accepted; import the local workbook.';
+  } catch (error) {
+    excelError = error instanceof Error ? error.message : 'Dobber Excel refresh failed.';
+  }
+  next.metadata.dobberExcel = {
+    status: hasLocalExcel ? 'loaded-local' : 'unavailable',
+    sourceType: hasLocalExcel ? 'local' : 'remote',
+    sourceName: hasLocalExcel
+      ? current.excelSourceName
+      : 'Dobber Excel OneDrive',
+    importedAt: hasLocalExcel ? current.excelImportedAt || null : null,
+    records: hasLocalExcel ? Object.keys(players).length : 0,
+    error: excelError,
+  };
+
+  try {
+    const pdfjs = await loadPdfJs();
+    await fetchDobberPdfIntel(getDobberPlayerNames(next), fetchImpl, pdfjs);
+    pdfError = 'Remote Dobber PDFs are not accepted; import the local PDF files.';
+  } catch (error) {
+    pdfError = error instanceof Error ? error.message : 'Dobber PDF refresh failed.';
+  }
+  next.metadata.dobberPdfs = {
+    status: hasLocalPdfs ? 'loaded-local' : 'unavailable',
+    sourceType: hasLocalPdfs ? 'local' : 'remote',
+    sourceName: hasLocalPdfs ? current.pdfSourceName : 'Dobber PDFs OneDrive',
+    importedAt: hasLocalPdfs ? current.pdfImportedAt || null : null,
+    records: hasLocalPdfs ? Object.keys(intelByPlayerKey).length : 0,
+    error: pdfError,
+  };
+  next.metadata.dobberStatus = hasLocalExcel || hasLocalPdfs ? 'loaded-local' : 'unavailable';
+
+  next.datasets.dobber = {
+    players: attachDobberIntel(players, intelByPlayerKey),
+    intelByPlayerKey,
+    excelSourceName: next.metadata.dobberExcel.sourceName,
+    excelImportedAt: next.metadata.dobberExcel.importedAt,
+    pdfSourceName: next.metadata.dobberPdfs.sourceName,
+    pdfImportedAt: next.metadata.dobberPdfs.importedAt,
+  };
+  return {
+    state: next,
+    message: [
+      next.metadata.dobberStatus === 'loaded-local' ? 'Dobber loaded-local; remote refresh unavailable' : 'Dobber unavailable',
+      [excelError && `Excel: ${excelError}`, pdfError && `PDFs: ${pdfError}`].filter(Boolean).join(' | '),
+    ].filter(Boolean).join(': '),
+  };
+}
+
 async function refreshAhlSheetsOnPageLoad() {
   const refreshButton = document.getElementById('liveRefreshBtn');
   const status = document.getElementById('liveRefreshStatus');
@@ -640,23 +769,57 @@ async function refreshAhlSheetsOnPageLoad() {
   }
   if (status) status.textContent = 'Loading AHL Sheets';
   try {
-    const nextState = await refreshGoogleSheetState(state.importedData || loadState());
+    let nextState = await refreshGoogleSheetState(state.importedData || loadState());
+    const dobberRefresh = await refreshDobberState(nextState);
+    nextState = dobberRefresh.state;
     persistState(nextState);
     state.importedData = nextState;
     state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
-    state.liveRefreshMessage = 'AHL Sheets loaded';
+    state.draftIntelligenceFromOfflineSnapshot = false;
     applyAhlSheetIntelligence(nextState);
+    const offlineWarning = await persistOfflineAhlSnapshot(nextState);
+    state.liveRefreshMessage = [
+      'AHL Sheets loaded',
+      dobberRefresh.message,
+      offlineWarning,
+    ].filter(Boolean).join('; ');
     renderOwnerView(nextState);
     if (status) status.textContent = state.liveRefreshMessage;
   } catch (error) {
     console.error('AHL Sheets startup refresh failed', error);
-    state.liveRefreshMessage = 'AHL Sheets refresh failed';
-    state.draftIntelligenceStorageError = error instanceof Error
-      ? `AHL Sheets unavailable: ${error.message}`
-      : 'AHL Sheets unavailable. Refresh and check sheet access.';
-    if (status) status.textContent = state.draftIntelligenceStorageError;
-    if (state.draftIntelligence && hasLoadedData(state.importedData || DEFAULT_STATE)) {
-      renderOwnerView(state.importedData || DEFAULT_STATE);
+    let offlineRecord = null;
+    let offlineCacheError = '';
+    try {
+      offlineRecord = await loadAhlSnapshot();
+    } catch (cacheError) {
+      console.error('Unable to load the offline AHL snapshot', cacheError);
+      offlineCacheError = cacheError instanceof Error ? cacheError.message : 'offline cache could not be read';
+    }
+    if (offlineRecord) {
+      const cachedState = normalizeState(offlineRecord.snapshot);
+      if (offlineRecord.draftIntelligence) {
+        state.draftIntelligence = offlineRecord.draftIntelligence;
+        state.draftIntelligenceFromOfflineSnapshot = true;
+      }
+      persistState(cachedState);
+      state.importedData = cachedState;
+      state.manualOverrides = Array.isArray(cachedState.manualOverrides) ? cachedState.manualOverrides : [];
+      const importedAt = cachedState.metadata.ahlSheets.importedAt || offlineRecord.savedAt;
+      state.liveRefreshMessage = `Offline AHL snapshot loaded (${formatTimestamp(importedAt)})`;
+      applyAhlSheetIntelligence(cachedState);
+      renderOwnerView(cachedState);
+      if (status) status.textContent = `${state.liveRefreshMessage}; online refresh failed`;
+    } else {
+      state.liveRefreshMessage = 'AHL Sheets refresh failed';
+      state.draftIntelligenceStorageError = error instanceof Error
+        ? `AHL Sheets unavailable: ${error.message}${offlineCacheError ? `; offline cache unavailable: ${offlineCacheError}` : ''}`
+        : 'AHL Sheets unavailable. Refresh and check sheet access.';
+      if (status) status.textContent = state.draftIntelligenceStorageError;
+      if (state.draftIntelligence && hasLoadedData(state.importedData || DEFAULT_STATE)) {
+        state.liveRefreshMessage = 'Using browser-saved AHL snapshot; refresh failed';
+        renderOwnerView(state.importedData || DEFAULT_STATE);
+        if (status) status.textContent = `${state.liveRefreshMessage}: ${state.draftIntelligenceStorageError}`;
+      }
     }
   } finally {
     if (refreshButton) {
@@ -869,6 +1032,8 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
     const csvText = await response.text();
     const parsedData = source.datasetType === 'scores'
       ? parseAhlScoreSheet(csvText, source.name)
+      : source.datasetType === 'budget'
+        ? parseAhlBudgetSheet(csvText)
       : source.datasetType === 'prospects'
         ? parseProspects(csvText)
         : parseRoster(csvText);
@@ -877,6 +1042,8 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
     }
     const recordCount = source.datasetType === 'scores'
       ? parsedData.rows.length
+      : source.datasetType === 'budget'
+        ? parsedData.teamBudgets.length
       : source.datasetType === 'prospects'
       ? Object.keys(parsedData.prospects || {}).length
       : Object.keys(parsedData.players || {}).length;
@@ -896,10 +1063,15 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
       return;
     }
     next = mergeDataset(next, source.datasetType, parsedData, source.name);
-    loadedTabs[source.name] = source.datasetType === 'prospects'
+    loadedTabs[source.name] = source.datasetType === 'budget'
+      ? parsedData.teamBudgets.length
+      : source.datasetType === 'prospects'
       ? Object.keys(parsedData.prospects || {}).length
       : Object.keys(parsedData.players || {}).length;
   });
+  if (next.datasets.budget?.teamBudgets?.length && next.datasets.roster) {
+    next.datasets.roster.teamBudgets = next.datasets.budget.teamBudgets;
+  }
   next.datasets.ahlScores = { tabs: scoreTabs };
   next.metadata.ahlSheets = {
     status: 'ok',
@@ -3099,6 +3271,7 @@ function renderOwnerView(unifiedState) {
       const nextState = removeManualOverrideById(unifiedState, button.dataset.overrideId);
       state.importedData = nextState;
       state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+      state.draftIntelligenceFromOfflineSnapshot = false;
       renderOwnerView(nextState);
     });
   });
@@ -3156,8 +3329,10 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       : null;
     return {
       team: ownerName,
+      retained: budget.retained ?? budget.totalSpent ?? null,
       remainingBudget,
       playersDrafted,
+      skaters: budget.skaters || null,
       openSlots,
       averageSpendRemaining: remainingBudget !== null && openSlots > 0 ? remainingBudget / openSlots : null,
       maxPossibleBid: maxPossibleBid !== null && maxPossibleBid >= DRAFT_ROSTER_RULES.minSlotCost
@@ -3360,6 +3535,30 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       persistPersonalDraftList();
     });
   });
+  document.querySelectorAll('[data-personal-flag]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const field = input.dataset.personalFlag;
+      if (!['target', 'avoid', 'keeperTarget', 'breakoutTarget'].includes(field)) {
+        throw new Error(`Unsupported Personal Draft List flag: ${field || 'missing'}.`);
+      }
+      state.personalDraftList = updatePersonalDraftListEntry(
+        state.personalDraftList,
+        input.dataset.personalPlayer,
+        { [field]: input.checked },
+      );
+      persistPersonalDraftList();
+    });
+  });
+  document.querySelectorAll('[data-personal-max-bid]').forEach((input) => {
+    input.addEventListener('change', () => {
+      state.personalDraftList = updatePersonalDraftListEntry(
+        state.personalDraftList,
+        input.dataset.personalMaxBid,
+        { maxBidNote: input.value },
+      );
+      persistPersonalDraftList();
+    });
+  });
   document.querySelector('[data-personal-export]')?.addEventListener('click', () => {
     const blob = new Blob([JSON.stringify({
       exportedAt: new Date().toISOString(),
@@ -3373,6 +3572,27 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
+  });
+  document.querySelector('[data-personal-import-trigger]')?.addEventListener('click', () => {
+    document.querySelector('[data-personal-import-file]')?.click();
+  });
+  document.querySelector('[data-personal-import-file]')?.addEventListener('change', async (event) => {
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const imported = JSON.parse(await file.text());
+      const entries = imported && !Array.isArray(imported) && Array.isArray(imported.players)
+        ? imported.players
+        : imported;
+      state.personalDraftList = normalizePersonalDraftList(entries);
+      persistPersonalDraftList();
+    } catch (error) {
+      console.error('Unable to import Personal Draft List', error);
+      alert(error instanceof Error ? `Unable to import Personal Draft List: ${error.message}` : 'Unable to import Personal Draft List.');
+    } finally {
+      input.value = '';
+    }
   });
   document.querySelector('[data-export-draft-json]')?.addEventListener('click', downloadDraftIntelligenceBundle);
   document.querySelector('[data-winning-bid-form]')?.addEventListener('submit', (event) => {
@@ -3590,12 +3810,82 @@ function loadPersonalDraftList() {
   }
 }
 
+async function commitDobberImport(nextState, message) {
+  persistState(nextState);
+  state.importedData = nextState;
+  state.draftIntelligenceFromOfflineSnapshot = false;
+  applyAhlSheetIntelligence(nextState);
+  const offlineWarning = state.draftIntelligence
+    ? await persistOfflineAhlSnapshot(nextState)
+    : 'Draft Intelligence files have not loaded yet; offline snapshot will be saved when they finish.';
+  state.liveRefreshMessage = [message, offlineWarning].filter(Boolean).join('; ');
+  renderOwnerView(nextState);
+  const status = document.getElementById('liveRefreshStatus');
+  if (status) status.textContent = state.liveRefreshMessage;
+}
+
+async function importDobberExcelFile(file) {
+  const players = parseDobberWorkbook(await file.arrayBuffer());
+  const next = normalizeState(state.importedData || loadState());
+  const current = next.datasets.dobber || {};
+  const importedAt = new Date().toISOString();
+  next.datasets.dobber = {
+    ...current,
+    players: attachDobberIntel(players, current.intelByPlayerKey),
+    excelSourceName: file.name,
+    excelImportedAt: importedAt,
+  };
+  next.metadata.dobberExcel = {
+    status: 'loaded-local',
+    sourceType: 'local',
+    sourceName: file.name,
+    importedAt,
+    records: Object.keys(players).length,
+  };
+  next.metadata.dobberStatus = 'loaded-local';
+  await commitDobberImport(next, `Dobber Excel loaded (${Object.keys(players).length} players)`);
+}
+
+async function importDobberPdfFiles(files) {
+  const selectedFiles = [...files];
+  if (!selectedFiles.length) return;
+  const pdfjs = await loadPdfJs();
+  const texts = [];
+  for (const file of selectedFiles) {
+    texts.push(await extractPdfText(await file.arrayBuffer(), pdfjs));
+  }
+  const next = normalizeState(state.importedData || loadState());
+  const current = next.datasets.dobber || {};
+  const intelByPlayerKey = extractDobberIntelFromText(texts.join('\n'), getDobberPlayerNames(next));
+  const importedAt = new Date().toISOString();
+  next.datasets.dobber = {
+    ...current,
+    players: attachDobberIntel(current.players, intelByPlayerKey),
+    intelByPlayerKey,
+    pdfSourceName: selectedFiles.map((file) => file.name).join(', '),
+    pdfImportedAt: importedAt,
+  };
+  next.metadata.dobberPdfs = {
+    status: 'loaded-local',
+    sourceType: 'local',
+    sourceName: next.datasets.dobber.pdfSourceName,
+    importedAt,
+    records: Object.keys(intelByPlayerKey).length,
+  };
+  next.metadata.dobberStatus = 'loaded-local';
+  await commitDobberImport(next, `Dobber PDFs loaded (${Object.keys(intelByPlayerKey).length} explicit player tags)`);
+}
+
 function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
   const liveRefreshBtn = document.getElementById('liveRefreshBtn');
   const topbarCsvFileInput = document.getElementById('topbarCsvFileInput');
   const liveRefreshStatus = document.getElementById('liveRefreshStatus');
   const draftIntelligenceStatus = document.getElementById('draftIntelligenceStatus');
+  const importDobberExcelBtn = document.getElementById('importDobberExcelBtn');
+  const importDobberPdfsBtn = document.getElementById('importDobberPdfsBtn');
+  const dobberExcelFileInput = document.getElementById('dobberExcelFileInput');
+  const dobberPdfFileInput = document.getElementById('dobberPdfFileInput');
 
   if (liveRefreshBtn && liveRefreshStatus) {
     liveRefreshBtn.addEventListener('click', async () => {
@@ -3604,12 +3894,21 @@ function initialize() {
       liveRefreshStatus.textContent = 'Downloading current AHL Sheets data';
 
       try {
-        const nextState = await refreshGoogleSheetState(state.importedData || loadState());
+        let nextState = await refreshGoogleSheetState(state.importedData || loadState());
+        const dobberRefresh = await refreshDobberState(nextState);
+        nextState = dobberRefresh.state;
         persistState(nextState);
         state.importedData = nextState;
         state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
-        state.liveRefreshMessage = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        state.draftIntelligenceFromOfflineSnapshot = false;
         applyAhlSheetIntelligence(nextState);
+        const offlineWarning = await persistOfflineAhlSnapshot(nextState);
+        state.liveRefreshMessage = [
+          `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+          dobberRefresh.message,
+          offlineWarning,
+        ].filter(Boolean).join('; ');
+        liveRefreshStatus.textContent = state.liveRefreshMessage;
         state.selectedPlayerKey = null;
         renderOwnerView(nextState);
       } catch (error) {
@@ -3632,6 +3931,37 @@ function initialize() {
       state.selectedOwner = null;
       state.selectedPlayerKey = null;
       renderImportScreen();
+    }
+  });
+
+  importDobberExcelBtn?.addEventListener('click', () => {
+    dobberExcelFileInput.value = '';
+    dobberExcelFileInput.click();
+  });
+  dobberExcelFileInput?.addEventListener('change', async () => {
+    const file = dobberExcelFileInput.files?.[0];
+    if (!file) return;
+    try {
+      await importDobberExcelFile(file);
+    } catch (error) {
+      console.error('Dobber Excel import failed', error);
+      alert(error instanceof Error ? error.message : 'Dobber Excel import failed.');
+    } finally {
+      dobberExcelFileInput.value = '';
+    }
+  });
+  importDobberPdfsBtn?.addEventListener('click', () => {
+    dobberPdfFileInput.value = '';
+    dobberPdfFileInput.click();
+  });
+  dobberPdfFileInput?.addEventListener('change', async () => {
+    try {
+      await importDobberPdfFiles(dobberPdfFileInput.files || []);
+    } catch (error) {
+      console.error('Dobber PDF import failed', error);
+      alert(error instanceof Error ? error.message : 'Dobber PDF import failed.');
+    } finally {
+      dobberPdfFileInput.value = '';
     }
   });
 
@@ -3711,13 +4041,25 @@ function initialize() {
 
   if (draftIntelligenceStatus) draftIntelligenceStatus.textContent = 'Loading Draft Intelligence';
   void loadDraftIntelligenceFiles()
-    .then((draftIntelligence) => {
-      state.draftIntelligence = draftIntelligence;
+    .then(async (draftIntelligence) => {
+      if (!state.draftIntelligenceFromOfflineSnapshot) state.draftIntelligence = draftIntelligence;
       applyAhlSheetIntelligence(state.importedData || DEFAULT_STATE);
       if (draftIntelligenceStatus) {
-        draftIntelligenceStatus.textContent = draftIntelligence.players.status === 'partial'
+        draftIntelligenceStatus.textContent = state.draftIntelligenceFromOfflineSnapshot
+          ? 'Draft Intelligence offline snapshot loaded'
+          : draftIntelligence.players.status === 'partial'
           ? 'Draft Intelligence partial'
           : 'Draft Intelligence loaded';
+      }
+      if (state.importedData?.metadata?.ahlSheets?.status === 'ok') {
+        const offlineWarning = await persistOfflineAhlSnapshot(state.importedData);
+        if (offlineWarning) {
+          state.liveRefreshMessage = `AHL Sheets loaded; ${offlineWarning}`;
+        } else if (state.liveRefreshMessage.startsWith('AHL Sheets loaded; Offline snapshot was not saved:')) {
+          state.liveRefreshMessage = 'AHL Sheets loaded';
+        }
+        const liveStatus = document.getElementById('liveRefreshStatus');
+        if (liveStatus) liveStatus.textContent = state.liveRefreshMessage;
       }
       if (hasLoadedData(state.importedData || DEFAULT_STATE)) {
         renderOwnerView(state.importedData || loadState());
@@ -3751,6 +4093,7 @@ export {
   getLiveCacheStatus,
   resolveWorkingAssignmentTeamName,
   createWorkingAssignmentDraft,
+  refreshDobberState,
   refreshGoogleSheetState,
   serializePortableStateBundle,
   parsePortableStateBundle,

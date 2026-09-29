@@ -1,4 +1,9 @@
-import { parseRoster } from '../rosterParser.js';
+import {
+  parseAhlBudgetSheet,
+  parseMoney,
+  parseRoster,
+  parseSkaters,
+} from '../rosterParser.js';
 import { detectDatasetType } from '../app.js';
 
 describe('roster parser multi-sheet formats', () => {
@@ -45,27 +50,56 @@ describe('roster parser multi-sheet formats', () => {
     expect(parsed.teamBudgets).toEqual([
       {
         team: 'TEAM A',
+        retained: 66,
         totalSpent: 66,
         remainingBudget: 184,
         keeperCosts: 64,
         rookieFarmCosts: 2,
         playersDrafted: 1,
         openSlots: 24,
+        skaters: { count: 1, max: 23 },
         penalties: null,
         adjustments: null,
       },
       {
         team: 'TEAM B',
+        retained: 50,
         totalSpent: 50,
         remainingBudget: 200,
         keeperCosts: 48,
         rookieFarmCosts: 2,
         playersDrafted: 1,
         openSlots: 24,
+        skaters: { count: 1, max: 23 },
         penalties: null,
         adjustments: null,
       },
     ]);
+  });
+
+  test('normalizes AHL Budget money and skater counts', () => {
+    expect(parseMoney('$71.50')).toBe(71.5);
+    expect(parseMoney(' $178.50 ')).toBe(178.5);
+    expect(parseMoney('')).toBeNull();
+    expect(parseSkaters('6/23')).toEqual({ count: 6, max: 23 });
+    expect(parseSkaters('24/23')).toBeNull();
+
+    expect(parseAhlBudgetSheet([
+      'Owner,Retained,Remaining,Skaters',
+      'TEAM A,$71.50,$178.50,6/23',
+    ].join('\n')).teamBudgets).toEqual([{
+      team: 'TEAM A',
+      retained: 71.5,
+      totalSpent: 71.5,
+      remainingBudget: 178.5,
+      skaters: { count: 6, max: 23 },
+      playersDrafted: 6,
+      openSlots: 17,
+      keeperCosts: null,
+      rookieFarmCosts: null,
+      penalties: null,
+      adjustments: null,
+    }]);
   });
 
   test('parses inventory matrix and utility baseline', () => {

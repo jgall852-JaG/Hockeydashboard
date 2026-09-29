@@ -47,6 +47,8 @@ Then open `http://localhost:8000`.
 - **Hosted access:** enable GitHub Pages for this repository and use the published URL on laptop or phone.
 - **Portable access:** use **Export State** before leaving your main machine, then **Import Saved State** on another browser or laptop.
 - **Phone use:** the draft board, insights, and winning-bid form are available in the responsive dashboard.
+- **Installable/offline use:** open the HTTPS Pages URL once while online, allow the offline app cache to finish, then use **Install Dashboard** or the browser's install/Add to Home Screen command. Refresh AHL Sheets before going offline.
+- **Offline limits:** cached app files, generated JSON, the last successful AHL snapshot, and browser-local draft state are available offline. AHL refresh and other network sources require a connection. The static app does not synchronize LocalStorage or IndexedDB between devices; export/import is the portable handoff.
 
 ## Data you need
 To work reliably, the app expects current CSV snapshots for any of these datasets:
@@ -55,7 +57,7 @@ To work reliably, the app expects current CSV snapshots for any of these dataset
 - Roster
 
 ## AHL Sheets ingestion
-- The Google AHL Draft workbook is the only authority for player pool, AHL Position, Utility eligibility, ownership, retention, keeper costs, and draft state. Its Position, Utility, Draft, Roster, and Keeper Rights tabs are refreshed together.
+- The Google AHL Draft workbook is the only authority for player pool, AHL Position, Utility eligibility, ownership, retention, keeper costs, budgets, skater counts, and draft state. Its Position, Utility, Draft/Budget, Roster, and Keeper Rights data are refreshed together.
 - The AHL Scores workbook is refreshed with its Scores, Scorebulator, and Games Played tabs. These tabs are retained as raw AHL score data; team standings and schedule rows are not treated as player projections.
 - The prior-year OneDrive roster example and separate house-budget workbook are not ingested.
 - The dashboard loads all configured AHL tabs on page startup and **Refresh AHL Sheets** repeats the load. A failed or empty tab stops the refresh and surfaces an error instead of marking the source loaded.
@@ -64,16 +66,22 @@ To work reliably, the app expects current CSV snapshots for any of these dataset
 ## Draft Intelligence data
 - The dashboard exposes Draft Board, Best Available, Team Budgets, Personal Draft List, and Tools & Validation.
 - Team Budgets and roster validation use the AHL Draft sheet's team balances and open slots; local working assignments subtract their bid and consume one slot. Missing sheet balances remain unavailable and are never replaced with a fixed-cap estimate.
+- Budget values normalize currency strings such as `$71.50`; explicit skater values such as `6/23` normalize to `{ count: 6, max: 23 }`. The current Draft 2026 retained grid supplies TOTAL SPENT and BALANCE, with skater counts derived from its player rows.
+- Final Position is the Utility tab position when a player is listed there; otherwise it is the AHL Position tab position. NHL Position never supplies pool position or eligibility.
+- Personal Draft List supports rank, notes, Target/Avoid/Keeper/Breakout flags, max-bid notes, and local JSON import/export. It remains browser-local unless the user exports and imports the file on another device.
 - Run `node scripts/generate-draft-intelligence.mjs <nhl-skater-stats.csv> [normalized-source-metrics.json]` from this directory to refresh those outputs from the current Google Sheets, a provided NHL skater-stat snapshot, and optional normalized source metrics.
-- Supplemental metrics remain keyed by player ID under `players`; component inputs must be normalized 0–1. Source flags are limited to `AHLSheets` and `DobberExcel`, and may be true only after that source is ingested.
-- AHL Position is used for pool position and filters; Utility supplies multi-position eligibility. NHL Position is a separate field sourced only from the Dobber Excel sheet. That file has not yet been provided, and the live AHL Scores tabs currently contain team schedules/standings rather than player-level score inputs, so unsupported positions, DraftIQ scores, and auction values remain null and players remain UNPRICED.
+- Dobber Excel is read only from `EVERYTHING (Skaters)`. Player, Team, POS, Salary, AAV, BPS, KVS, Projections, and RiskFlags are normalized by player key and merged without changing Final Position.
+- The app attempts the configured OneDrive sources during refresh. Microsoft currently returns HTTP 401/403 to unauthenticated static requests, so Dobber remains `unavailable` and the failure is shown. **Import Dobber Excel** and **Import Dobber PDFs** provide the local ingestion path; successful parsing marks the relevant source and aggregate `dobberStatus` as `loaded-local` and triggers a full recompute.
+- Dobber BPS/KVS accept explicit 0–1 or 0–100 values. DraftIQ remains null unless Projections or explicit columns provide PPS, RSS, and RRS; text projections are retained but never converted into invented scores.
+- Dobber PDF metadata is attached only when the PDFs explicitly label pedigree or projection confidence, or explicitly tag a sleeper/bust. These fields add explanations only and do not numerically alter DraftIQ or tiers.
+- AHL Position is used for pool position unless Utility lists the player, in which case Utility is the Final Position. NHL Position comes only from parsed Dobber Excel and never changes pool position.
 - DraftIQ uses `0.45*PPS + 0.20*RSS + 0.15*BPS - 0.10*RRS + 0.10*KVS`, clamped to 0–100. `VALUE` requires price above its band midpoint and RRS `<=33`; `RISK` requires price above midpoint plus RRS `>=67`, usage-decline `>=0.67`, or aging-risk `>=0.67`; `FAIR` is within 10% of band width (minimum $0.50) of midpoint when no high-risk signal applies. Band midpoints are $50, $32, $17, $7, and $2.50 for tiers 1–5. Outputs remain `UNPRICED` when required scores or auction inputs are missing.
 - Shortlists are stored in browser local storage. Winning bids are recorded as local Working Assignments and update availability and team budget calculations immediately; the Google Sheets remain the operational source of truth.
 - Personal Draft List ranks and notes are stored only in browser local storage and can be exported locally as JSON.
 
 ## Source-of-truth rules
 - AHL Google Sheets are authoritative for ownership, availability, AHL positions, budgets, keeper costs, rookie/farm eligibility, and draft state.
-- Dobber Excel is a supplemental NHL-position source only; it does not override AHL pool positions or eligibility.
+- Dobber Excel is supplemental scoring/NHL-position intelligence only; it does not override AHL pool positions or eligibility.
 - Cached, imported, and historical data must not override current AHL Sheet draft data.
 - Browser `localStorage` is convenience state, not the only backup path.
 
@@ -87,6 +95,7 @@ Transaction logs and live draft boards are not player snapshots and should not b
 ## Hosted deployment
 A GitHub Pages workflow is included in `.github/workflows/pages.yml`.
 It publishes the static dashboard files without adding a backend.
+The PWA manifest, same-origin service worker, and install icons are deployed with the static app. The service worker caches the application shell and generated JSON, while IndexedDB stores the latest successfully loaded AHL snapshot and matching generated outputs for offline startup.
 
 ## Active docs
 - `README.md`

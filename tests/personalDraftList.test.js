@@ -12,8 +12,8 @@ describe('Personal Draft List', () => {
       { playerId: 'second', rank: 8, notes: 'watch' },
       { playerId: 'first', rank: 2, notes: '' },
     ])).toEqual([
-      { playerId: 'first', rank: 1, notes: '' },
-      { playerId: 'second', rank: 2, notes: 'watch' },
+      { playerId: 'first', rank: 1, notes: '', target: false, avoid: false, keeperTarget: false, breakoutTarget: false, maxBidNote: '' },
+      { playerId: 'second', rank: 2, notes: 'watch', target: false, avoid: false, keeperTarget: false, breakoutTarget: false, maxBidNote: '' },
     ]);
   });
 
@@ -21,20 +21,27 @@ describe('Personal Draft List', () => {
     let entries = addPersonalDraftListEntry([], 'one');
     entries = addPersonalDraftListEntry(entries, 'two');
     entries = addPersonalDraftListEntry(entries, 'one');
-    entries = updatePersonalDraftListEntry(entries, 'two', { notes: 'track role' });
+    entries = updatePersonalDraftListEntry(entries, 'two', {
+      notes: 'track role',
+      target: true,
+      keeperTarget: true,
+      maxBidNote: 'up to $8',
+    });
     entries = setPersonalDraftListRank(entries, 'two', 1);
 
     expect(entries).toEqual([
-      { playerId: 'two', rank: 1, notes: 'track role' },
-      { playerId: 'one', rank: 2, notes: '' },
+      { playerId: 'two', rank: 1, notes: 'track role', target: true, avoid: false, keeperTarget: true, breakoutTarget: false, maxBidNote: 'up to $8' },
+      { playerId: 'one', rank: 2, notes: '', target: false, avoid: false, keeperTarget: false, breakoutTarget: false, maxBidNote: '' },
     ]);
     expect(removePersonalDraftListEntry(entries, 'two')).toEqual([
-      { playerId: 'one', rank: 1, notes: '' },
+      { playerId: 'one', rank: 1, notes: '', target: false, avoid: false, keeperTarget: false, breakoutTarget: false, maxBidNote: '' },
     ]);
   });
 
   test('rejects malformed saved data instead of silently changing it', () => {
     expect(() => normalizePersonalDraftList([{ playerId: 'one', rank: '1', notes: '' }]))
+      .toThrow('Saved Personal Draft List data has an invalid format.');
+    expect(() => normalizePersonalDraftList([{ playerId: 'one', rank: 1, notes: '', target: 'yes' }]))
       .toThrow('Saved Personal Draft List data has an invalid format.');
   });
 });

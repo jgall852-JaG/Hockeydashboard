@@ -156,6 +156,18 @@ button.secondary {
   margin: 14px 0;
 }
 
+.personal-list-file-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+[data-personal-flag] {
+  min-width: 20px;
+  min-height: 20px;
+  accent-color: var(--accent);
+}
+
 .draft-board-filters label,
 .winning-bid-form label {
   display: grid;
