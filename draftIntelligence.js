@@ -1,9 +1,28 @@
-const DATA_VERSION = 1;
+const DATA_VERSION = 2;
 const LEAGUE_SETTINGS = Object.freeze({
   budget: 250,
   rosterSlots: 25,
+  minimumBid: 0.5,
   scoring: { goals: 1, assists: 0.5, goalsAgainst: -0.5 },
-  categories: { veteranMinGames: 82, rookieMinGames: 9, farmMaxGames: 8 },
+  categories: { eligibilitySource: 'AHLSheets', values: ['Farm', 'Rookie', 'Veteran'] },
+});
+const CLASSIFICATION_THRESHOLDS = Object.freeze({
+  lowRegressionRisk: 33,
+  highRegressionRisk: 67,
+  usageDecline: 0.67,
+  agingCurveRisk: 0.67,
+  bandMidpointTolerance: 0.1,
+});
+const PRICE_BANDS = Object.freeze({
+  1: { min: 40, max: 60, midpoint: 50 },
+  2: { min: 25, max: 39, midpoint: 32 },
+  3: { min: 10, max: 24, midpoint: 17 },
+  4: { min: 5, max: 9, midpoint: 7 },
+  5: { min: 1, max: 4, midpoint: 2.5 },
+});
+const SOURCE_REGISTRY = Object.freeze({
+  AHLSheets: false,
+  DobberExcel: false,
 });
 
 function normalizeName(value) {
@@ -64,9 +83,13 @@ function normalizePosition(value) {
   return '';
 }
 
-function maxNormalize(value, maximum) {
-  if (!Number.isFinite(value) || !Number.isFinite(maximum) || maximum <= 0) return null;
-  return Math.max(0, Math.min(1, value / maximum));
+function normalizeAhlCategory(value, prospect) {
+  const category = String(value || '').trim().toLowerCase();
+  if (category === 'farm') return 'Farm';
+  if (category === 'rookie') return 'Rookie';
+  if (category === 'veteran') return 'Veteran';
+  if (prospect) return prospect.farm ? 'Farm' : 'Rookie';
+  return null;
 }
 
 function normalizedMetric(value, label, fallback = null) {
@@ -83,7 +106,99 @@ function weightedScore(inputs, weights) {
   return inputs.reduce((score, value, index) => score + value * weights[index], 0);
 }
 
+function sourcesAvailable(sources, required) {
+  return required.every((source) => sources[source] === true);
+}
+
+function getTier(auctionValue) {
+  if (auctionValue === null) return null;
+  if (auctionValue >= 40) return 1;
+  if (auctionValue >= 25) return 2;
+  if (auctionValue >= 10) return 3;
+  if (auctionValue >= 5) return 4;
+  return 5;
+}
+
+function getStrengths({ deployment, production, prospect, keeper }, sources) {
+  const strengths = [];
+  if (sources.DobberExcel && deployment.ppWeight === 1) strengths.push('PP1 deployment');
+  if (sources.DobberExcel && deployment.lineWeight === 1) strengths.push('Top line role');
+  if (sources.AHLSheets && production.PPS !== null && production.PPS >= 75) strengths.push('High projected production score');
+  if (sources.AHLSheets && keeper.KVS !== null && keeper.KVS >= 75) strengths.push('Strong keeper value');
+  if (sources.AHLSheets && prospect.BPS !== null && prospect.BPS >= 75) strengths.push('Breakout candidate');
+  return strengths;
+}
+
+function getRisks({ deployment, prospect, keeper }, sources) {
+  const risks = [];
+  if (sources.AHLSheets && deployment.RRS !== null && deployment.RRS >= CLASSIFICATION_THRESHOLDS.highRegressionRisk) {
+    risks.push('High regression risk');
+  }
+  if (sources.AHLSheets && deployment.usageDrop !== null && deployment.usageDrop >= CLASSIFICATION_THRESHOLDS.usageDecline) {
+    risks.push('Usage decline');
+  }
+  if (sources.AHLSheets && deployment.injuryRisk !== null && deployment.injuryRisk >= 0.5) risks.push('Elevated injury risk');
+  if (sources.AHLSheets && deployment.ageDecline !== null && deployment.ageDecline >= CLASSIFICATION_THRESHOLDS.agingCurveRisk) {
+    risks.push('Aging curve risk');
+  }
+  if (sources.AHLSheets && keeper.KVS !== null && keeper.KVS < 25 && prospect.BPS !== null) risks.push('Low keeper value');
+  return risks;
+}
+
+function getClassification({ auctionValue, tier, regressionRisk, usageDrop, ageDecline }) {
+  if (auctionValue === null || tier === null) return 'UNPRICED';
+  const band = PRICE_BANDS[tier];
+  const midpointTolerance = Math.max(0.5, (band.max - band.min) * CLASSIFICATION_THRESHOLDS.bandMidpointTolerance);
+  const aboveMidpoint = auctionValue > band.midpoint;
+  const riskIsHigh = regressionRisk !== null && regressionRisk >= CLASSIFICATION_THRESHOLDS.highRegressionRisk;
+  const usageDeclining = usageDrop !== null && usageDrop >= CLASSIFICATION_THRESHOLDS.usageDecline;
+  const aging = ageDecline !== null && ageDecline >= CLASSIFICATION_THRESHOLDS.agingCurveRisk;
+
+  if (aboveMidpoint && (riskIsHigh || usageDeclining || aging)) return 'RISK';
+  if (
+    Math.abs(auctionValue - band.midpoint) <= midpointTolerance
+    && !riskIsHigh
+    && !usageDeclining
+    && !aging
+  ) return 'FAIR';
+  if (aboveMidpoint && regressionRisk !== null && regressionRisk <= CLASSIFICATION_THRESHOLDS.lowRegressionRisk) {
+    return 'VALUE';
+  }
+  return 'FAIR';
+}
+
+function getMissingSources(metricValues, dependencySources, sources) {
+  const missingSources = {};
+  Object.entries(metricValues).forEach(([metric, value]) => {
+    if (value !== null) return;
+    (dependencySources[metric] || []).forEach((source) => {
+      const missingSource = sources[source] === true ? `${source} metric inputs` : source;
+      missingSources[missingSource] = true;
+    });
+  });
+  return missingSources;
+}
+
+export function calculateRecommendedMaxBid(auctionValue, tier, remainingBudget, openSlots) {
+  if (
+    !Number.isFinite(auctionValue)
+    || !Number.isInteger(tier)
+    || tier < 1
+    || tier > 5
+    || !Number.isFinite(remainingBudget)
+    || !Number.isInteger(openSlots)
+    || openSlots < 1
+  ) return null;
+
+  const teamMaxPossibleBid = remainingBudget - ((openSlots - 1) * LEAGUE_SETTINGS.minimumBid);
+  if (teamMaxPossibleBid < LEAGUE_SETTINGS.minimumBid) return null;
+  const aggressionFactor = tier === 1 ? 1.3 : tier === 2 ? 1.2 : tier === 3 ? 1.1 : 1;
+  const recommended = Math.round(Math.min(auctionValue * aggressionFactor, teamMaxPossibleBid) / 0.5) * 0.5;
+  return Math.min(recommended, Math.floor(teamMaxPossibleBid / 0.5) * 0.5);
+}
+
 function getCategoryMultiplier(category, { RSS, BPS, RRS, KVS }) {
+  if (!category) return null;
   if (category === 'Veteran') {
     return RSS === null || RRS === null ? null : 1 + (RSS / 100) * 0.03 - (RRS / 100) * 0.02;
   }
@@ -147,50 +262,26 @@ function parseNhlStats(csvText) {
   return { season, stats: [...stats.values()] };
 }
 
-function classifyPlayer(gamesPlayed, prospect) {
-  if (prospect?.farm || gamesPlayed < LEAGUE_SETTINGS.categories.rookieMinGames) return 'Farm';
-  if (gamesPlayed < LEAGUE_SETTINGS.categories.veteranMinGames) return 'Rookie';
-  return 'Veteran';
-}
-
-function buildScoringInputs(stat, maxima) {
-  if (!stat || !stat.gamesPlayed || stat.gamesPlayed < 0) {
+function buildScoringInputs(stat) {
+  if (!stat) {
     return {
-      gamesPlayed: stat?.gamesPlayed ?? null,
-      goals: stat?.goals ?? null,
-      assists: stat ? (stat.primaryAssists || 0) + (stat.secondaryAssists || 0) : null,
-      shots: stat?.shots ?? null,
+      gamesPlayed: null,
+      goals: null,
+      assists: null,
+      shots: null,
       fantasyPoints: null,
-      toiNorm: null,
-      ppToiNorm: null,
-      goalProjNorm: null,
-      assistProjNorm: null,
-      shotNorm: null,
-      ppUsageNorm: null,
     };
   }
 
   const assists = (stat.primaryAssists || 0) + (stat.secondaryAssists || 0);
-  const games = stat.gamesPlayed;
-  const goalsPerGame = (stat.goals || 0) / games;
-  const assistsPerGame = assists / games;
-  const shotsPerGame = (stat.shots || 0) / games;
-  const toiPerGame = (stat.iceTimeSeconds || 0) / games;
-  const ppToiPerGame = stat.powerPlayIceTimeSeconds / games;
 
   return {
-    gamesPlayed: games,
+    gamesPlayed: stat.gamesPlayed,
     goals: stat.goals || 0,
     assists,
     shots: stat.shots || 0,
     fantasyPoints: (stat.goals || 0) * LEAGUE_SETTINGS.scoring.goals
       + assists * LEAGUE_SETTINGS.scoring.assists,
-    toiNorm: maxNormalize(toiPerGame, maxima.toiPerGame),
-    ppToiNorm: maxNormalize(ppToiPerGame, maxima.ppToiPerGame),
-    goalProjNorm: maxNormalize(goalsPerGame, maxima.goalsPerGame),
-    assistProjNorm: maxNormalize(assistsPerGame, maxima.assistsPerGame),
-    shotNorm: maxNormalize(shotsPerGame, maxima.shotsPerGame),
-    ppUsageNorm: maxNormalize(ppToiPerGame, maxima.ppToiPerGame),
   };
 }
 
@@ -203,10 +294,23 @@ export function buildDraftIntelligence({
   prospectsData,
   nhlStatsCsv,
   supplementalData = {},
+  sourceAvailability = {},
   leagueImportedAt = null,
   generatedAt = new Date().toISOString(),
 }) {
   const parsedStats = parseNhlStats(nhlStatsCsv);
+  if (!sourceAvailability || typeof sourceAvailability !== 'object' || Array.isArray(sourceAvailability)) {
+    throw new Error('Source availability must be an object of boolean flags.');
+  }
+  Object.entries(sourceAvailability).forEach(([source, available]) => {
+    if (!Object.prototype.hasOwnProperty.call(SOURCE_REGISTRY, source)) {
+      throw new Error(`Unknown source availability flag: ${source}.`);
+    }
+    if (typeof available !== 'boolean') {
+      throw new Error(`${source} source availability must be true or false.`);
+    }
+  });
+  const sources = { ...SOURCE_REGISTRY, ...sourceAvailability };
   const statsByName = new Map();
   parsedStats.stats.forEach((stat) => {
     const key = normalizeName(stat.name);
@@ -218,28 +322,39 @@ export function buildDraftIntelligence({
   const rosterPlayers = Object.values(rosterData?.players || {});
   const inputPlayers = rosterPlayers
     .filter((player) => player?.name && !['x', 'n/a', 'na'].includes(normalizeName(player.name)));
+  sources.AHLSheets = Boolean(
+    (inputPlayers.length > 0 || prospects.length > 0)
+    && sourceAvailability.AHLSheets !== false,
+  );
+  const inventoryByName = new Map(Object.values(rosterData?.sources?.inventory?.players || {})
+    .map((player) => [normalizeName(player.name), player]));
+  const utilityByName = new Map(Object.values(rosterData?.sources?.utility?.players || {})
+    .map((player) => [normalizeName(player.name), player]));
   const rows = inputPlayers.map((player) => {
     const name = String(player.name).trim();
-    const position = normalizePosition(player.poolposition || player.position);
+    const inventoryPlayer = inventoryByName.get(normalizeName(name));
+    const utilityPlayer = utilityByName.get(normalizeName(name));
+    const utilityPosition = utilityPlayer?.poolposition || '';
+    const position = normalizePosition(inventoryPlayer?.position || inventoryPlayer?.poolposition)
+      || normalizePosition(player.position)
+      || normalizePosition(utilityPosition.split('/')[0]);
     const nameStats = statsByName.get(normalizeName(name)) || [];
     const stat = nameStats.find((entry) => entry.position === position)
       || (nameStats.length === 1 ? nameStats[0] : null);
-    return { player, name, position, stat, prospect: prospectByName.get(normalizeName(name)) || null };
+    return {
+      player,
+      name,
+      position,
+      utilityPosition,
+      stat,
+      prospect: prospectByName.get(normalizeName(name)) || null,
+    };
   });
 
-  const maxima = {
-    toiPerGame: Math.max(0, ...rows.map(({ stat }) => stat?.gamesPlayed ? (stat.iceTimeSeconds || 0) / stat.gamesPlayed : 0)),
-    ppToiPerGame: Math.max(0, ...rows.map(({ stat }) => stat?.gamesPlayed ? stat.powerPlayIceTimeSeconds / stat.gamesPlayed : 0)),
-    goalsPerGame: Math.max(0, ...rows.map(({ stat }) => stat?.gamesPlayed ? (stat.goals || 0) / stat.gamesPlayed : 0)),
-    assistsPerGame: Math.max(0, ...rows.map(({ stat }) => stat?.gamesPlayed
-      ? ((stat.primaryAssists || 0) + (stat.secondaryAssists || 0)) / stat.gamesPlayed : 0)),
-    shotsPerGame: Math.max(0, ...rows.map(({ stat }) => stat?.gamesPlayed ? (stat.shots || 0) / stat.gamesPlayed : 0)),
-  };
-
-  const players = rows.map(({ player, name, position, stat, prospect }) => {
-    const nhl = buildScoringInputs(stat, maxima);
-    const gamesPlayed = nhl.gamesPlayed ?? 0;
-    const category = classifyPlayer(gamesPlayed, prospect);
+  const players = rows.map(({ player, name, position, utilityPosition, stat, prospect }) => {
+    const nhl = buildScoringInputs(stat);
+    const gamesPlayed = nhl.gamesPlayed;
+    const category = normalizeAhlCategory(player.classification, prospect);
     const id = normalizeName(name).replace(/\s+/g, '-');
     const supplied = supplementalData.players?.[id] || supplementalData.players?.[normalizeName(name)] || {};
     const deploymentInput = supplied.deployment || {};
@@ -248,8 +363,8 @@ export function buildDraftIntelligence({
     const keeperInput = supplied.keeper || {};
     const lineWeight = normalizedMetric(deploymentInput.lineWeight, `${name}.lineWeight`);
     const ppWeight = normalizedMetric(deploymentInput.ppWeight, `${name}.ppWeight`);
-    const toiNorm = normalizedMetric(deploymentInput.toiNorm, `${name}.toiNorm`, nhl.toiNorm);
-    const ppToiNorm = normalizedMetric(deploymentInput.ppToiNorm, `${name}.ppToiNorm`, nhl.ppToiNorm);
+    const toiNorm = normalizedMetric(deploymentInput.toiNorm, `${name}.toiNorm`);
+    const ppToiNorm = normalizedMetric(deploymentInput.ppToiNorm, `${name}.ppToiNorm`);
     const lineStability = normalizedMetric(deploymentInput.lineStability, `${name}.lineStability`);
     const ppStability = normalizedMetric(deploymentInput.ppStability, `${name}.ppStability`);
     const injuryRisk = normalizedMetric(deploymentInput.injuryRisk, `${name}.injuryRisk`);
@@ -262,10 +377,10 @@ export function buildDraftIntelligence({
     const pdoReg = normalizedMetric(deploymentInput.PDOreg, `${name}.PDOreg`);
     const usageDrop = normalizedMetric(deploymentInput.usageDrop, `${name}.usageDrop`);
     const ageDecline = normalizedMetric(deploymentInput.ageDecline, `${name}.ageDecline`);
-    const goalProjNorm = normalizedMetric(productionInput.goalProjNorm, `${name}.goalProjNorm`, nhl.goalProjNorm);
-    const assistProjNorm = normalizedMetric(productionInput.assistProjNorm, `${name}.assistProjNorm`, nhl.assistProjNorm);
-    const shotNorm = normalizedMetric(productionInput.shotNorm, `${name}.shotNorm`, nhl.shotNorm);
-    const ppUsageNorm = normalizedMetric(productionInput.ppUsageNorm, `${name}.ppUsageNorm`, nhl.ppUsageNorm);
+    const goalProjNorm = normalizedMetric(productionInput.goalProjNorm, `${name}.goalProjNorm`);
+    const assistProjNorm = normalizedMetric(productionInput.assistProjNorm, `${name}.assistProjNorm`);
+    const shotNorm = normalizedMetric(productionInput.shotNorm, `${name}.shotNorm`);
+    const ppUsageNorm = normalizedMetric(productionInput.ppUsageNorm, `${name}.ppUsageNorm`);
     const consistency = normalizedMetric(productionInput.consistency, `${name}.consistency`);
     const ageCurve = normalizedMetric(prospectInput.ageCurve ?? keeperInput.ageCurve, `${name}.ageCurve`);
     const pedigree = normalizedMetric(prospectInput.pedigree, `${name}.pedigree`);
@@ -276,105 +391,144 @@ export function buildDraftIntelligence({
     const orgCommitment = normalizedMetric(keeperInput.orgCommitment, `${name}.orgCommitment`);
     const multiYearProj = normalizedMetric(keeperInput.multiYearProj, `${name}.multiYearProj`);
     const keeperScarcity = normalizedMetric(keeperInput.scarcity, `${name}.keeperScarcity`);
-    const deploymentScore = weightedScore([lineWeight, ppWeight, toiNorm, ppToiNorm], [25, 25, 25, 25]);
-    const roleSecurityScore = weightedScore([
+    const deploymentScore = sourcesAvailable(sources, ['AHLSheets', 'DobberExcel'])
+      ? weightedScore([lineWeight, ppWeight, toiNorm, ppToiNorm], [25, 25, 25, 25])
+      : null;
+    const roleSecurityScore = sourcesAvailable(sources, ['AHLSheets', 'DobberExcel'])
+      ? weightedScore([
       lineStability,
       ppStability,
       injuryRisk === null ? null : 1 - injuryRisk,
       depthSafety,
-    ], [30, 30, 20, 20]);
-    const opportunityScore = weightedScore(
-      [gamesNorm, opponentWeakness, homeBoost, restFactor],
-      [40, 30, 20, 10],
-    );
-    const regressionRiskScore = weightedScore([shReg, pdoReg, usageDrop, ageDecline], [30, 30, 20, 20]);
-    const projectedProductionScore = weightedScore(
-      [goalProjNorm, assistProjNorm, shotNorm, ppUsageNorm, consistency],
-      [40, 20, 20, 10, 10],
-    );
-    const breakoutProbabilityScore = weightedScore(
-      [ageCurve, pedigree, usageTrend, shotGrowth, opportunity],
-      [25, 25, 25, 15, 10],
-    );
-    const keeperValueScore = weightedScore(
-      [ageCurve, contractSecurity, orgCommitment, multiYearProj, keeperScarcity],
-      [25, 25, 20, 20, 10],
-    );
+    ], [30, 30, 20, 20])
+      : null;
+    const opportunityScore = sourcesAvailable(sources, ['AHLSheets'])
+      ? weightedScore([gamesNorm, opponentWeakness, homeBoost, restFactor], [40, 30, 20, 10])
+      : null;
+    const regressionRiskScore = sourcesAvailable(sources, ['AHLSheets', 'DobberExcel'])
+      ? weightedScore([shReg, pdoReg, usageDrop, ageDecline], [30, 30, 20, 20])
+      : null;
+    const projectedProductionScore = sourcesAvailable(sources, ['AHLSheets', 'DobberExcel'])
+      ? weightedScore([goalProjNorm, assistProjNorm, shotNorm, ppUsageNorm, consistency], [40, 20, 20, 10, 10])
+      : null;
+    const breakoutProbabilityScore = sourcesAvailable(sources, ['AHLSheets', 'DobberExcel'])
+      ? weightedScore([ageCurve, pedigree, usageTrend, shotGrowth, opportunity], [25, 25, 25, 15, 10])
+      : null;
+    const keeperValueScore = sourcesAvailable(sources, ['AHLSheets'])
+      ? weightedScore([ageCurve, contractSecurity, orgCommitment, multiYearProj, keeperScarcity], [25, 25, 20, 20, 10])
+      : null;
     const categoryMultiplier = getCategoryMultiplier(category, {
       RSS: roleSecurityScore,
       BPS: breakoutProbabilityScore,
       RRS: regressionRiskScore,
       KVS: keeperValueScore,
     });
-    const draftIQ = weightedScore([
+    const draftIQRaw = weightedScore([
       projectedProductionScore,
       roleSecurityScore,
       breakoutProbabilityScore,
       regressionRiskScore,
       keeperValueScore,
-    ], [0.45, 0.2, 0.15, 0.1, 0.1]);
+    ], [0.45, 0.2, 0.15, -0.1, 0.1]);
+    const draftIQ = draftIQRaw === null ? null : Math.max(0, Math.min(100, draftIQRaw));
     const adjustedDraftIQ = draftIQ === null || categoryMultiplier === null
       ? null
-      : draftIQ * categoryMultiplier;
+      : Math.max(0, Math.min(100, draftIQ * categoryMultiplier));
+    const missingSources = getMissingSources({
+      DS: deploymentScore,
+      RSS: roleSecurityScore,
+      OS: opportunityScore,
+      RRS: regressionRiskScore,
+      PPS: projectedProductionScore,
+      BPS: breakoutProbabilityScore,
+      KVS: keeperValueScore,
+      category,
+    }, {
+      DS: ['AHLSheets', 'DobberExcel'],
+      RSS: ['AHLSheets', 'DobberExcel'],
+      OS: ['AHLSheets'],
+      RRS: ['AHLSheets', 'DobberExcel'],
+      PPS: ['AHLSheets', 'DobberExcel'],
+      BPS: ['AHLSheets', 'DobberExcel'],
+      KVS: ['AHLSheets'],
+      category: ['AHLSheets'],
+    }, sources);
+    const deployment = {
+      DS: deploymentScore,
+      RSS: roleSecurityScore,
+      OS: opportunityScore,
+      RRS: regressionRiskScore,
+      toiNorm,
+      ppToiNorm,
+      lineWeight,
+      ppWeight,
+      lineStability,
+      ppStability,
+      injuryRisk,
+      depthSafety,
+      gamesNorm,
+      opponentWeakness,
+      homeBoost,
+      restFactor,
+      SHreg: shReg,
+      PDOreg: pdoReg,
+      usageDrop,
+      ageDecline,
+    };
+    const production = {
+      PPS: projectedProductionScore,
+      BPS: breakoutProbabilityScore,
+      RRS: regressionRiskScore,
+      goalProjNorm,
+      assistProjNorm,
+      shotNorm,
+      ppUsageNorm,
+      consistency,
+    };
+    const prospectMetrics = {
+      BPS: breakoutProbabilityScore,
+      KVS: keeperValueScore,
+      ageCurve,
+      pedigree,
+      usageTrend,
+      shotGrowth,
+      opportunity,
+    };
+    const keeper = {
+      KVS: keeperValueScore,
+      categoryMultiplier,
+      contractSecurity,
+      orgCommitment,
+      multiYearProjection: multiYearProj,
+      scarcity: keeperScarcity,
+    };
     return {
       id,
       name,
       team: String(player.nhlteam || stat?.team || ''),
-      position: position || stat?.position || null,
+      position: position || null,
+      ahlPosition: position || null,
+      utilityPosition: utilityPosition || null,
+      nhlPosition: null,
       category,
-      deployment: {
-        DS: deploymentScore,
-        RSS: roleSecurityScore,
-        OS: opportunityScore,
-        RRS: regressionRiskScore,
-        toiNorm,
-        ppToiNorm,
-        lineWeight,
-        ppWeight,
-        lineStability,
-        ppStability,
-        injuryRisk,
-        depthSafety,
-        gamesNorm,
-        opponentWeakness,
-        homeBoost,
-        restFactor,
-        SHreg: shReg,
-        PDOreg: pdoReg,
-        usageDrop,
-        ageDecline,
-      },
-      production: {
-        PPS: projectedProductionScore,
-        BPS: breakoutProbabilityScore,
-        RRS: regressionRiskScore,
-        goalProjNorm,
-        assistProjNorm,
-        shotNorm,
-        ppUsageNorm,
-        consistency,
-      },
-      prospect: {
-        BPS: breakoutProbabilityScore,
-        KVS: keeperValueScore,
-        ageCurve,
-        pedigree,
-        usageTrend,
-        shotGrowth,
-        opportunity,
-      },
-      keeper: {
-        KVS: keeperValueScore,
-        categoryMultiplier,
-        contractSecurity,
-        orgCommitment,
-        multiYearProjection: multiYearProj,
-        scarcity: keeperScarcity,
-      },
+      deployment,
+      production,
+      prospect: prospectMetrics,
+      keeper,
       draftIQ,
       adjustedDraftIQ,
+      scarcityMultiplier: null,
+      keeperInflation: null,
+      priceCurveFactor: null,
       auctionValue: null,
+      recommendedMaxBid: null,
       tier: null,
+      classification: 'UNPRICED',
+      strengths: getStrengths({ deployment, production, prospect: prospectMetrics, keeper }, sources),
+      risks: getRisks({ deployment, prospect: prospectMetrics, keeper }, sources),
+      sourcesUsed: sources,
+      missingSources,
+      generatedAt,
       ownership: player.owner || null,
       available: !player.owner
         && !player.retained
@@ -383,7 +537,7 @@ export function buildDraftIntelligence({
       seasonStats: {
         season: parsedStats.season,
         gamesPlayed: nhl.gamesPlayed,
-        statMatchStatus: stat ? 'matched' : 'no-nhl-record-assumed-zero-games',
+        statMatchStatus: stat ? 'matched' : 'no-nhl-record',
         goals: nhl.goals,
         assists: nhl.assists,
         shots: nhl.shots,
@@ -393,7 +547,7 @@ export function buildDraftIntelligence({
         age: null,
         goalieGoalsAgainst: null,
       },
-      valuationStatus: adjustedDraftIQ === null ? 'unpriced-missing-source-inputs' : 'awaiting-auction-inputs',
+      valuationStatus: adjustedDraftIQ === null ? 'unpriced' : 'partial',
     };
   });
 
@@ -423,7 +577,7 @@ export function buildDraftIntelligence({
       name: prospect.name,
       owner: prospect.owner || null,
       termRemaining: nullable(term),
-      category: player?.category || 'Farm',
+      category: player?.category ?? null,
       matchingRights: Boolean(prospect.matchingRights),
       matchingRightsEligible: term === 0 && Boolean(prospect.matchingRights),
       activeRookieEligible: !prospect.farm && Number.isFinite(term) && term > 0,
@@ -459,18 +613,12 @@ export function buildDraftIntelligence({
   }
 
   const missingSources = [
-    'Sportradar depth charts, injuries, and usage trends',
-    'BigBallsData player/team metrics',
-    'DailyFaceoff lines, power-play units, starters, and injuries',
-    'Dobber Fantasy Guide deployment and sleeper/bust data',
-    'Dobber Prospect Report pedigree and breakout data',
-    'AHL farm development and keeper-score inputs',
-    'NHL goalie/team GA and per-game consistency data',
-    'NHL age data',
+    'Dobber Excel NHL-position inputs',
+    'AHL Scores player-level metric inputs',
     'Position-specific roster slot counts for scarcity',
   ];
   const sourceCoverage = {
-    liveLeagueSheet: {
+    ahlSheets: {
       status: 'loaded',
       rosterRecords: rosterPlayers.length,
       prospectRecords: prospects.length,
@@ -519,15 +667,10 @@ export function buildDraftIntelligence({
       : null;
     const scarcityMultiplier = scarcityNorm === null ? null : 1 + (scarcityNorm * 0.2);
     const keeperInflation = player.keeper.KVS === null ? null : 1 + ((player.keeper.KVS / 100) * 0.08);
-    const auctionValue = scarcityMultiplier === null || keeperInflation === null
+    const auctionValue = !sources.AHLSheets || scarcityMultiplier === null || keeperInflation === null
       ? null
       : Math.max(1, Math.min(60, player.adjustedDraftIQ * scarcityMultiplier * keeperInflation * priceCurveFactor));
-    const tier = auctionValue === null ? null
-      : auctionValue >= 40 ? 1
-        : auctionValue >= 25 ? 2
-          : auctionValue >= 10 ? 3
-            : auctionValue >= 5 ? 4
-              : 5;
+    const tier = getTier(auctionValue);
 
     Object.assign(player, {
       priceCurveRank: rank,
@@ -538,8 +681,23 @@ export function buildDraftIntelligence({
       keeperInflation,
       auctionValue,
       tier,
-      valuationStatus: auctionValue === null ? 'unpriced-missing-auction-inputs' : 'priced',
+      recommendedMaxBid: null,
+      classification: getClassification({
+        auctionValue,
+        tier,
+        regressionRisk: player.deployment.RRS,
+        usageDrop: player.deployment.usageDrop,
+        ageDecline: player.deployment.ageDecline,
+      }),
+      valuationStatus: auctionValue === null ? 'unpriced' : 'priced',
     });
+  });
+
+  players.forEach((player) => {
+    if (!sources.AHLSheets) player.missingSources.AHLSheets = true;
+    if (!sources.DobberExcel) player.missingSources.DobberExcel = true;
+    if (player.scarcityMultiplier === null) player.missingSources['Position scarcity rules'] = true;
+    if (player.recommendedMaxBid === null) player.missingSources['Team budget and open slots'] = true;
   });
 
   const unpricedIds = players.filter((player) => player.auctionValue === null).map((player) => player.id);
@@ -554,7 +712,9 @@ export function buildDraftIntelligence({
     keeperInflation: player.keeperInflation,
     priceCurveFactor: player.priceCurveFactor,
     auctionValue: player.auctionValue,
+    recommendedMaxBid: player.recommendedMaxBid,
     tier: player.tier,
+    classification: player.classification,
     status: player.valuationStatus,
   }));
   const tierGroups = Object.fromEntries([1, 2, 3, 4, 5].map((tier) => [
@@ -568,11 +728,14 @@ export function buildDraftIntelligence({
       generatedAt,
       status: 'partial',
       league: LEAGUE_SETTINGS,
+      sourceAvailability: sources,
       normalization: {
-        productionRateInputs: 'Actual per-game 2025-26 NHL rates are used as normalized production proxies, divided by each maximum among matched league players and clamped to 0-1; these are not forecasts.',
-        toiInputs: 'Per-game 2025-26 seconds, divided by the maximum among matched league players and clamped to 0-1.',
+        productionInputs: 'Projection scores require source-backed projection inputs; historical NHL results are not used as projections.',
+        toiInputs: 'Historical NHL ice time is retained as season data and is not used as a projection input.',
         scoreScale: '0-100',
         unavailableInputsRemainNull: true,
+        classificationThresholds: CLASSIFICATION_THRESHOLDS,
+        priceBands: PRICE_BANDS,
       },
       sourceCoverage,
       players,
@@ -582,7 +745,9 @@ export function buildDraftIntelligence({
       generatedAt,
       status: 'partial',
       league: LEAGUE_SETTINGS,
+      sourceAvailability: sources,
       formulas: {
+        draftIQ: '0.45*PPS + 0.20*RSS + 0.15*BPS - 0.10*RRS + 0.10*KVS',
         categoryMultipliers: {
           veteran: '1 + ((RSS / 100) * 0.03) - ((RRS / 100) * 0.02)',
           rookie: '1 + ((BPS / 100) * 0.05) - ((RRS / 100) * 0.03)',
@@ -597,6 +762,9 @@ export function buildDraftIntelligence({
           { rankPercentileMax: 1, factor: 0.3 },
         ],
         dollarClamp: { min: 1, max: 60 },
+        recommendedMaxBid: 'min(AuctionValue * tier aggression, TeamMaxPossibleBid), rounded to $0.50; TeamMaxPossibleBid = remaining budget - ((open slots - 1) * $0.50)',
+        classificationThresholds: CLASSIFICATION_THRESHOLDS,
+        priceBandMidpoints: Object.fromEntries(Object.entries(PRICE_BANDS).map(([tier, band]) => [tier, band.midpoint])),
       },
       pricedPlayerCount: players.length - unpricedIds.length,
       rankedPlayerCount: rankedPlayers.length,
@@ -611,6 +779,7 @@ export function buildDraftIntelligence({
       schemaVersion: DATA_VERSION,
       generatedAt,
       status: 'partial',
+      sourceAvailability: sources,
       tiers: tierGroups,
       unpricedPlayerIds: unpricedIds,
       thresholds: { 1: 40, 2: 25, 3: 10, 4: 5, 5: 1 },
@@ -619,6 +788,7 @@ export function buildDraftIntelligence({
       schemaVersion: DATA_VERSION,
       generatedAt,
       status: 'partial',
+      sourceAvailability: sources,
       keepers: [...keeperMap.values()].sort((a, b) => a.owner.localeCompare(b.owner) || a.name.localeCompare(b.name)),
       sourceCoverage,
     },
@@ -626,6 +796,7 @@ export function buildDraftIntelligence({
       schemaVersion: DATA_VERSION,
       generatedAt,
       status: 'partial',
+      sourceAvailability: sources,
       prospects: prospectOutput,
       matchingRightsCount: prospectOutput.filter((player) => player.matchingRightsEligible).length,
       sourceCoverage,

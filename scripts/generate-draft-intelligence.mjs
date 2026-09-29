@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { refreshGoogleSheetState } from '../app.js';
+import { buildDraftValidationReport, refreshGoogleSheetState } from '../app.js';
 import { buildDraftIntelligence } from '../draftIntelligence.js';
+import { buildAhlDraftIntelligenceOutputs } from '../ahlSheetIngestion.js';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = path.resolve(scriptDirectory, '..');
@@ -24,13 +25,16 @@ const state = await refreshGoogleSheetState({
   manualOverrides: [],
   workingAssignments: {},
 });
-const outputs = buildDraftIntelligence({
+const baseOutputs = buildDraftIntelligence({
   rosterData: state.datasets.roster,
   prospectsData: state.datasets.prospects,
   nhlStatsCsv,
   supplementalData,
+  sourceAvailability: supplementalData.sourceAvailability || {},
   leagueImportedAt: state.metadata.roster?.importedAt || null,
 });
+const validationReport = buildDraftValidationReport(state);
+const outputs = buildAhlDraftIntelligenceOutputs(baseOutputs, state, validationReport.availablePlayers);
 const outputDirectory = path.join(repositoryDirectory, 'data');
 await fs.mkdir(outputDirectory, { recursive: true });
 

@@ -1,6 +1,19 @@
 import { parseProspects } from './prospectParser.js';
 import { parseVeterans } from './veteranParser.js';
 import { parseRoster } from './rosterParser.js';
+import { renderDraftAuctionDashboard } from './draftAuctionUI.js';
+import {
+  AHL_SHEET_SOURCES,
+  buildAhlDraftIntelligenceOutputs,
+  parseAhlScoreSheet,
+} from './ahlSheetIngestion.js';
+import {
+  addPersonalDraftListEntry,
+  normalizePersonalDraftList,
+  removePersonalDraftListEntry,
+  setPersonalDraftListRank,
+  updatePersonalDraftListEntry,
+} from './personalDraftList.js';
 import {
   loadLiveCache,
   persistLiveCache,
@@ -14,16 +27,7 @@ const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
 const PORTABLE_STATE_VERSION = 1;
 const MAX_PREVIEW_ROWS = 10;
-const GOOGLE_SHEET_ID = '1_RbnvnxnMzzwty7jdq8I9SN3mWfp187xKVnyPackzeA';
-const GOOGLE_SHEET_SOURCES = Object.freeze([
-  { name: 'google-position-inventory.csv', gid: '663280764', datasetType: 'roster', expectedLayout: 'inventory' },
-  { name: 'google-utility-inventory.csv', gid: '1551984288', datasetType: 'roster', expectedLayout: 'utility' },
-  { name: 'google-retained-players.csv', gid: '1727331506', datasetType: 'roster', expectedLayout: 'retained-grid' },
-  { name: 'google-live-roster.csv', gid: '910545566', datasetType: 'roster', expectedLayout: 'league-layout' },
-  { name: 'google-rookie-rights.csv', gid: '1065921002', datasetType: 'prospects' },
-]);
 const DRAFT_ROSTER_RULES = Object.freeze({
-  budgetCap: 250,
   minSlotCost: 0.5,
   targetSkaters: 23,
   targetGoalieTeams: 2,
@@ -72,7 +76,7 @@ const state = {
   playerSearch: '',
   availablePlayerSearch: '',
   showAllAvailablePlayers: false,
-  activeDashboardTab: 'draft-night',
+  activeDashboardTab: 'draft-board',
   manualOverrides: [],
   selectedPlayerKey: null,
   liveCache: loadLiveCache(),
@@ -80,6 +84,22 @@ const state = {
   liveRequests: {},
   liveRefreshMessage: '',
   draftIntelligence: null,
+  shortlist: new Set(),
+  shortlistStorageError: '',
+  draftBoardSearch: '',
+  draftPositionFilter: '',
+  draftCategoryFilter: '',
+  draftAvailabilityFilter: 'all',
+  bestAvailableSort: 'AuctionValue',
+  selectedDraftPlayerId: null,
+  selectedDraftTeam: '',
+  draftIntelligenceStorageError: '',
+  personalDraftListStorageError: '',
+  personalDraftList: [],
+  personalDraftListSort: 'rank',
+  personalDraftPositionFilter: '',
+  personalDraftCategoryFilter: '',
+  personalDraftAvailabilityFilter: 'all',
 };
 
 export async function loadDraftIntelligenceFiles(fetchImpl = globalThis.fetch) {
@@ -138,6 +158,7 @@ const DATASET_NAMES = Object.freeze([
   'positions',
   'utility',
   'draft',
+  'ahlScores',
 ]);
 
 function createEmptyDatasets() {
@@ -145,7 +166,10 @@ function createEmptyDatasets() {
 }
 
 function createEmptyMetadata() {
-  return Object.fromEntries(DATASET_NAMES.map((name) => [name, { status: 'empty' }]));
+  return {
+    ...Object.fromEntries(DATASET_NAMES.map((name) => [name, { status: 'empty' }])),
+    ahlSheets: { status: 'empty' },
+  };
 }
 
 function getRosterPlayerIdentityAliases(name) {
@@ -577,8 +601,73 @@ function normalizeState(stateObj) {
   return next;
 }
 
+function applyAhlSheetIntelligence(stateObj) {
+  if (!state.draftIntelligence || stateObj?.metadata?.ahlSheets?.status !== 'ok') return;
+  const report = buildDraftValidationReport(stateObj);
+  state.draftIntelligence = buildAhlDraftIntelligenceOutputs(
+    state.draftIntelligence,
+    stateObj,
+    report.availablePlayers,
+  );
+  state.draftIntelligenceStorageError = '';
+}
+
+function downloadDraftIntelligenceBundle() {
+  if (!state.draftIntelligence) {
+    state.draftIntelligenceStorageError = 'Draft Intelligence JSON is not loaded yet.';
+    return;
+  }
+  const bundle = Object.fromEntries(
+    Object.entries(state.draftIntelligence).map(([name, data]) => [`${name}.json`, data]),
+  );
+  const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `ahl-draft-intelligence-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function refreshAhlSheetsOnPageLoad() {
+  const refreshButton = document.getElementById('liveRefreshBtn');
+  const status = document.getElementById('liveRefreshStatus');
+  if (refreshButton) {
+    refreshButton.disabled = true;
+    refreshButton.textContent = 'Refreshing...';
+  }
+  if (status) status.textContent = 'Loading AHL Sheets';
+  try {
+    const nextState = await refreshGoogleSheetState(state.importedData || loadState());
+    persistState(nextState);
+    state.importedData = nextState;
+    state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
+    state.liveRefreshMessage = 'AHL Sheets loaded';
+    applyAhlSheetIntelligence(nextState);
+    renderOwnerView(nextState);
+    if (status) status.textContent = state.liveRefreshMessage;
+  } catch (error) {
+    console.error('AHL Sheets startup refresh failed', error);
+    state.liveRefreshMessage = 'AHL Sheets refresh failed';
+    state.draftIntelligenceStorageError = error instanceof Error
+      ? `AHL Sheets unavailable: ${error.message}`
+      : 'AHL Sheets unavailable. Refresh and check sheet access.';
+    if (status) status.textContent = state.draftIntelligenceStorageError;
+    if (state.draftIntelligence && hasLoadedData(state.importedData || DEFAULT_STATE)) {
+      renderOwnerView(state.importedData || DEFAULT_STATE);
+    }
+  } finally {
+    if (refreshButton) {
+      refreshButton.disabled = false;
+      refreshButton.textContent = 'Refresh AHL Sheets';
+    }
+  }
+}
+
 function getSnapshotAgeInfo(stateObj) {
-  const datasets = DATASET_NAMES;
+  const datasets = [...DATASET_NAMES, 'ahlSheets'];
   const importedTimes = datasets
     .map((dataset) => stateObj?.metadata?.[dataset]?.importedAt)
     .filter(Boolean)
@@ -638,6 +727,10 @@ function getDataQualitySources(stateObj) {
 
   if (liveSources.length) {
     return [
+      ...(metadata.ahlSheets?.status === 'ok' ? [{
+        label: 'AHL Scores',
+        ...metadata.ahlSheets,
+      }] : []),
       ...(metadata.prospects?.status === 'ok' ? [{
         label: 'Prospects',
         ...metadata.prospects,
@@ -763,34 +856,57 @@ function parsePortableStateBundle(bundle) {
 
 async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
   if (typeof fetchImpl !== 'function') {
-    throw new Error('Google Sheet refresh is unavailable because this browser does not support fetch.');
+    throw new Error('AHL Sheets refresh is unavailable because this browser does not support fetch.');
   }
 
-  const snapshots = await Promise.all(GOOGLE_SHEET_SOURCES.map(async (source) => {
-    const url = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv&gid=${source.gid}&cacheBust=${Date.now()}`;
+  const snapshots = await Promise.all(AHL_SHEET_SOURCES.map(async (source) => {
+    const url = `https://docs.google.com/spreadsheets/d/${source.spreadsheetId}/export?format=csv&gid=${source.gid}&cacheBust=${Date.now()}`;
     const response = await fetchImpl(url, { cache: 'no-store' });
     if (!response?.ok) {
-      throw new Error(`Google Sheet refresh failed for ${source.name} (HTTP ${response?.status || 'unknown'}).`);
+      throw new Error(`AHL Sheet refresh failed for ${source.name} (HTTP ${response?.status || 'unknown'}).`);
     }
 
     const csvText = await response.text();
-    const parsedData = source.datasetType === 'prospects' ? parseProspects(csvText) : parseRoster(csvText);
+    const parsedData = source.datasetType === 'scores'
+      ? parseAhlScoreSheet(csvText, source.name)
+      : source.datasetType === 'prospects'
+        ? parseProspects(csvText)
+        : parseRoster(csvText);
     if (source.datasetType === 'prospects') {
       parsedData.isRightsList = true;
     }
-    const recordCount = source.datasetType === 'prospects'
+    const recordCount = source.datasetType === 'scores'
+      ? parsedData.rows.length
+      : source.datasetType === 'prospects'
       ? Object.keys(parsedData.prospects || {}).length
       : Object.keys(parsedData.players || {}).length;
     if ((source.expectedLayout && parsedData.layout !== source.expectedLayout) || !recordCount) {
-      throw new Error(`Google Sheet refresh returned an unexpected ${source.name} layout.`);
+      throw new Error(`AHL Sheet refresh returned an unexpected ${source.name} layout.`);
     }
     return { source, parsedData };
   }));
 
   let next = normalizeState(stateObj);
+  const scoreTabs = {};
+  const loadedTabs = {};
   snapshots.forEach(({ source, parsedData }) => {
+    if (source.datasetType === 'scores') {
+      scoreTabs[source.name] = parsedData;
+      loadedTabs[source.name] = parsedData.rows.length;
+      return;
+    }
     next = mergeDataset(next, source.datasetType, parsedData, source.name);
+    loadedTabs[source.name] = source.datasetType === 'prospects'
+      ? Object.keys(parsedData.prospects || {}).length
+      : Object.keys(parsedData.players || {}).length;
   });
+  next.datasets.ahlScores = { tabs: scoreTabs };
+  next.metadata.ahlSheets = {
+    status: 'ok',
+    importedAt: new Date().toISOString(),
+    sourceName: 'AHL Google Sheets',
+    tabs: loadedTabs,
+  };
   return next;
 }
 
@@ -882,6 +998,7 @@ function rebuildRosterDataset(sources) {
     sources,
     players,
     teams,
+    teamBudgets: sourceList.find((source) => source?.layout === 'retained-grid')?.teamBudgets || [],
     goalieFranchises: [],
     contacts: {},
   };
@@ -907,6 +1024,7 @@ function mergeRosterDataset(currentRoster, parsedData, sourceName) {
 }
 
 function hasGoogleSheetSnapshot(stateObj) {
+  if (stateObj?.metadata?.ahlSheets?.status === 'ok') return true;
   const sourceNames = [
     stateObj?.metadata?.roster?.sourceName,
     stateObj?.metadata?.prospects?.sourceName,
@@ -1106,7 +1224,7 @@ function getPlayerRetainedCost(player) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-function buildOwnerDraftPlan(ownerEntry) {
+function buildOwnerDraftPlan(ownerEntry, sheetBudget = null) {
   const rawPlayers = [...(ownerEntry?.prospects || []), ...(ownerEntry?.veterans || []), ...(ownerEntry?.rosterPlayers || [])];
   const dedupedPlayers = [];
   const seen = new Set();
@@ -1132,18 +1250,30 @@ function buildOwnerDraftPlan(ownerEntry) {
     return acc;
   }, { skaters: 0, goalieTeams: 0, unclassified: 0 });
 
-  const retainedSpend = players.reduce((sum, player) => sum + getPlayerRetainedCost(player), 0);
-  const remainingBudget = Number((DRAFT_ROSTER_RULES.budgetCap - retainedSpend).toFixed(2));
+  const retainedSpend = Number.isFinite(sheetBudget?.totalSpent)
+    ? sheetBudget.totalSpent
+    : players.reduce((sum, player) => sum + getPlayerRetainedCost(player), 0);
   const skatersNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetSkaters - slotCounts.skaters);
   const goalieTeamsNeeded = Math.max(0, DRAFT_ROSTER_RULES.targetGoalieTeams - slotCounts.goalieTeams);
-  const slotsNeeded = skatersNeeded + goalieTeamsNeeded;
+  const slotsNeeded = Number.isInteger(sheetBudget?.openSlots)
+    ? sheetBudget.openSlots
+    : skatersNeeded + goalieTeamsNeeded;
+  const remainingBudget = Number.isFinite(sheetBudget?.remainingBudget) ? sheetBudget.remainingBudget : null;
   const minimumRequired = Number((slotsNeeded * DRAFT_ROSTER_RULES.minSlotCost).toFixed(2));
-  const budgetShortfall = Number(Math.max(0, minimumRequired - remainingBudget).toFixed(2));
+  const budgetShortfall = remainingBudget === null
+    ? null
+    : Number(Math.max(0, minimumRequired - remainingBudget).toFixed(2));
 
   return {
     owner: ownerEntry?.name || 'Unknown',
     retainedSpend: Number(retainedSpend.toFixed(2)),
     remainingBudget,
+    playersDrafted: sheetBudget?.playersDrafted ?? slotCounts.skaters + slotCounts.goalieTeams,
+    openSlots: slotsNeeded,
+    keeperCosts: sheetBudget?.keeperCosts ?? null,
+    rookieFarmCosts: sheetBudget?.rookieFarmCosts ?? null,
+    penalties: sheetBudget?.penalties ?? null,
+    adjustments: sheetBudget?.adjustments ?? null,
     skaters: slotCounts.skaters,
     goalieTeams: slotCounts.goalieTeams,
     unclassified: slotCounts.unclassified,
@@ -1279,7 +1409,8 @@ function createWorkingAssignmentDraft(data) {
   if (!playerKey || !name || !team) {
     return null;
   }
-  if (!Number.isFinite(bidNumeric) || bidNumeric < DRAFT_ROSTER_RULES.minSlotCost) {
+  const halfDollarIncrement = Number.isFinite(bidNumeric) && Math.abs((bidNumeric * 2) - Math.round(bidNumeric * 2)) < 1e-8;
+  if (!halfDollarIncrement || bidNumeric < DRAFT_ROSTER_RULES.minSlotCost) {
     return null;
   }
 
@@ -1300,7 +1431,7 @@ function upsertWorkingAssignment(stateObj, draft) {
   if (!entry) {
     return {
       state: normalizeState(stateObj),
-      error: `Team and bid are required. Bid must be at least $${DRAFT_ROSTER_RULES.minSlotCost.toFixed(2)}.`,
+      error: `Team, bid, and a $0.50 bid increment are required. Minimum bid is $${DRAFT_ROSTER_RULES.minSlotCost.toFixed(2)}.`,
     };
   }
 
@@ -1333,6 +1464,10 @@ function buildDraftValidationReport(stateObj) {
   const veterans = Object.values(nextState.datasets.veterans?.veterans || {});
   const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
   const workingAssignments = nextState.workingAssignments && typeof nextState.workingAssignments === 'object' ? nextState.workingAssignments : {};
+  const assignedAssignmentKeys = new Set(Object.keys(workingAssignments).map((key) => String(key || '').trim()).filter(Boolean));
+  const assignedByPlayerKey = new Set(Object.values(workingAssignments)
+    .map((entry) => normalizeLookupKey(entry?.name))
+    .filter(Boolean));
   const zeroYearsProspectKeys = new Set(
     prospects
       .filter(hasZeroYearsAvailable)
@@ -1340,7 +1475,27 @@ function buildDraftValidationReport(stateObj) {
       .filter(Boolean),
   );
   const snapshot = getSnapshotAgeInfo(nextState);
-  const ownerDraftPlans = ownerData.owners.map((owner) => buildOwnerDraftPlan(owner));
+  const sheetBudgets = nextState.datasets.roster?.teamBudgets || [];
+  const ownerDraftPlans = ownerData.owners.map((owner) => {
+    const sheetBudget = sheetBudgets.find(
+      (entry) => normalizeLookupKey(entry.team) === normalizeLookupKey(owner.name),
+    );
+    if (!sheetBudget) return buildOwnerDraftPlan(owner);
+    const teamAssignments = Object.values(workingAssignments)
+      .filter((entry) => normalizeLookupKey(entry?.team) === normalizeLookupKey(owner.name));
+    return buildOwnerDraftPlan(owner, {
+      ...sheetBudget,
+      remainingBudget: Number.isFinite(sheetBudget.remainingBudget)
+        ? Number((sheetBudget.remainingBudget - teamAssignments.reduce((sum, entry) => sum + Number(entry.bid || 0), 0)).toFixed(2))
+        : null,
+      playersDrafted: Number.isInteger(sheetBudget.playersDrafted)
+        ? sheetBudget.playersDrafted + teamAssignments.length
+        : null,
+      openSlots: Number.isInteger(sheetBudget.openSlots)
+        ? Math.max(0, sheetBudget.openSlots - teamAssignments.length)
+        : null,
+    });
+  });
   const inventoryByKey = new Map();
   [
     ...Object.values(nextState.datasets.positions?.players || {}),
@@ -1481,18 +1636,35 @@ function buildDraftValidationReport(stateObj) {
       || draftedInventoryKeys.has(key)
       || workingInventoryKeys.has(key)
       || zeroYearsProspectKeys.has(key)
-    ) {
-      return;
-    }
-
-    availablePlayers.push({
-      key,
-      name: getRecordName(record) || key,
+   ) {
+     return;
+   }
+   availablePlayers.push({
+     key,
+     name: getRecordName(record) || key,
       position: getDraftSlotPosition(record) || getRecordPosition(record) || '—',
       type: getRecordType(record) || 'Unknown',
       owner: '—',
       status: 'Available',
       manualOverride: false,
+    });
+  });
+
+  manualOverrides.forEach((override) => {
+    const key = normalizeLookupKey(override.name);
+    if (!key) return;
+    if (zeroYearsProspectKeys.has(key)) return;
+    if (assignedAssignmentKeys.has(override.id || `manual-${key}`) || assignedByPlayerKey.has(key)) return;
+    availablePlayers.push({
+      key: override.id || `manual-${key}`,
+      name: override.name,
+      position: override.position || '—',
+      type: normalizeClassification(override.classification) || 'Manual',
+      owner: '—',
+      status: 'MANUAL OVERRIDE',
+      manualOverride: true,
+      notes: override.notes || '',
+      createdAt: override.createdAt || null,
     });
   });
 
@@ -1563,6 +1735,15 @@ function buildDraftValidationReport(stateObj) {
         ? `${availableIntegrityIssues.length} available-player conflict${availableIntegrityIssues.length === 1 ? '' : 's'}`
         : 'Available pool is internally consistent',
       count: availableIntegrityIssues.length,
+    },
+    {
+      key: 'ahl-draft-budgets',
+      label: 'AHL Draft Budgets',
+      status: ownerDraftPlans.some((plan) => plan.remainingBudget === null) ? 'warning' : 'valid',
+      message: ownerDraftPlans.some((plan) => plan.remainingBudget === null)
+        ? `${ownerDraftPlans.filter((plan) => plan.remainingBudget === null).length} team${ownerDraftPlans.filter((plan) => plan.remainingBudget === null).length === 1 ? '' : 's'} missing a usable AHL Draft balance`
+        : 'Team balances match the AHL Draft sheet, less local working assignments',
+      count: ownerDraftPlans.filter((plan) => plan.remainingBudget === null).length,
     },
     {
       key: 'draft-roster-rules',
@@ -1896,7 +2077,9 @@ function renderValidationStatusText(status) {
 function renderDraftValidationCenter(report) {
   const ownerPlanRows = (report.ownerDraftPlans || []).map((plan) => {
     let status = 'Ready';
-    if (plan.budgetShortfall > 0 || plan.remainingBudget < 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams) {
+    if (plan.remainingBudget === null) {
+      status = 'Budget unavailable';
+    } else if (plan.budgetShortfall > 0 || plan.remainingBudget < 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams) {
       status = 'Shortfall';
     } else if (plan.unclassified > 0) {
       status = 'Needs Position Cleanup';
@@ -2762,12 +2945,12 @@ function renderOwnerDetails(ownerData, report) {
 function renderOwnerView(unifiedState) {
   const ownerData = buildOwnerViewData(unifiedState);
 
-  if (!ownerData.owners.length) {
+  if (!ownerData.owners.length && !state.draftIntelligence) {
     renderImportScreen();
     return;
   }
 
-  if (!state.selectedOwner || !ownerData.owners.some((owner) => owner.name === state.selectedOwner)) {
+  if (ownerData.owners.length && (!state.selectedOwner || !ownerData.owners.some((owner) => owner.name === state.selectedOwner))) {
     state.selectedOwner = ownerData.owners[0].name;
   }
 
@@ -2783,6 +2966,11 @@ function renderOwnerView(unifiedState) {
   `;
 
   const draftValidationReport = buildDraftValidationReport(unifiedState);
+  if (state.draftIntelligence) {
+    renderAuctionDashboard(unifiedState, ownerData, draftValidationReport);
+    return;
+  }
+
   const ownerListMarkup = renderOwnerList(ownerData, draftValidationReport);
   const ownerDetailMarkup = renderOwnerDetails(ownerData, draftValidationReport);
   const rosterIndex = buildRosterIndex(unifiedState);
@@ -2969,6 +3157,297 @@ function renderOwnerView(unifiedState) {
   }
 }
 
+function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) {
+  const app = document.getElementById('app');
+  const activeSearch = document.activeElement;
+  const focusState = ['draftBoardSearch'].includes(activeSearch?.id)
+    ? { id: activeSearch.id, selectionStart: activeSearch.selectionStart, selectionEnd: activeSearch.selectionEnd }
+    : null;
+  const assignments = Object.values(draftValidationReport.workingAssignments || {});
+  const teamBudgets = (unifiedState.datasets.roster?.teamBudgets || []).map((budget) => {
+    const ownerName = ownerData.owners.find((owner) => normalizeLookupKey(owner.name) === normalizeLookupKey(budget.team))?.name
+      || budget.team;
+    const teamAssignments = assignments.filter((entry) => normalizeLookupKey(entry?.team) === normalizeLookupKey(ownerName));
+    const remainingBudget = Number.isFinite(budget.remainingBudget)
+      ? Number((budget.remainingBudget - teamAssignments.reduce((sum, entry) => sum + Number(entry.bid || 0), 0)).toFixed(2))
+      : null;
+    const playersDrafted = (budget.playersDrafted || 0) + teamAssignments.length;
+    const openSlots = Math.max(0, DRAFT_ROSTER_RULES.targetSkaters + DRAFT_ROSTER_RULES.targetGoalieTeams - playersDrafted);
+    const maxPossibleBid = remainingBudget !== null && openSlots > 0
+      ? Number((remainingBudget - ((openSlots - 1) * DRAFT_ROSTER_RULES.minSlotCost)).toFixed(2))
+      : null;
+    return {
+      team: ownerName,
+      remainingBudget,
+      playersDrafted,
+      openSlots,
+      averageSpendRemaining: remainingBudget !== null && openSlots > 0 ? remainingBudget / openSlots : null,
+      maxPossibleBid: maxPossibleBid !== null && maxPossibleBid >= DRAFT_ROSTER_RULES.minSlotCost
+        ? maxPossibleBid
+        : null,
+      keeperCosts: budget.keeperCosts,
+      rookieFarmCosts: budget.rookieFarmCosts,
+      penalties: budget.penalties,
+      adjustments: budget.adjustments,
+    };
+  });
+  const availableKeys = new Set((draftValidationReport.availablePlayers || []).map((player) => normalizeLookupKey(player.name)));
+  const players = state.draftIntelligence.players?.players || [];
+  const selectedPlayer = players.find((player) => player.id === state.selectedDraftPlayerId) || null;
+  const selectedAvailablePlayer = selectedPlayer && draftValidationReport.availablePlayers.find(
+    (entry) => normalizeLookupKey(entry.name) === normalizeLookupKey(selectedPlayer.name),
+  );
+  const selectedDraftPlayer = selectedPlayer
+    ? {
+      ...selectedPlayer,
+      category: selectedPlayer.category || selectedAvailablePlayer?.type || null,
+      assignmentKey: selectedAvailablePlayer?.key || normalizeLookupKey(selectedPlayer.name),
+    }
+    : null;
+  const summary = computeDashboardSummary(unifiedState);
+  const summaryHtml = `
+    <section class="panel summary-grid">
+      <div class="summary-card"><div class="summary-value">${summary.totalOwners}</div><div class="summary-label">Total Owners</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalProspects}</div><div class="summary-label">Total Prospects</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalVeterans}</div><div class="summary-label">Total Veterans</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalFarmPlayers}</div><div class="summary-label">Total Farm Players</div></div>
+      <div class="summary-card"><div class="summary-value">${summary.totalMatchingRights}</div><div class="summary-label">Total Matching Rights</div></div>
+    </section>`;
+  const ownerListMarkup = ownerData.owners.length ? renderOwnerList(ownerData, draftValidationReport) : '';
+  const ownerDetailMarkup = ownerData.owners.length ? renderOwnerDetails(ownerData, draftValidationReport) : '';
+  const jsonOutputs = [
+    ['players.json', Array.isArray(state.draftIntelligence.players?.players)],
+    ['auction.json', Array.isArray(state.draftIntelligence.auction?.players)],
+    ['tiers.json', Boolean(state.draftIntelligence.tiers?.tiers)],
+    ['keepers.json', Array.isArray(state.draftIntelligence.keepers?.keepers)],
+    ['prospects.json', Array.isArray(state.draftIntelligence.prospects?.prospects)],
+  ];
+  const jsonHealthHtml = `
+    <section class="panel">
+      <h3>JSON Health</h3>
+      <div class="status-grid">${jsonOutputs.map(([filename, valid]) => `
+        <div class="status-row"><strong>${escapeHtml(filename)}</strong><span>${valid ? 'Loaded' : 'Invalid or missing'}</span></div>
+      `).join('')}</div>
+    </section>`;
+  const toolsHtml = `${summaryHtml}
+    ${jsonHealthHtml}
+    ${renderDataQualityPanel(unifiedState)}
+    ${renderDraftValidationCenter(draftValidationReport)}
+    ${renderManualOverridePanel(draftValidationReport, unifiedState)}
+    ${ownerData.owners.length ? `<div class="owner-layout">${ownerListMarkup}<div>${renderLeagueIntelligence(computeOwnerAggregates(unifiedState))}${ownerDetailMarkup}</div></div>` : ''}`;
+  const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
+
+  app.innerHTML = renderDraftAuctionDashboard({
+    activeTab: state.activeDashboardTab,
+    players,
+    availableKeys,
+    shortlist: state.shortlist,
+    personalDraftList: state.personalDraftList,
+    personalDraftListSort: state.personalDraftListSort,
+    personalDraftPositionFilter: state.personalDraftPositionFilter,
+    personalDraftCategoryFilter: state.personalDraftCategoryFilter,
+    personalDraftAvailabilityFilter: state.personalDraftAvailabilityFilter,
+    search: state.draftBoardSearch,
+    positionFilter: state.draftPositionFilter,
+    categoryFilter: state.draftCategoryFilter,
+    availabilityFilter: state.draftAvailabilityFilter,
+    bestAvailableSort: state.bestAvailableSort,
+    teamBudgets,
+    teamNames: ownerData.owners.map((owner) => owner.name),
+    selectedPlayer: selectedDraftPlayer,
+    selectedTeam: state.selectedDraftTeam,
+    sourceAvailability: state.draftIntelligence.players?.sourceAvailability || {},
+    toolsHtml: `${state.shortlistStorageError ? `<p class="warning-banner">${escapeHtml(state.shortlistStorageError)}</p>` : ''}${state.personalDraftListStorageError ? `<p class="warning-banner">${escapeHtml(state.personalDraftListStorageError)}</p>` : ''}${state.draftIntelligenceStorageError ? `<p class="warning-banner">${escapeHtml(state.draftIntelligenceStorageError)}</p>` : ''}${toolsHtml}`,
+    workspaceHtml,
+  });
+  updateTopbarActions(unifiedState);
+
+  document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.activeDashboardTab = button.dataset.dashboardTab || 'draft-board';
+      renderOwnerView(unifiedState);
+    });
+  });
+  const rerender = () => renderOwnerView(unifiedState);
+  document.getElementById('draftBoardSearch')?.addEventListener('input', (event) => {
+    state.draftBoardSearch = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('draftPositionFilter')?.addEventListener('change', (event) => {
+    state.draftPositionFilter = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('draftCategoryFilter')?.addEventListener('change', (event) => {
+    state.draftCategoryFilter = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('draftAvailabilityFilter')?.addEventListener('change', (event) => {
+    state.draftAvailabilityFilter = event.target.value || 'all';
+    rerender();
+  });
+  document.getElementById('bestAvailableSort')?.addEventListener('change', (event) => {
+    state.bestAvailableSort = event.target.value || 'AuctionValue';
+    rerender();
+  });
+  document.getElementById('personalDraftSort')?.addEventListener('change', (event) => {
+    state.personalDraftListSort = event.target.value || 'rank';
+    rerender();
+  });
+  document.getElementById('personalDraftPositionFilter')?.addEventListener('change', (event) => {
+    state.personalDraftPositionFilter = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('personalDraftCategoryFilter')?.addEventListener('change', (event) => {
+    state.personalDraftCategoryFilter = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('personalDraftAvailabilityFilter')?.addEventListener('change', (event) => {
+    state.personalDraftAvailabilityFilter = event.target.value || 'all';
+    rerender();
+  });
+  document.querySelectorAll('[data-player-details]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedDraftPlayerId = button.dataset.playerDetails || null;
+      state.selectedDraftTeam = '';
+      rerender();
+    });
+  });
+  document.querySelector('[data-winning-bid-form] select[name="team"]')?.addEventListener('change', (event) => {
+    state.selectedDraftTeam = event.target.value || '';
+    rerender();
+  });
+  document.querySelectorAll('[data-close-player-details]').forEach((element) => {
+    element.addEventListener('click', (event) => {
+      if (event.target === element || element.classList.contains('modal-close')) {
+        state.selectedDraftPlayerId = null;
+        rerender();
+      }
+    });
+  });
+  document.querySelectorAll('.shortlist-toggle').forEach((button) => {
+    button.addEventListener('click', () => {
+      const playerId = button.dataset.shortlistPlayer;
+      if (!playerId) return;
+      if (state.shortlist.has(playerId)) state.shortlist.delete(playerId);
+      else state.shortlist.add(playerId);
+      try {
+        localStorage.setItem('hockey-dashboard-draft-shortlist', JSON.stringify([...state.shortlist]));
+        state.shortlistStorageError = '';
+      } catch (error) {
+        console.error('Unable to save draft shortlist', error);
+        state.shortlistStorageError = 'Shortlist could not be saved in this browser.';
+      }
+      rerender();
+    });
+  });
+  const persistPersonalDraftList = () => {
+    try {
+      localStorage.setItem('hockey-dashboard-personal-draft-list', JSON.stringify(state.personalDraftList));
+      state.personalDraftListStorageError = '';
+    } catch (error) {
+      console.error('Unable to save Personal Draft List', error);
+      state.personalDraftListStorageError = 'Personal Draft List could not be saved in this browser.';
+    }
+    rerender();
+  };
+  document.querySelectorAll('[data-personal-add]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.personalDraftList = addPersonalDraftListEntry(state.personalDraftList, button.dataset.personalAdd);
+      persistPersonalDraftList();
+    });
+  });
+  document.querySelectorAll('[data-personal-remove]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.personalDraftList = removePersonalDraftListEntry(state.personalDraftList, button.dataset.personalRemove);
+      persistPersonalDraftList();
+    });
+  });
+  document.querySelectorAll('[data-personal-rank]').forEach((input) => {
+    input.addEventListener('change', () => {
+      state.personalDraftList = setPersonalDraftListRank(
+        state.personalDraftList,
+        input.dataset.personalRank,
+        Number(input.value),
+      );
+      persistPersonalDraftList();
+    });
+  });
+  document.querySelectorAll('[data-personal-notes]').forEach((input) => {
+    input.addEventListener('change', () => {
+      state.personalDraftList = updatePersonalDraftListEntry(
+        state.personalDraftList,
+        input.dataset.personalNotes,
+        { notes: input.value },
+      );
+      persistPersonalDraftList();
+    });
+  });
+  document.querySelector('[data-personal-export]')?.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      players: state.personalDraftList,
+    }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `personal-draft-list-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  });
+  document.querySelector('[data-export-draft-json]')?.addEventListener('click', downloadDraftIntelligenceBundle);
+  document.querySelector('[data-winning-bid-form]')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+    const player = players.find((entry) => entry.id === form.dataset.winningBidForm);
+    const formData = new FormData(form);
+    if (!player) {
+      alert('Unable to save winning bid. Player record is unavailable.');
+      return;
+    }
+    const team = String(formData.get('team') || '').trim();
+    const result = upsertWorkingAssignment(unifiedState, {
+      playerKey: form.dataset.assignmentKey || player.id,
+      name: player.name,
+      position: player.position || '—',
+      team,
+      bid: formData.get('bid'),
+      classification: formData.get('classification'),
+      fallbackClassification: '',
+      status: 'Winning Bid',
+    });
+    if (result.error) {
+      alert(result.error);
+      return;
+    }
+    state.importedData = result.state;
+    state.selectedOwner = team;
+    state.selectedDraftPlayerId = null;
+    state.activeDashboardTab = 'team-budgets';
+    renderOwnerView(result.state);
+  });
+  document.querySelectorAll('.clear-assignment-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextState = removeWorkingAssignment(unifiedState, button.dataset.clearPlayerKey);
+      state.importedData = nextState;
+      renderOwnerView(nextState);
+    });
+  });
+
+  if (focusState) {
+    const replacement = document.getElementById(focusState.id);
+    replacement?.focus();
+    if (replacement && focusState.selectionStart !== null && focusState.selectionEnd !== null) {
+      replacement.setSelectionRange(focusState.selectionStart, focusState.selectionEnd);
+    }
+  }
+}
+
 async function queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterRecord) {
   if (!selectedPlayer || !selectedPlayer.playerKey || state.liveRequests[selectedPlayer.playerKey]) {
     return;
@@ -3106,6 +3585,33 @@ function handleImport(csvText, fileName) {
   });
 }
 
+function loadDraftShortlist() {
+  try {
+    const raw = localStorage.getItem('hockey-dashboard-draft-shortlist');
+    if (raw === null) return new Set();
+    const entries = JSON.parse(raw);
+    if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== 'string')) {
+      throw new Error('Saved shortlist data has an invalid format.');
+    }
+    return new Set(entries);
+  } catch (error) {
+    console.error('Unable to load draft shortlist', error);
+    state.shortlistStorageError = 'Saved shortlist could not be loaded; shortlist changes may not persist.';
+    return new Set();
+  }
+}
+
+function loadPersonalDraftList() {
+  try {
+    const raw = localStorage.getItem('hockey-dashboard-personal-draft-list');
+    return raw === null ? [] : normalizePersonalDraftList(JSON.parse(raw));
+  } catch (error) {
+    console.error('Unable to load Personal Draft List', error);
+    state.personalDraftListStorageError = 'Saved Personal Draft List could not be loaded; changes may not persist.';
+    return [];
+  }
+}
+
 function initialize() {
   const backToImportBtn = document.getElementById('backToImportBtn');
   const liveRefreshBtn = document.getElementById('liveRefreshBtn');
@@ -3117,7 +3623,7 @@ function initialize() {
     liveRefreshBtn.addEventListener('click', async () => {
       liveRefreshBtn.disabled = true;
       liveRefreshBtn.textContent = 'Refreshing...';
-      liveRefreshStatus.textContent = 'Downloading current league data';
+      liveRefreshStatus.textContent = 'Downloading current AHL Sheets data';
 
       try {
         const nextState = await refreshGoogleSheetState(state.importedData || loadState());
@@ -3125,16 +3631,17 @@ function initialize() {
         state.importedData = nextState;
         state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
         state.liveRefreshMessage = `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+        applyAhlSheetIntelligence(nextState);
         state.selectedPlayerKey = null;
         renderOwnerView(nextState);
       } catch (error) {
-        console.error('Google Sheet refresh failed', error);
+        console.error('AHL Sheets refresh failed', error);
         state.liveRefreshMessage = 'Refresh failed';
         liveRefreshStatus.textContent = state.liveRefreshMessage;
-        alert(error instanceof Error ? error.message : 'Google Sheet refresh failed.');
+        alert(error instanceof Error ? error.message : 'AHL Sheets refresh failed.');
       } finally {
         liveRefreshBtn.disabled = false;
-        liveRefreshBtn.textContent = 'Refresh Google Sheets';
+        liveRefreshBtn.textContent = 'Refresh AHL Sheets';
       }
     });
   }
@@ -3209,6 +3716,8 @@ function initialize() {
 
   const stored = loadState();
   state.importedData = stored;
+  state.shortlist = loadDraftShortlist();
+  state.personalDraftList = loadPersonalDraftList();
   state.manualOverrides = Array.isArray(stored.manualOverrides) ? stored.manualOverrides : [];
   state.liveProfiles = state.liveCache?.players ? { ...state.liveCache.players } : {};
   state.liveRefreshMessage = hasGoogleSheetSnapshot(stored) ? 'Google Sheets snapshot loaded' : '';
@@ -3226,6 +3735,7 @@ function initialize() {
   void loadDraftIntelligenceFiles()
     .then((draftIntelligence) => {
       state.draftIntelligence = draftIntelligence;
+      applyAhlSheetIntelligence(state.importedData || DEFAULT_STATE);
       if (draftIntelligenceStatus) {
         draftIntelligenceStatus.textContent = draftIntelligence.players.status === 'partial'
           ? 'Draft Intelligence partial'
@@ -3239,6 +3749,8 @@ function initialize() {
       console.error('Draft Intelligence files failed to load', error);
       if (draftIntelligenceStatus) draftIntelligenceStatus.textContent = 'Draft Intelligence unavailable';
     });
+
+  void refreshAhlSheetsOnPageLoad();
 }
 
 if (typeof document !== 'undefined') {
@@ -3260,6 +3772,7 @@ export {
   parseDraftBoard,
   getLiveCacheStatus,
   resolveWorkingAssignmentTeamName,
+  createWorkingAssignmentDraft,
   refreshGoogleSheetState,
   serializePortableStateBundle,
   parsePortableStateBundle,
