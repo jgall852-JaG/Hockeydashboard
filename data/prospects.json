@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generatedAt": "2026-09-28T23:47:38.096Z",
   "status": "partial",
   "prospects": [
@@ -34,7 +34,7 @@
       "name": "Zane Parekh",
       "owner": "TOYE SOLDIERS",
       "termRemaining": 1,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": true,
@@ -60,7 +60,7 @@
       "name": "Porter Martone",
       "owner": "TOYE SOLDIERS",
       "termRemaining": null,
-      "category": "Farm",
+      "category": "Rookie",
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": false,
@@ -203,7 +203,7 @@
       "name": "Isaac Howard",
       "owner": "HOSERS",
       "termRemaining": 2,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": true,
@@ -255,7 +255,7 @@
       "name": "Matt Savoie",
       "owner": "JUST MO",
       "termRemaining": 2,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": true,
@@ -294,7 +294,7 @@
       "name": "Juraj Slavkovsky",
       "owner": "HEBREW HAMMERS",
       "termRemaining": 0,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": true,
       "activeRookieEligible": false,
@@ -372,7 +372,7 @@
       "name": "Bradley Nadeau",
       "owner": "ROTTIES",
       "termRemaining": 2,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": true,
@@ -437,7 +437,7 @@
       "name": "Arseni Gritsyuk",
       "owner": "DRUNKEN FLYBOYS",
       "termRemaining": 2,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": true,
@@ -489,7 +489,7 @@
       "name": "Gabriel Perreault",
       "owner": "YEASTIE BEASTIES",
       "termRemaining": 2,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": true,
@@ -502,7 +502,7 @@
       "name": "Tij Iginla",
       "owner": "YEASTIE BEASTIES",
       "termRemaining": null,
-      "category": "Farm",
+      "category": null,
       "matchingRights": true,
       "matchingRightsEligible": false,
       "activeRookieEligible": false,
@@ -552,12 +552,6 @@
   ],
   "matchingRightsCount": 7,
   "sourceCoverage": {
-    "liveLeagueSheet": {
-      "status": "loaded",
-      "rosterRecords": 1060,
-      "prospectRecords": 42,
-      "importedAt": "2026-09-28T23:47:38.085Z"
-    },
     "nhlSkaterStats": {
       "status": "loaded",
       "season": 2025,
@@ -567,15 +561,19 @@
       "source": "Provided NHL 2025-26 skater-stats CSV"
     },
     "missingSources": [
-      "Sportradar depth charts, injuries, and usage trends",
-      "BigBallsData player/team metrics",
-      "DailyFaceoff lines, power-play units, starters, and injuries",
-      "Dobber Fantasy Guide deployment and sleeper/bust data",
-      "Dobber Prospect Report pedigree and breakout data",
-      "AHL farm development and keeper-score inputs",
-      "NHL goalie/team GA and per-game consistency data",
-      "NHL age data",
+      "Dobber Excel NHL-position inputs",
+      "AHL Scores player-level metric inputs",
       "Position-specific roster slot counts for scarcity"
-    ]
+    ],
+    "ahlSheets": {
+      "status": "loaded",
+      "rosterRecords": 1060,
+      "prospectRecords": 42,
+      "importedAt": "2026-09-28T23:47:38.085Z"
+    }
+  },
+  "sourceAvailability": {
+    "AHLSheets": true,
+    "DobberExcel": false
   }
 }

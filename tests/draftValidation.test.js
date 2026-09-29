@@ -2,12 +2,36 @@ import {
   buildDraftValidationReport,
   buildOwnerDraftPlan,
   buildOwnerViewData,
+  createWorkingAssignmentDraft,
   createManualOverrideDraft,
   detectDatasetType,
   parseDraftBoard,
 } from '../app.js';
 
 describe('draft validation report', () => {
+  test('accepts only valid $0.50 working assignment bid increments', () => {
+    const draft = { playerKey: 'one', name: 'Player One', team: 'TEAM A', bid: '1.50' };
+    expect(createWorkingAssignmentDraft(draft)?.bid).toBe(1.5);
+    expect(createWorkingAssignmentDraft({ ...draft, bid: '1.25' })).toBeNull();
+  });
+
+  test('excludes an assigned player even when the stored key differs from the sheet name key', () => {
+    const report = buildDraftValidationReport({
+      version: 2,
+      datasets: {
+        roster: { players: { candidate: { name: 'Player One', position: 'C', available: true, owner: '' } } },
+        prospects: { prospects: {} },
+        veterans: { veterans: {} },
+      },
+      metadata: {},
+      workingAssignments: {
+        'player-one': { playerKey: 'player-one', name: 'Player One', team: 'TEAM A', bid: 1 },
+      },
+    });
+
+    expect(report.availablePlayers.some((player) => player.name === 'Player One')).toBe(false);
+  });
+
   test('detects ownership conflicts and builds the available-player pool', () => {
     const now = new Date().toISOString();
     const report = buildDraftValidationReport({
@@ -171,7 +195,18 @@ describe('draft validation report', () => {
           },
         },
         veterans: { veterans: {} },
-        roster: { players: {} },
+        roster: {
+          players: {},
+          teamBudgets: [{
+            team: 'YEAH TEAM',
+            totalSpent: 249.75,
+            remainingBudget: 0.25,
+            keeperCosts: 249.75,
+            rookieFarmCosts: 0,
+            playersDrafted: 1,
+            openSlots: 24,
+          }],
+        },
         transactions: null,
       },
       metadata: {
@@ -191,6 +226,25 @@ describe('draft validation report', () => {
     expect(report.ownerDraftPlans[0].slotsNeeded).toBe(24);
     expect(report.ownerDraftPlans[0].minimumRequired).toBe(12);
     expect(report.ownerDraftPlans[0].budgetShortfall).toBe(11.75);
+  });
+
+  test('does not estimate team budgets when AHL Draft balances are missing', () => {
+    const report = buildDraftValidationReport({
+      version: 2,
+      datasets: {
+        prospects: { prospects: { player: { name: 'Owned Player', owner: 'YEAH TEAM', poolPosition: 'C', cost: 25 } } },
+        veterans: { veterans: {} },
+        roster: { players: {} },
+        transactions: null,
+      },
+      metadata: {},
+      manualOverrides: [],
+    });
+
+    const budgetRow = report.validationRows.find((row) => row.key === 'ahl-draft-budgets');
+    expect(report.ownerDraftPlans[0].remainingBudget).toBeNull();
+    expect(report.ownerDraftPlans[0].budgetShortfall).toBeNull();
+    expect(budgetRow.status).toBe('warning');
   });
 
   test('does not treat inventory parser defaults as explicit availability', () => {
