@@ -1464,10 +1464,6 @@ function buildDraftValidationReport(stateObj) {
   const veterans = Object.values(nextState.datasets.veterans?.veterans || {});
   const manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
   const workingAssignments = nextState.workingAssignments && typeof nextState.workingAssignments === 'object' ? nextState.workingAssignments : {};
-  const assignedAssignmentKeys = new Set(Object.keys(workingAssignments).map((key) => String(key || '').trim()).filter(Boolean));
-  const assignedByPlayerKey = new Set(Object.values(workingAssignments)
-    .map((entry) => normalizeLookupKey(entry?.name))
-    .filter(Boolean));
   const zeroYearsProspectKeys = new Set(
     prospects
       .filter(hasZeroYearsAvailable)
@@ -1647,24 +1643,6 @@ function buildDraftValidationReport(stateObj) {
       owner: '—',
       status: 'Available',
       manualOverride: false,
-    });
-  });
-
-  manualOverrides.forEach((override) => {
-    const key = normalizeLookupKey(override.name);
-    if (!key) return;
-    if (zeroYearsProspectKeys.has(key)) return;
-    if (assignedAssignmentKeys.has(override.id || `manual-${key}`) || assignedByPlayerKey.has(key)) return;
-    availablePlayers.push({
-      key: override.id || `manual-${key}`,
-      name: override.name,
-      position: override.position || '—',
-      type: normalizeClassification(override.classification) || 'Manual',
-      owner: '—',
-      status: 'MANUAL OVERRIDE',
-      manualOverride: true,
-      notes: override.notes || '',
-      createdAt: override.createdAt || null,
     });
   });
 
