@@ -32,6 +32,42 @@ describe('roster parser multi-sheet formats', () => {
     expect(detectDatasetType(csv)).toBe('roster');
   });
 
+  test('reads exact team balance and farm deductions from the AHL Draft tab', () => {
+    const parsed = parseRoster([
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Keeper One,LW,$64.00,1,Keeper Two,D,$48.00',
+      ',TOTAL SPENT,,$66.00,,TOTAL SPENT,,$50.00',
+      ',BALANCE,,$184.00,,BALANCE,,$200.00',
+      'F,Farm deductions,,,,,,,$2.00,,,,$2.00',
+    ].join('\n'));
+
+    expect(parsed.teamBudgets).toEqual([
+      {
+        team: 'TEAM A',
+        totalSpent: 66,
+        remainingBudget: 184,
+        keeperCosts: 64,
+        rookieFarmCosts: 2,
+        playersDrafted: 1,
+        openSlots: 24,
+        penalties: null,
+        adjustments: null,
+      },
+      {
+        team: 'TEAM B',
+        totalSpent: 50,
+        remainingBudget: 200,
+        keeperCosts: 48,
+        rookieFarmCosts: 2,
+        playersDrafted: 1,
+        openSlots: 24,
+        penalties: null,
+        adjustments: null,
+      },
+    ]);
+  });
+
   test('parses inventory matrix and utility baseline', () => {
     const inventoryCsv = [
       'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',

@@ -126,6 +126,7 @@ button.secondary {
 
 .dashboard-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 14px;
 }
@@ -140,6 +141,104 @@ button.secondary {
 #draftNightPanel[hidden],
 #qualityCheckPanel[hidden] {
   display: none !important;
+}
+
+.dashboard-panel[hidden] {
+  display: none !important;
+}
+
+.draft-board-filters,
+.winning-bid-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.draft-board-filters label,
+.winning-bid-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 150px;
+  color: var(--muted);
+}
+
+.draft-board-filters input,
+.draft-board-filters select,
+.winning-bid-form input,
+.winning-bid-form select {
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-muted);
+  color: var(--text);
+}
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  text-align: left;
+}
+
+.draft-modal-backdrop {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(3, 8, 16, 0.82);
+}
+
+.draft-modal {
+  width: min(900px, 100%);
+  max-height: min(92vh, 900px);
+  overflow: auto;
+}
+
+.modal-close {
+  float: right;
+}
+
+.draft-score-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.draft-score-grid > div {
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--panel-muted);
+}
+
+.draft-score-grid dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.draft-score-grid dd {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+
+.warning-banner {
+  padding: 12px;
+  border: 1px solid rgba(243, 201, 105, 0.55);
+  border-radius: 10px;
+  background: rgba(243, 201, 105, 0.08);
+  color: var(--warning);
+}
+
+.winning-bid-form {
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .draft-workspace-panel {
@@ -469,6 +568,21 @@ button.secondary {
 @media (max-width: 900px) {
   .owner-layout {
     grid-template-columns: 1fr;
+  }
+
+  .draft-modal-backdrop {
+    place-items: end center;
+    padding: 0;
+  }
+
+  .draft-modal {
+    width: 100%;
+    max-height: 94vh;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .winning-bid-form > * {
+    width: 100%;
   }
 
   .topbar {

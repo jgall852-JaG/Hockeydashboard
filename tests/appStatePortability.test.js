@@ -131,7 +131,7 @@ describe('live refresh status mapping', () => {
   test('does not report unsourced veteran and transaction imports as failed after live refresh', () => {
     const sources = getDataQualitySources({
       metadata: {
-        prospects: { status: 'ok', records: 2, sourceName: 'google-rookie-rights.csv' },
+        prospects: { status: 'ok', records: 2, sourceName: 'AHL Keeper Rights' },
         veterans: { status: 'empty' },
         roster: { status: 'ok', records: 10, importedAt: '2026-09-27T12:00:00.000Z' },
         transactions: { status: 'empty' },
@@ -196,6 +196,9 @@ describe('google sheet refresh integration', () => {
         'TEAM B,',
         'Matthew Knies LW - 2021,$3,1,,,,N',
       ].join('\n'),
+      ',Thursday,October 1,2026\n1,MATCHUP,,TIME\n,Buffalo,@ Columbus,7:00 PM',
+      ',Rank,Team,GP,W,L,T,PTS,GF,GA,GD\n,1,Ironmen,0,0,0,0,0,0,0,0',
+      ',Player,GP\n,Example,0',
     ];
 
     const fetchMock = jest.fn(async () => ({
@@ -218,7 +221,7 @@ describe('google sheet refresh integration', () => {
       },
     }, fetchMock);
 
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(8);
     expect(next.datasets.roster.layout).toBe('merged');
     expect(Object.keys(next.datasets.roster.sources)).toEqual(expect.arrayContaining([
       'inventory',
@@ -237,8 +240,14 @@ describe('google sheet refresh integration', () => {
       position: 'U',
     });
     expect(next.datasets.prospects.isRightsList).toBe(true);
-    expect(next.metadata.roster.sourceName).toBe('google-live-roster.csv');
-    expect(next.metadata.prospects.sourceName).toBe('google-rookie-rights.csv');
+    expect(next.metadata.roster.sourceName).toBe('AHL Roster');
+    expect(next.metadata.prospects.sourceName).toBe('AHL Keeper Rights');
+    expect(next.metadata.ahlSheets.status).toBe('ok');
+    expect(Object.keys(next.datasets.ahlScores.tabs)).toEqual([
+      'AHL Scores',
+      'AHL Scorebulator',
+      'AHL Games Played',
+    ]);
     expect(next.manualOverrides).toHaveLength(1);
     expect(next.workingAssignments['nick perbix'].name).toBe('Nick Perbix');
   });

@@ -8,6 +8,7 @@ function createEmptyRosterResult(layout = 'unknown') {
     layout,
     players: {},
     teams: {},
+    teamBudgets: [],
     goalieFranchises: [],
     contacts: {},
   };
@@ -211,6 +212,7 @@ function parseLeagueLayout(lines) {
 function parseRetainedGrid(lines) {
   const result = createEmptyRosterResult('retained-grid');
   let blockOwners = [];
+  const teamBudgets = new Map();
   let fallback = 1;
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -222,6 +224,9 @@ function parseRetainedGrid(lines) {
 
     const first = String(values[0] || '').trim().toUpperCase();
     if (first === 'F' && String(values[1] || '').trim().toLowerCase().includes('farm deductions')) {
+      blockOwners.filter(Boolean).forEach((owner) => {
+        if (teamBudgets.has(owner)) teamBudgets.get(owner).hasFarmDeductionRow = true;
+      });
       continue;
     }
 
@@ -237,13 +242,45 @@ function parseRetainedGrid(lines) {
       && !values.some((cell) => String(cell || '').includes('$'));
     if (isOwnerRow) {
       blockOwners = ownerCandidates.map((value) => String(value || '').trim());
+      blockOwners.filter(Boolean).forEach((owner) => {
+        if (!teamBudgets.has(owner)) {
+          teamBudgets.set(owner, {
+            team: owner,
+            totalSpent: null,
+            remainingBudget: null,
+            keeperCosts: null,
+            rookieFarmCosts: null,
+            hasFarmDeductionRow: false,
+            playersDrafted: 0,
+            openSlots: null,
+            penalties: null,
+            adjustments: null,
+          });
+        }
+      });
       continue;
     }
 
     if (!blockOwners.length) continue;
 
-    if (values.some((cell) => String(cell || '').toUpperCase().includes('TOTAL SPENT'))) continue;
-    if (values.some((cell) => String(cell || '').toUpperCase().includes('BALANCE'))) continue;
+    const summaryLabel = values.some((cell) => String(cell || '').toUpperCase().includes('TOTAL SPENT'))
+      ? 'totalSpent'
+      : values.some((cell) => String(cell || '').toUpperCase().includes('BALANCE'))
+        ? 'remainingBudget'
+        : values.some((cell) => String(cell || '').toUpperCase().includes('PENALT'))
+          ? 'penalties'
+          : values.some((cell) => String(cell || '').toUpperCase().includes('ADJUST'))
+            ? 'adjustments'
+            : null;
+    if (summaryLabel) {
+      for (let col = 0; col < blockOwners.length * 4; col += 4) {
+        const owner = blockOwners[col / 4];
+        if (owner && teamBudgets.has(owner)) {
+          teamBudgets.get(owner)[summaryLabel] = parseCost(values[col + 3]);
+        }
+      }
+      continue;
+    }
 
     for (let col = 0; col < blockOwners.length * 4; col += 4) {
       const owner = String(blockOwners[col / 4] || '').trim();
@@ -263,9 +300,19 @@ function parseRetainedGrid(lines) {
         source: 'retained-grid',
         retained: true,
       }, fallback++);
+      const budget = teamBudgets.get(owner);
+      budget.playersDrafted += 1;
+      budget.keeperCosts = (budget.keeperCosts || 0) + parseCost(rawCost);
     }
   }
 
+  result.teamBudgets = [...teamBudgets.values()].map((budget) => ({
+    ...budget,
+    rookieFarmCosts: budget.hasFarmDeductionRow
+      ? Number(Math.max(0, (budget.totalSpent ?? 0) - (budget.keeperCosts ?? 0)).toFixed(2))
+      : null,
+    openSlots: Math.max(0, 25 - budget.playersDrafted),
+  })).map(({ hasFarmDeductionRow, ...budget }) => budget);
   return result;
 }
 

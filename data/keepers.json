@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generatedAt": "2026-09-28T23:47:38.096Z",
   "status": "partial",
   "keepers": [
@@ -9,7 +9,7 @@
       "owner": "DRUNKEN FLYBOYS",
       "team": "",
       "position": null,
-      "category": "Farm",
+      "category": null,
       "currentCost": 0.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -108,7 +108,7 @@
       "owner": "FIGHTING IRISH",
       "team": "PIT",
       "position": "D",
-      "category": "Farm",
+      "category": null,
       "currentCost": 14,
       "gamesPlayed": null,
       "matchingRights": false
@@ -207,7 +207,7 @@
       "owner": "HEBREW HAMMERS",
       "team": "MTL",
       "position": "LW",
-      "category": "Farm",
+      "category": null,
       "currentCost": 1,
       "gamesPlayed": null,
       "matchingRights": true
@@ -251,7 +251,7 @@
       "owner": "HOSERS",
       "team": "",
       "position": null,
-      "category": "Farm",
+      "category": null,
       "currentCost": 2.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -262,7 +262,7 @@
       "owner": "HOSERS",
       "team": "EDM",
       "position": "LW",
-      "category": "Farm",
+      "category": null,
       "currentCost": 2.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -361,7 +361,7 @@
       "owner": "IRONMEN",
       "team": "MIN",
       "position": "LW",
-      "category": "Farm",
+      "category": null,
       "currentCost": 30,
       "gamesPlayed": null,
       "matchingRights": false
@@ -405,7 +405,7 @@
       "owner": "JUST MO",
       "team": "WSH",
       "position": "D",
-      "category": "Farm",
+      "category": null,
       "currentCost": 16,
       "gamesPlayed": null,
       "matchingRights": false
@@ -438,7 +438,7 @@
       "owner": "JUST MO",
       "team": "",
       "position": null,
-      "category": "Farm",
+      "category": null,
       "currentCost": 3.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -449,7 +449,7 @@
       "owner": "JUST MO",
       "team": "EDM",
       "position": "RW",
-      "category": "Farm",
+      "category": null,
       "currentCost": 3.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -493,7 +493,7 @@
       "owner": "ROTTIES",
       "team": "CAR",
       "position": "LW",
-      "category": "Farm",
+      "category": null,
       "currentCost": 0.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -581,7 +581,7 @@
       "owner": "TOYE SOLDIERS",
       "team": "PHI",
       "position": "RW",
-      "category": "Farm",
+      "category": "Rookie",
       "currentCost": "",
       "gamesPlayed": 9,
       "matchingRights": false
@@ -603,7 +603,7 @@
       "owner": "TOYE SOLDIERS",
       "team": "",
       "position": null,
-      "category": "Farm",
+      "category": null,
       "currentCost": 0.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -625,7 +625,7 @@
       "owner": "WHEEL SNIPE CELLY",
       "team": "FLO",
       "position": "C",
-      "category": "Farm",
+      "category": null,
       "currentCost": 9,
       "gamesPlayed": null,
       "matchingRights": false
@@ -691,7 +691,7 @@
       "owner": "YEASTIE BEASTIES",
       "team": "",
       "position": null,
-      "category": "Farm",
+      "category": null,
       "currentCost": 200,
       "gamesPlayed": null,
       "matchingRights": false
@@ -702,7 +702,7 @@
       "owner": "YEASTIE BEASTIES",
       "team": "NYR",
       "position": "RW",
-      "category": "Farm",
+      "category": null,
       "currentCost": 0.5,
       "gamesPlayed": null,
       "matchingRights": false
@@ -735,19 +735,13 @@
       "owner": "YEASTIE BEASTIES",
       "team": "UTA",
       "position": null,
-      "category": "Farm",
+      "category": null,
       "currentCost": "",
       "gamesPlayed": null,
       "matchingRights": false
     }
   ],
   "sourceCoverage": {
-    "liveLeagueSheet": {
-      "status": "loaded",
-      "rosterRecords": 1060,
-      "prospectRecords": 42,
-      "importedAt": "2026-09-28T23:47:38.085Z"
-    },
     "nhlSkaterStats": {
       "status": "loaded",
       "season": 2025,
@@ -757,15 +751,19 @@
       "source": "Provided NHL 2025-26 skater-stats CSV"
     },
     "missingSources": [
-      "Sportradar depth charts, injuries, and usage trends",
-      "BigBallsData player/team metrics",
-      "DailyFaceoff lines, power-play units, starters, and injuries",
-      "Dobber Fantasy Guide deployment and sleeper/bust data",
-      "Dobber Prospect Report pedigree and breakout data",
-      "AHL farm development and keeper-score inputs",
-      "NHL goalie/team GA and per-game consistency data",
-      "NHL age data",
+      "Dobber Excel NHL-position inputs",
+      "AHL Scores player-level metric inputs",
       "Position-specific roster slot counts for scarcity"
-    ]
+    ],
+    "ahlSheets": {
+      "status": "loaded",
+      "rosterRecords": 1060,
+      "prospectRecords": 42,
+      "importedAt": "2026-09-28T23:47:38.085Z"
+    }
+  },
+  "sourceAvailability": {
+    "AHLSheets": true,
+    "DobberExcel": false
   }
 }

@@ -8,9 +8,12 @@
 - Local-first workflow
 
 ## Source of truth
-- Imported local CSV data is authoritative.
-- NHL API data is optional enrichment only.
-- Cached live data must never replace local league data.
+- The AHL Draft and AHL Scores Google workbooks are the only operational authority. The Draft workbook supplies AHL Position, Utility, roster/ownership, retention, keeper rights, keeper costs, and draft state. The Scores workbook supplies raw score tabs.
+- Dobber Excel supplements NHL Position only. Its NHL position must never be used as AHL pool position, eligibility, or availability.
+- A prior-year OneDrive roster example and the separate house-budget workbook are not ingested.
+- Source availability is limited to `AHLSheets` and `DobberExcel`; mark each true only after its data loads and validates.
+- The current Scores workbook tabs contain team schedules/standings, not player-level score inputs. Missing player metrics and Dobber positions remain null; DraftIQ and prices stay UNPRICED until inputs exist.
+- Static hosting cannot write back to repository JSON assets. Refreshed JSON views are generated in browser memory and can be exported as a local JSON bundle.
 
 ## Persistence
 - The app stores working state in browser `localStorage`.
@@ -32,3 +35,4 @@
 - hosted static app = anywhere access
 - local laptop copy = fallback path
 - exported state JSON = portable working-state handoff
+- Local Working Assignments and Personal Draft List entries are browser-only overlays; completed ownership and draft state remain authoritative in the AHL Sheets.
