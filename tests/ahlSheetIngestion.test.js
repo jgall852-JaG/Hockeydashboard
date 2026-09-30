@@ -1,7 +1,10 @@
 import {
   AHL_SHEET_SOURCES,
+  applyAhlEligibility,
   buildAhlDraftIntelligenceOutputs,
+  getAhlHistoricalSplits,
   parseAhlScoreSheet,
+  UTILITY_POSITION_BY_PLAYER,
 } from '../ahlSheetIngestion.js';
 
 describe('AHL sheet ingestion', () => {
@@ -48,6 +51,8 @@ describe('AHL sheet ingestion', () => {
       production: { PPS: 80 },
       prospect: { BPS: 60 },
       keeper: { KVS: 40 },
+      localStatus: 'removed-local',
+      localAssignmentTeam: 'TEAM B',
       sourcesUsed: {},
       missingSources: {},
     };
@@ -87,12 +92,19 @@ describe('AHL sheet ingestion', () => {
             inventory: {
               players: {
                 'player-one': { name: 'Player One', position: 'LW', poolposition: 'LW', nhlteam: 'AAA' },
+                'player-two': { name: 'Player Two', position: 'C', poolposition: 'C', nhlteam: 'BBB' },
               },
             },
             utility: {
               players: {
                 'player-one': { name: 'Player One', position: 'U', poolposition: 'C/LW', nhlteam: 'AAA' },
                 'player-two': { name: 'Player Two', position: 'U', poolposition: 'C/L', nhlteam: 'BBB' },
+              },
+            },
+            'league-layout': {
+              players: {
+                'player-one': { name: 'P One', owner: '' },
+                'player-two': { name: 'P Two', owner: 'TEAM A' },
               },
             },
           },
@@ -114,16 +126,19 @@ describe('AHL sheet ingestion', () => {
     expect(next.players.sourceCoverage.ahlSheets.scoreTabs).toEqual(['AHL Scores']);
     expect(available).toMatchObject({
       ahlPosition: 'LW',
-      utilityPosition: 'C/LW',
-      finalPosition: 'C/LW',
-      position: 'C/LW',
+      utilityPosition: null,
+      finalPosition: 'LW',
+      position: 'LW',
       category: 'Veteran',
       available: true,
+      status: 'in-ahl',
       auctionValue: null,
       draftIQ: null,
       classification: 'UNPRICED',
       nhlPosition: null,
     });
+    expect(available).not.toHaveProperty('localStatus');
+    expect(available).not.toHaveProperty('localAssignmentTeam');
     expect(keeper).toMatchObject({
       ownership: 'TEAM A',
       currentCost: 3.5,
@@ -137,9 +152,255 @@ describe('AHL sheet ingestion', () => {
     expect(Object.keys(next.tiers.tiers)).toEqual(['1', '2', '3', '4', '5']);
   });
 
+  test('marks players absent from AHL Draft and AHL Roster as ineligible and unpriced', () => {
+    const formerProspect = {
+      id: 'former-prospect',
+      name: 'Former Prospect',
+      position: 'C',
+      category: 'Veteran',
+      auctionValue: 42,
+      draftIQ: 90,
+      adjustedDraftIQ: 91,
+      recommendedMaxBid: 45,
+      tier: 1,
+      classification: 'VALUE',
+      valuationStatus: 'priced',
+    };
+    const outputs = Object.fromEntries(['players', 'auction', 'tiers', 'keepers', 'prospects'].map((name) => [
+      name,
+      {
+        sourceAvailability: {},
+        sourceCoverage: {},
+        players: name === 'players' || name === 'auction' ? [formerProspect] : [],
+        keepers: [],
+        prospects: [],
+        tiers: {},
+      },
+    ]));
+    const state = {
+      datasets: {
+        roster: {
+          players: {},
+          sources: {
+            inventory: {
+              players: { 'former-prospect': { name: 'Former Prospect', position: 'C' } },
+            },
+            utility: { players: {} },
+            'retained-grid': { players: {} },
+            'league-layout': { players: {} },
+          },
+        },
+        prospects: { prospects: {} },
+      },
+    };
+    const result = buildAhlDraftIntelligenceOutputs(outputs, state, [{ name: 'Former Prospect' }]);
+    expect(result.players.players[0]).toMatchObject({
+      status: 'not-in-ahl',
+      available: false,
+      draftIQ: null,
+      auctionValue: null,
+      recommendedMaxBid: null,
+      classification: 'UNPRICED',
+    });
+    expect(result.auction.players[0]).toMatchObject({
+      status: 'not-in-ahl',
+      draftIQ: null,
+      auctionValue: null,
+      recommendedMaxBid: null,
+    });
+  });
+
+  test('uses AHL Position as base and only applies the explicit Utility sheet list', () => {
+    const utilityNames = Object.keys(UTILITY_POSITION_BY_PLAYER);
+    const positionRecords = utilityNames.map((name, index) => ({
+      name,
+      position: index < 7 ? 'C' : index < 14 ? 'RW' : 'LW',
+      poolposition: index < 7 ? 'C' : index < 14 ? 'R' : 'L',
+    }));
+    positionRecords.push({ name: 'Utility Missing Player', position: 'D', poolposition: 'D' });
+    const utilityRecords = utilityNames.map((name) => ({
+      name,
+      position: 'U',
+      poolposition: 'U',
+    }));
+    const players = [...positionRecords, { name: 'Former Utility Player', position: 'C' }].map((player, index) => ({
+      ...player,
+      id: `player-${index}`,
+      category: 'Veteran',
+      auctionValue: null,
+      draftIQ: null,
+      classification: 'UNPRICED',
+    }));
+    const outputs = Object.fromEntries(['players', 'auction', 'tiers', 'keepers', 'prospects'].map((name) => [
+      name,
+      { players: name === 'players' || name === 'auction' ? players : [], keepers: [], prospects: [], tiers: {} },
+    ]));
+    const state = {
+      manualOverrides: [],
+      datasets: {
+        roster: {
+          players: {},
+          sources: {
+            inventory: { players: Object.fromEntries(positionRecords.map((record, index) => [`p${index}`, record])) },
+            utility: { players: Object.fromEntries(utilityRecords.map((record, index) => [`u${index}`, record])) },
+            'retained-grid': { players: {} },
+            'league-layout': { players: {} },
+          },
+        },
+        prospects: { prospects: {} },
+      },
+    };
+    const result = buildAhlDraftIntelligenceOutputs(outputs, state);
+    const byName = new Map(result.players.players.map((player) => [player.name, player]));
+
+    expect(Object.keys(UTILITY_POSITION_BY_PLAYER)).toHaveLength(21);
+    utilityNames.forEach((name) => {
+      const expectedUtility = UTILITY_POSITION_BY_PLAYER[name];
+      const player = byName.get(name);
+      expect(player.utilityPosition).toBe(expectedUtility);
+      expect(player.finalPosition.split('/')).toEqual(expect.arrayContaining([
+        ...new Set([player.ahlPosition, ...expectedUtility.split('/')]),
+      ]));
+    });
+    expect(byName.get('Utility Missing Player')).toMatchObject({
+      ahlPosition: 'D',
+      utilityPosition: null,
+      finalPosition: 'D',
+    });
+    expect(byName.get('Former Utility Player')).toBeUndefined();
+  });
+
+  test('creates unpriced manual overrides for official players missing AHL Position', () => {
+    const player = {
+      id: 'missing-position',
+      name: 'Missing Position Player',
+      category: 'Rookie',
+      nhlPosition: 'C',
+      auctionValue: 44,
+      draftIQ: 87,
+    };
+    const outputs = Object.fromEntries(['players', 'auction', 'tiers', 'keepers', 'prospects'].map((name) => [
+      name,
+      { players: name === 'players' || name === 'auction' ? [player] : [], keepers: [], prospects: [], tiers: {} },
+    ]));
+    const state = {
+      manualOverrides: [],
+      datasets: {
+        roster: {
+          players: {},
+          sources: {
+            inventory: { players: { positionOnly: { name: 'Zed Position Player', position: 'D' } } },
+            utility: { players: {} },
+            'retained-grid': { players: { one: { name: 'Missing Position Player', owner: 'TEAM A' } } },
+            'league-layout': { players: {} },
+          },
+        },
+        prospects: { prospects: {} },
+      },
+    };
+    const result = buildAhlDraftIntelligenceOutputs(outputs, state);
+    expect(result.missingPositionOverrides).toHaveLength(1);
+    expect(result.missingPositionOverrides[0]).toMatchObject({
+      name: 'Missing Position Player',
+      finalPositionOverride: null,
+      experienceTier: 'Rookie',
+      status: 'not-in-ahl',
+      pricing: null,
+      forecast: null,
+      owner: null,
+      availability: 'unavailable',
+    });
+    expect(result.players.players[0]).toMatchObject({
+      status: 'not-in-ahl',
+      finalPosition: null,
+      owner: null,
+      available: false,
+      draftIQ: null,
+      auctionValue: null,
+      recommendedMaxBid: null,
+      pricing: null,
+      forecast: null,
+    });
+  });
+
+  test('reads historical FH/SH PPG only from named AHL Scores columns', () => {
+    const state = {
+      datasets: {
+        ahlScores: {
+          tabs: {
+            'AHL Scores': {
+              tabName: 'AHL Scores',
+              rows: [
+                ['Player', 'FH PPG', 'Second-Half PPG', 'Total PTS'],
+                ['Player One', '1.25', '0.8', '100'],
+              ],
+            },
+          },
+        },
+      },
+    };
+    expect(getAhlHistoricalSplits(state, 'Player One')).toEqual({
+      FHPPG: 1.25,
+      SHPPG: 0.8,
+      sourceTab: 'AHL Scores',
+    });
+    expect(getAhlHistoricalSplits(state, 'Unknown Player')).toEqual({
+      FHPPG: null,
+      SHPPG: null,
+      sourceTab: null,
+    });
+  });
+
+  test('reapplies AHL eligibility after Dobber valuation outputs are merged', () => {
+    const pricedFormerProspect = {
+      id: 'former-prospect',
+      name: 'Former Prospect',
+      status: 'not-in-ahl',
+      draftIQ: 90,
+      adjustedDraftIQ: 91,
+      auctionValue: 42,
+      recommendedMaxBid: 45,
+      recommendedMaxBidByOwner: { 'TEAM A': 45 },
+      tier: 1,
+      classification: 'VALUE',
+      valuationStatus: 'priced',
+    };
+    const output = applyAhlEligibility({
+      players: { players: [pricedFormerProspect] },
+      auction: { players: [{ ...pricedFormerProspect }] },
+      tiers: { tiers: { 1: ['former-prospect'] } },
+    }, {
+      datasets: {
+        roster: {
+          sources: {
+            'retained-grid': { players: {} },
+            'league-layout': { players: {} },
+          },
+        },
+      },
+    });
+
+    expect(output.players.players[0]).toMatchObject({
+      status: 'not-in-ahl',
+      draftIQ: null,
+      auctionValue: null,
+      recommendedMaxBid: null,
+      tier: null,
+      classification: 'UNPRICED',
+    });
+    expect(output.auction.players[0]).toMatchObject({
+      status: 'not-in-ahl',
+      draftIQ: null,
+      auctionValue: null,
+      recommendedMaxBid: null,
+    });
+    expect(output.tiers.tiers[1]).toEqual([]);
+    expect(output.auction.unpricedPlayerIds).toEqual(['former-prospect']);
+  });
+
   test('refuses to generate output if either AHL position inventory is empty', () => {
     const outputs = Object.fromEntries(['players', 'auction', 'tiers', 'keepers', 'prospects'].map((name) => [name, {}]));
     expect(() => buildAhlDraftIntelligenceOutputs(outputs, { datasets: { roster: { players: {} } } }))
-      .toThrow('AHL Position and AHL Utility data are both empty.');
+      .toThrow('AHL Position data is empty.');
   });
 });

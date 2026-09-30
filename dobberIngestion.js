@@ -28,9 +28,9 @@ function parseOptionalNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function normalizeScore(value, label, { blankAsZero = false } = {}) {
+function normalizeScore(value, label) {
   if (value === undefined || value === null || String(value).trim() === '') {
-    return blankAsZero ? 0 : null;
+    return null;
   }
   const parsed = Number.parseFloat(String(value).replace('%', '').trim());
   if (!Number.isFinite(parsed)) return null;
@@ -82,8 +82,8 @@ export function normalizeDobberRows(rows) {
       nhlPos: String(readField(row, 'POS') || '').trim().toUpperCase() || null,
       salary: parseOptionalNumber(readField(row, 'Salary')),
       aav: parseOptionalNumber(readField(row, 'AAV')),
-      bps: normalizeScore(readField(row, 'BPS'), `${player}.BPS`, { blankAsZero: true }),
-      kvs: normalizeScore(readField(row, 'KVS'), `${player}.KVS`, { blankAsZero: true }),
+      bps: normalizeScore(readField(row, 'BPS'), `${player}.BPS`),
+      kvs: normalizeScore(readField(row, 'KVS'), `${player}.KVS`),
       pps: projectionScore(row, projections, 'PPS'),
       rss: projectionScore(row, projections, 'RSS'),
       rrs: projectionScore(row, projections, 'RRS'),
@@ -112,8 +112,55 @@ export function parseDobberWorkbook(arrayBuffer, xlsx = globalThis.XLSX) {
   if (!sheet) {
     throw new Error(`Dobber workbook is missing the "${DOBBER_SKATER_SHEET}" tab.`);
   }
-  const rows = xlsx.utils.sheet_to_json(sheet, { defval: '', raw: false });
+  const matrix = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+  let headers;
+  let rows;
+  if (Array.isArray(matrix?.[0])) {
+    headers = matrix[0].map((header) => String(header || '').trim());
+    rows = matrix.slice(1).map((values) => Object.fromEntries(
+      headers.map((header, index) => [header, values[index] ?? '']),
+    ));
+  } else {
+    rows = xlsx.utils.sheet_to_json(sheet, { defval: '', raw: false });
+    headers = Object.keys(rows[0] || {});
+  }
+  const normalizedHeaders = new Set(headers.map((header) => header.replace(/[^a-z0-9]+/gi, '').toLowerCase()));
+  if (!normalizedHeaders.has('player')) {
+    throw new Error('Dobber workbook is missing the required Player column.');
+  }
+  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags'];
+  if (!dataColumns.some((column) => normalizedHeaders.has(column))) {
+    throw new Error('Dobber workbook is missing expected skater data columns.');
+  }
   return normalizeDobberRows(rows);
+}
+
+function importWarning(error, fallback) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+export async function ingestDobberExcelFile(file, xlsx = globalThis.XLSX, now = () => new Date()) {
+  const fileName = String(file?.name || '');
+  try {
+    const players = parseDobberWorkbook(await file.arrayBuffer(), xlsx);
+    return {
+      status: 'loaded-local',
+      fileName,
+      lastImport: now().toISOString(),
+      warnings: [],
+      playersParsed: Object.keys(players).length,
+      players,
+    };
+  } catch (error) {
+    return {
+      status: 'invalid-format',
+      fileName,
+      lastImport: null,
+      warnings: [importWarning(error, 'Dobber Excel import failed.')],
+      playersParsed: 0,
+      players: {},
+    };
+  }
 }
 
 export async function fetchDobberWorkbook(fetchImpl = globalThis.fetch, xlsx = globalThis.XLSX) {
@@ -159,13 +206,106 @@ export async function extractPdfText(arrayBuffer, pdfjs) {
     throw new Error('Dobber PDF download did not return a PDF document.');
   }
   const document = await pdfjs.getDocument({ data: bytes }).promise;
+  if (!Number.isInteger(document.numPages) || document.numPages < 1) {
+    throw new Error('Dobber PDF does not contain any readable pages.');
+  }
   const pages = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
     const content = await page.getTextContent();
-    pages.push(content.items.map((item) => item.str).join(' '));
+    const lines = [];
+    content.items.forEach((item, index) => {
+      const text = String(item.str || '').trim();
+      if (!text) return;
+      const y = Number(item.transform?.[5]);
+      const x = Number(item.transform?.[4]);
+      const existingLine = Number.isFinite(y)
+        ? lines.find((line) => Number.isFinite(line.y) && Math.abs(line.y - y) < 2)
+        : null;
+      if (existingLine) {
+        existingLine.items.push({ x: Number.isFinite(x) ? x : index, text });
+      } else {
+        lines.push({
+          y,
+          order: index,
+          items: [{ x: Number.isFinite(x) ? x : index, text }],
+        });
+      }
+    });
+    pages.push(lines
+      .sort((left, right) => (
+        Number.isFinite(left.y) && Number.isFinite(right.y)
+          ? right.y - left.y || left.order - right.order
+          : left.order - right.order
+      ))
+      .map((line) => line.items.sort((left, right) => left.x - right.x).map((item) => item.text).join(' '))
+      .join('\n'));
   }
   return pages.join('\n');
+}
+
+export async function ingestDobberPdfFiles(files, playerNames, pdfjs, now = () => new Date()) {
+  const selectedFiles = [...(files || [])];
+  const fileName = selectedFiles.map((file) => String(file?.name || '')).filter(Boolean).join(', ');
+  if (!selectedFiles.length) {
+    return {
+      status: 'invalid-format',
+      fileName,
+      lastImport: null,
+      warnings: ['Select at least one Dobber PDF file.'],
+      playersParsed: 0,
+      intelByPlayerKey: {},
+    };
+  }
+
+  try {
+    const loadedPdfjs = await pdfjs;
+    const texts = [];
+    for (const file of selectedFiles) {
+      texts.push(await extractPdfText(await file.arrayBuffer(), loadedPdfjs));
+    }
+    const intelByPlayerKey = extractDobberIntelFromText(texts.join('\n'), playerNames);
+    const playersParsed = Object.keys(intelByPlayerKey).length;
+    return {
+      status: 'loaded-local',
+      fileName,
+      lastImport: now().toISOString(),
+      warnings: playersParsed ? [] : ['PDFs parsed, but no explicit player intelligence matched the current roster.'],
+      playersParsed,
+      intelByPlayerKey,
+    };
+  } catch (error) {
+    return {
+      status: 'invalid-format',
+      fileName,
+      lastImport: null,
+      warnings: [importWarning(error, 'Dobber PDF import failed.')],
+      playersParsed: 0,
+      intelByPlayerKey: {},
+    };
+  }
+}
+
+export function updateDobberImportMetadata(metadata, result, attemptedAt = new Date().toISOString()) {
+  const current = metadata || {};
+  return {
+    ...current,
+    lastAttempt: {
+      status: result.status,
+      fileName: result.fileName,
+      attemptedAt,
+      warnings: result.warnings,
+    },
+    ...(result.status === 'loaded-local' ? {
+      status: 'loaded-local',
+      sourceType: 'local',
+      sourceName: result.fileName,
+      importedAt: result.lastImport,
+      lastImport: result.lastImport,
+      records: result.playersParsed,
+      warnings: result.warnings,
+    } : {}),
+  };
 }
 
 export async function fetchDobberPdfIntel(playerNames, fetchImpl = globalThis.fetch, pdfjs) {
@@ -255,12 +395,12 @@ function mergeIntelStrengths(player, dobber) {
   };
 }
 
-export function applyDobberIntelligence(outputs, stateObj) {
+export function applyDobberIntelligence(outputs, stateObj, beforePricing = (players) => players) {
   const dobberPlayers = stateObj?.datasets?.dobber?.players || {};
   const intelByPlayerKey = stateObj?.datasets?.dobber?.intelByPlayerKey || {};
   const hasExcel = stateObj?.metadata?.dobberExcel?.status === 'loaded-local';
   const hasPdfs = stateObj?.metadata?.dobberPdfs?.status === 'loaded-local';
-  const players = (outputs.players.players || []).map((sourcePlayer) => {
+  const ingestedPlayers = (outputs.players.players || []).map((sourcePlayer) => {
     const player = JSON.parse(JSON.stringify(sourcePlayer));
     const key = normalizeLookupKey(player.name);
     const dobber = dobberPlayers[key];
@@ -309,6 +449,42 @@ export function applyDobberIntelligence(outputs, stateObj) {
     player.deployment = { ...(player.deployment || {}), RSS: dobber.rss, RRS: dobber.rrs };
     player.prospect = { ...(player.prospect || {}), BPS: dobber.bps, KVS: dobber.kvs };
     player.keeper = { ...(player.keeper || {}), KVS: dobber.kvs };
+    player.draftIQ = null;
+    player.adjustedDraftIQ = null;
+    player.scarcityIndex = null;
+    player.scarcityMultiplier = null;
+    player.keeperInflation = null;
+    player.priceCurveRank = null;
+    player.priceCurvePercentile = null;
+    player.priceCurveFactor = null;
+    player.auctionValue = null;
+    player.recommendedMaxBid = null;
+    player.recommendedMaxBidByOwner = {};
+    player.tier = null;
+    player.classification = 'UNPRICED';
+    player.valuationStatus = 'unpriced';
+    const insight = mergeIntelStrengths(player, { ...dobber, intelEdge });
+    player.strengths = insight.strengths;
+    player.risks = insight.risks;
+    delete player.missingSources.DobberExcel;
+    delete player.missingSources['AHLSheets metric inputs'];
+    ['PPS', 'RSS', 'RRS'].forEach((metric) => {
+      if (!Number.isFinite(dobber[metric.toLowerCase()])) {
+        player.missingSources[`Dobber projection ${metric}`] = true;
+      }
+    });
+    return player;
+  });
+
+  const stagedPlayers = beforePricing(ingestedPlayers);
+  if (!Array.isArray(stagedPlayers)) {
+    throw new Error('The pre-pricing Dobber overlay must return a player array.');
+  }
+  const players = stagedPlayers;
+  players.forEach((player) => {
+    if (player.status === 'not-in-ahl') return;
+    const dobber = dobberPlayers[normalizeLookupKey(player.name)];
+    if (!dobber) return;
     const scores = calculateDraftIqScores({
       category: player.category,
       PPS: dobber.pps,
@@ -320,16 +496,6 @@ export function applyDobberIntelligence(outputs, stateObj) {
     player.draftIQ = scores.draftIQ;
     player.adjustedDraftIQ = scores.adjustedDraftIQ;
     player.keeper.categoryMultiplier = scores.categoryMultiplier;
-    const insight = mergeIntelStrengths(player, { ...dobber, intelEdge });
-    player.strengths = insight.strengths;
-    player.risks = insight.risks;
-    delete player.missingSources.DobberExcel;
-    delete player.missingSources['AHLSheets metric inputs'];
-    ['PPS', 'RSS', 'RRS'].forEach((metric) => {
-      if (!Number.isFinite(dobber[metric.toLowerCase()])) {
-        player.missingSources[`Dobber projection ${metric}`] = true;
-      }
-    });
     if (scores.adjustedDraftIQ === null) {
       player.scarcityMultiplier = null;
       player.keeperInflation = null;
@@ -340,7 +506,6 @@ export function applyDobberIntelligence(outputs, stateObj) {
       player.classification = 'UNPRICED';
       player.valuationStatus = 'unpriced';
     }
-    return player;
   });
 
   const scarcity = buildScarcity(players, stateObj?.datasets?.roster?.players);

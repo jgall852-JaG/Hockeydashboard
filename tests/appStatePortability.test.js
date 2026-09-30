@@ -4,12 +4,59 @@ import {
   getLiveCacheStatus,
   getDataQualitySources,
   isRetentionListLoaded,
+  persistState,
   parsePortableStateBundle,
   resolveWorkingAssignmentTeamName,
   refreshDobberState,
   refreshGoogleSheetState,
   serializePortableStateBundle,
+  STORAGE_KEY,
 } from '../app.js';
+
+describe('local draft edit persistence', () => {
+  test('mirrors local edits and their timestamp into stored metadata', () => {
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { setItem: (key, value) => storage.set(key, value) },
+    });
+    try {
+      persistState({
+        version: 2,
+        datasets: {},
+        metadata: {},
+        localEdits: {
+          removedPlayers: ['Player One'],
+          manualAssignments: { 'Player Two': 'TEAM A' },
+          manualUnassign: [],
+          lastUpdated: 1780000000000,
+        },
+      });
+      const saved = JSON.parse(storage.get(STORAGE_KEY));
+      expect(saved.localEdits).toEqual(saved.metadata.localDraftEdits);
+      expect(saved.metadata.localDraftEdits).toMatchObject({
+        removedPlayers: ['player one'],
+        manualAssignments: { 'player two': 'TEAM A' },
+        lastUpdated: 1780000000000,
+      });
+      persistState({
+        version: 2,
+        datasets: {},
+        localEdits: { removedPlayers: ['Stale Edit'], lastUpdated: 100 },
+        metadata: {
+          localDraftEdits: { removedPlayers: ['Newer Edit'], lastUpdated: 200 },
+        },
+      });
+      const reconciled = JSON.parse(storage.get(STORAGE_KEY));
+      expect(reconciled.localEdits.removedPlayers).toEqual(['newer edit']);
+      expect(reconciled.localEdits.lastUpdated).toBe(200);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: previousStorage });
+    }
+  });
+});
 
 describe('portable state helpers', () => {
   test('serializes normalized app state with live cache for export', () => {
@@ -227,6 +274,11 @@ describe('google sheet refresh integration', () => {
       workingAssignments: {
         'nick perbix': { playerKey: 'nick perbix', name: 'Nick Perbix' },
       },
+      localEdits: {
+        removedPlayers: ['former player'],
+        manualAssignments: { 'nick perbix': 'TEAM A' },
+        manualUnassign: ['another player'],
+      },
     }, fetchMock);
 
     expect(fetchMock).toHaveBeenCalledTimes(9);
@@ -258,6 +310,13 @@ describe('google sheet refresh integration', () => {
     ]);
     expect(next.manualOverrides).toHaveLength(1);
     expect(next.workingAssignments['nick perbix'].name).toBe('Nick Perbix');
+    expect(next.localEdits).toMatchObject({
+      removedPlayers: [],
+      manualAssignments: {},
+      manualUnassign: [],
+    });
+    expect(next.localEdits.lastUpdated).toEqual(expect.any(Number));
+    expect(next.metadata.localDraftEdits).toEqual(next.localEdits);
   });
 });
 
@@ -292,15 +351,35 @@ describe('Dobber source status', () => {
         },
       },
       metadata: {
-        dobberExcel: { status: 'loaded-local', sourceType: 'local' },
-        dobberPdfs: { status: 'loaded-local', sourceType: 'local' },
+        dobberExcel: {
+          status: 'loaded-local',
+          sourceType: 'local',
+          lastImport: '2026-09-29T12:00:00.000Z',
+          lastAttempt: { status: 'loaded-local', fileName: 'dobber.xlsx' },
+        },
+        dobberPdfs: {
+          status: 'loaded-local',
+          sourceType: 'local',
+          lastImport: '2026-09-29T12:01:00.000Z',
+        },
       },
     }, fetchMock);
 
     expect(next.state.metadata).toMatchObject({
       dobberStatus: 'loaded-local',
-      dobberExcel: { status: 'loaded-local', sourceType: 'local', records: 1 },
-      dobberPdfs: { status: 'loaded-local', sourceType: 'local', records: 1 },
+      dobberExcel: {
+        status: 'loaded-local',
+        sourceType: 'local',
+        records: 1,
+        lastImport: '2026-09-29T12:00:00.000Z',
+        lastAttempt: { status: 'loaded-local', fileName: 'dobber.xlsx' },
+      },
+      dobberPdfs: {
+        status: 'loaded-local',
+        sourceType: 'local',
+        records: 1,
+        lastImport: '2026-09-29T12:01:00.000Z',
+      },
     });
     expect(next.state.datasets.dobber.players.player.player).toBe('Player');
     expect(next.message).toContain('HTTP 401');

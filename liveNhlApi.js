@@ -20,6 +20,14 @@ function normalizeLookupKey(value) {
     .trim();
 }
 
+function getRosterPlayerIdentityAliases(name) {
+  const normalized = normalizeLookupKey(name);
+  if (!normalized) return [];
+  const parts = normalized.split(' ').filter(Boolean);
+  if (parts.length < 2) return [normalized];
+  return [...new Set([normalized, `${parts[0][0]} ${parts.slice(1).join(' ')}`])];
+}
+
 function normalizeTeamAbbrev(value) {
   const text = String(value || '').trim().toUpperCase();
   return /^[A-Z]{3}$/.test(text) ? text : '';
@@ -521,6 +529,7 @@ export {
   loadLiveCache,
   persistLiveCache,
   normalizeLookupKey,
+  getRosterPlayerIdentityAliases,
   normalizeTeamAbbrev,
   pickRecordValue,
   extractPlayerName,

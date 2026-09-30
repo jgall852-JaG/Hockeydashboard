@@ -2,9 +2,14 @@ import {
   applyDobberIntelligence,
   attachDobberIntel,
   extractDobberIntelFromText,
+  extractPdfText,
+  ingestDobberExcelFile,
+  ingestDobberPdfFiles,
   normalizeDobberRows,
   parseDobberWorkbook,
+  updateDobberImportMetadata,
 } from '../dobberIngestion.js';
+import { persistState, STORAGE_KEY } from '../app.js';
 
 describe('Dobber ingestion', () => {
   test('attaches PDF intelligence to the normalized Dobber player map', () => {
@@ -45,7 +50,7 @@ describe('Dobber ingestion', () => {
       riskFlags: ['Usage decline', 'Injury'],
     });
     expect(normalizeDobberRows([{ Player: 'No Projection', BPS: '', KVS: '' }])['no projection'])
-      .toMatchObject({ bps: 0, kvs: 0, pps: null, rss: null, rrs: null });
+      .toMatchObject({ bps: null, kvs: null, pps: null, rss: null, rrs: null });
   });
 
   test('requires the named skater tab and an actual XLSX payload', () => {
@@ -60,6 +65,175 @@ describe('Dobber ingestion', () => {
       read: () => ({ Sheets: {} }),
       utils: { sheet_to_json: () => [] },
     })).toThrow('missing the "EVERYTHING (Skaters)" tab');
+  });
+
+  test('returns invalid-format warnings for invalid workbooks and missing skater columns', async () => {
+    const xlsx = {
+      read: () => ({ Sheets: { 'EVERYTHING (Skaters)': {} } }),
+      utils: { sheet_to_json: () => [{ Player: 'Player One', Notes: 'not a skater field' }] },
+    };
+    const invalidBytes = Uint8Array.from([0x3c, 0x68]).buffer;
+    const invalidFormat = await ingestDobberExcelFile({
+      name: 'not-a-workbook.xlsx',
+      arrayBuffer: async () => invalidBytes,
+    }, xlsx);
+    expect(invalidFormat).toMatchObject({
+      status: 'invalid-format',
+      fileName: 'not-a-workbook.xlsx',
+      lastImport: null,
+      playersParsed: 0,
+    });
+    expect(invalidFormat.warnings[0]).toContain('did not return an Excel workbook');
+
+    const missingColumns = await ingestDobberExcelFile({
+      name: 'missing-columns.xlsx',
+      arrayBuffer: async () => Uint8Array.from([0x50, 0x4b]).buffer,
+    }, xlsx);
+    expect(missingColumns.status).toBe('invalid-format');
+    expect(missingColumns.warnings[0]).toContain('missing expected skater data columns');
+
+    const missingTab = await ingestDobberExcelFile({
+      name: 'missing-tab.xlsx',
+      arrayBuffer: async () => Uint8Array.from([0x50, 0x4b]).buffer,
+    }, {
+      ...xlsx,
+      read: () => ({ Sheets: {} }),
+    });
+    expect(missingTab.status).toBe('invalid-format');
+    expect(missingTab.warnings[0]).toContain('missing the "EVERYTHING (Skaters)" tab');
+  });
+
+  test('returns a successful Excel status object and persisted lastImport metadata', async () => {
+    const xlsx = {
+      read: () => ({ Sheets: { 'EVERYTHING (Skaters)': {} } }),
+      utils: { sheet_to_json: () => [{ Player: 'Player One', POS: 'C', BPS: '', KVS: '' }] },
+    };
+    const lastImport = '2026-09-29T19:00:00.000Z';
+    const result = await ingestDobberExcelFile({
+      name: 'dobber-skaters.xlsx',
+      arrayBuffer: async () => Uint8Array.from([0x50, 0x4b]).buffer,
+    }, xlsx, () => new Date(lastImport));
+    expect(result).toMatchObject({
+      status: 'loaded-local',
+      fileName: 'dobber-skaters.xlsx',
+      lastImport,
+      warnings: [],
+      playersParsed: 1,
+      players: { 'player one': { bps: null, kvs: null } },
+    });
+
+    const metadata = updateDobberImportMetadata({}, result);
+    expect(metadata).toMatchObject({
+      status: 'loaded-local',
+      sourceType: 'local',
+      sourceName: 'dobber-skaters.xlsx',
+      lastImport,
+    });
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { setItem: (key, value) => storage.set(key, value) },
+    });
+    try {
+      persistState({ version: 2, datasets: {}, metadata: { dobberExcel: metadata } });
+      expect(JSON.parse(storage.get(STORAGE_KEY)).metadata.dobberExcel.lastImport).toBe(lastImport);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: previousStorage });
+    }
+  });
+
+  test('keeps source availability and the last successful import after a failed retry', () => {
+    const failure = {
+      status: 'invalid-format',
+      fileName: 'wrong-tab.xlsx',
+      lastImport: null,
+      warnings: ['Missing skater tab.'],
+      playersParsed: 0,
+    };
+    const metadata = updateDobberImportMetadata({
+      status: 'loaded-local',
+      sourceType: 'local',
+      sourceName: 'valid.xlsx',
+      lastImport: '2026-09-29T18:00:00.000Z',
+      records: 12,
+    }, failure, '2026-09-29T19:00:00.000Z');
+
+    expect(metadata).toMatchObject({
+      status: 'loaded-local',
+      sourceType: 'local',
+      sourceName: 'valid.xlsx',
+      lastImport: '2026-09-29T18:00:00.000Z',
+      lastAttempt: {
+        status: 'invalid-format',
+        fileName: 'wrong-tab.xlsx',
+        attemptedAt: '2026-09-29T19:00:00.000Z',
+      },
+    });
+    expect(metadata.lastAttempt.warnings).toEqual(['Missing skater tab.']);
+    expect(updateDobberImportMetadata({
+      status: 'unavailable',
+      sourceType: 'remote',
+      sourceName: 'Dobber Excel OneDrive',
+    }, failure).status).toBe('unavailable');
+  });
+
+  test('extracts PDF metadata across pages and rejects invalid PDF files', async () => {
+    const pdfjs = {
+      getDocument: () => ({
+        promise: Promise.resolve({
+          numPages: 2,
+          getPage: async (pageNumber) => ({
+            getTextContent: async () => ({
+              items: pageNumber === 1
+                ? [{ str: 'Player One', transform: [1, 0, 0, 1, 20, 700] }]
+                : [
+                  { str: 'Pedigree: First-round scorer', transform: [1, 0, 0, 1, 20, 700] },
+                  { str: 'Sleeper candidate', transform: [1, 0, 0, 1, 20, 680] },
+                ],
+            }),
+          }),
+        }),
+      }),
+    };
+    const pdfFile = {
+      name: 'dobber-guide.pdf',
+      arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7').buffer,
+    };
+    const parsedText = await extractPdfText(await pdfFile.arrayBuffer(), pdfjs);
+    expect(parsedText).toContain('Player One\nPedigree: First-round scorer');
+    const lastImport = '2026-09-29T19:02:00.000Z';
+    const success = await ingestDobberPdfFiles(
+      [pdfFile],
+      ['Player One'],
+      pdfjs,
+      () => new Date(lastImport),
+    );
+    expect(success).toMatchObject({
+      status: 'loaded-local',
+      fileName: 'dobber-guide.pdf',
+      lastImport,
+      playersParsed: 1,
+      intelByPlayerKey: {
+        'player one': {
+          pedigree: 'First-round scorer',
+          sleeperTag: true,
+        },
+      },
+    });
+
+    const invalid = await ingestDobberPdfFiles([{
+      name: 'not-a-pdf.pdf',
+      arrayBuffer: async () => new TextEncoder().encode('<html>').buffer,
+    }], ['Player One'], pdfjs);
+    expect(invalid).toMatchObject({
+      status: 'invalid-format',
+      fileName: 'not-a-pdf.pdf',
+      lastImport: null,
+      playersParsed: 0,
+    });
+    expect(invalid.warnings[0]).toContain('did not return a PDF document');
   });
 
   test('extracts only explicit PDF intelligence labels and tags', () => {
@@ -147,10 +321,20 @@ describe('Dobber ingestion', () => {
       },
     };
 
-    const result = applyDobberIntelligence(outputs, state);
+    let stagedPlayer;
+    const result = applyDobberIntelligence(outputs, state, (players) => {
+      stagedPlayer = players[0];
+      return players.map((entry) => ({ ...entry, localAssignmentTeam: 'TEAM B' }));
+    });
     const player = result.players.players[0];
+    expect(stagedPlayer).toMatchObject({
+      nhlPosition: 'C',
+      production: { PPS: 80 },
+      draftIQ: null,
+    });
     expect(player).toMatchObject({
       nhlPosition: 'C',
+      localAssignmentTeam: 'TEAM B',
       draftIQ: 62,
       classification: 'VALUE',
       tier: 3,
@@ -177,7 +361,7 @@ describe('Dobber ingestion', () => {
     });
   });
 
-  test('keeps unmatched and text-only projection players unpriced with truthful provenance', () => {
+  test('keeps unmatched, incomplete, and text-only projection players unpriced with truthful provenance', () => {
     const basePlayer = (name, finalPosition = 'C') => ({
       id: name.toLowerCase().replaceAll(' ', '-'),
       name,
@@ -197,7 +381,11 @@ describe('Dobber ingestion', () => {
     });
     const outputs = {
       players: {
-        players: [basePlayer('Unmatched Player'), basePlayer('Text Projection')],
+        players: [
+          basePlayer('Unmatched Player'),
+          basePlayer('Text Projection'),
+          basePlayer('Missing Metrics'),
+        ],
         sourceAvailability: { AHLSheets: true },
         sourceCoverage: {},
       },
@@ -217,6 +405,10 @@ describe('Dobber ingestion', () => {
             BPS: 70,
             KVS: 60,
             Projections: 'Projected for a strong season',
+          }, {
+            Player: 'Missing Metrics',
+            POS: 'C',
+            Projections: '{"PPS":80,"RSS":70,"RRS":20}',
           }]),
           intelByPlayerKey: {
             'unmatched player': {
@@ -237,6 +429,7 @@ describe('Dobber ingestion', () => {
     const players = applyDobberIntelligence(outputs, state).players.players;
     const unmatched = players.find((player) => player.name === 'Unmatched Player');
     const textOnly = players.find((player) => player.name === 'Text Projection');
+    const missingMetrics = players.find((player) => player.name === 'Missing Metrics');
 
     expect(unmatched).toMatchObject({
       draftIQ: null,
@@ -256,6 +449,12 @@ describe('Dobber ingestion', () => {
       'Dobber projection RSS',
       'Dobber projection RRS',
     ]));
+    expect(missingMetrics).toMatchObject({
+      prospect: { BPS: null, KVS: null },
+      draftIQ: null,
+      auctionValue: null,
+      classification: 'UNPRICED',
+    });
   });
 
   test('uses the highest eligible scarcity for Utility multi-position players', () => {
