@@ -1,4 +1,5 @@
-import { renderDraftAuctionDashboard } from '../draftAuctionUI.js';
+import { getExperienceTierFromGames, renderDraftAuctionDashboard } from '../draftAuctionUI.js';
+import { buildDraftBoardPlayers } from '../app.js';
 
 describe('draft auction dashboard rendering', () => {
   test('renders four views, explicit missing-data status, and winning-bid controls', () => {
@@ -66,11 +67,11 @@ describe('draft auction dashboard rendering', () => {
     expect(html).toContain('Team Budgets');
     expect(html).toContain('Tools & Validation');
     expect(html).toContain('UNPRICED');
-    expect(html).toMatch(/<td>Available<\/td>/);
+    expect(html).not.toContain('<th>Availability</th>');
     expect(html).toContain('Record winning bid');
     expect(html).toContain('Recommended max bid:</strong> NULL');
     expect(html).toContain('Personal Draft List');
-    expect(html).toContain('Add to Personal List');
+    expect(html).not.toContain('Add to Personal List');
     expect(html).toContain('NHL POS');
     expect(html).toContain('Final Position C/LW');
     expect(html).toContain('Final Position</th>');
@@ -107,6 +108,10 @@ describe('draft auction dashboard rendering', () => {
     const formerProspect = { ...player, id: 'former-prospect', name: 'Brandt Clarke', status: 'not-in-ahl' };
     const props = {
       players: [player, removedPlayer, formerProspect],
+      draftedPlayers: [
+        { ...player, draftOwner: 'TEAM A', draftPrice: 4.5, nhlCareerGamesPlayed: 82 },
+        { ...removedPlayer, draftOwner: 'TEAM B', draftPrice: 2, nhlCareerGamesPlayed: null },
+      ],
       availableKeys: new Set(['official player', 'removed player']),
       shortlist: new Set(),
       search: '',
@@ -141,8 +146,10 @@ describe('draft auction dashboard rendering', () => {
     expect(html).toContain('class="removed-local"');
     expect(html).toContain('data-local-assignment-form="official-player"');
     expect(html).toContain('data-manual-unassign="official-player"');
-    expect(bestHtml).not.toContain('data-player-status="not-in-ahl"');
-    expect(bestHtml).not.toContain('data-player-details="removed-player"');
+    const bestPanel = bestHtml.slice(bestHtml.indexOf('id="best-available-panel"'));
+    expect(bestPanel).not.toContain('data-player-status="not-in-ahl"');
+    expect(bestPanel).not.toContain('data-player-details="removed-player"');
+    expect(bestPanel).not.toContain('data-player-details="official-player"');
   });
 
   test('shows the unavailable empty state and optional commissioner player toggles', () => {
@@ -210,7 +217,7 @@ describe('draft auction dashboard rendering', () => {
     expect(commissionerPanel).toMatch(/data-player-details="removed-player"[\s\S]*?<td>Unavailable<\/td>/);
   });
 
-  test('Draft Board toggles control availability, removals, highlighting, and empty state', () => {
+  test('Draft Board shows only drafted players, keeps local removal, and uses actual paid prices', () => {
     const availablePlayer = {
       id: 'available',
       name: 'Available Player',
@@ -220,21 +227,26 @@ describe('draft auction dashboard rendering', () => {
       recommendedMaxBid: null,
       classification: 'UNPRICED',
     };
-    const unavailablePlayer = {
+    const draftedPlayer = {
       ...availablePlayer,
-      id: 'unavailable',
-      name: 'Unavailable Player',
-      ownership: null,
+      id: 'drafted',
+      name: 'Drafted Player',
+      draftOwner: 'TEAM A',
+      draftPrice: 7.5,
+      auctionValue: 48,
+      finalPosition: 'C/LW',
+      nhlCareerGamesPlayed: 9,
     };
     const removedPlayer = {
-      ...availablePlayer,
+      ...draftedPlayer,
       id: 'removed',
       name: 'Removed Player',
       localStatus: 'removed-local',
     };
     const props = {
       activeTab: 'draft-board',
-      players: [availablePlayer, unavailablePlayer, removedPlayer],
+      players: [availablePlayer, draftedPlayer, removedPlayer],
+      draftedPlayers: [draftedPlayer, removedPlayer],
       availableKeys: new Set(['available player']),
       shortlist: new Set(),
       search: '',
@@ -251,24 +263,18 @@ describe('draft auction dashboard rendering', () => {
       workspaceHtml: '',
     };
     const defaultBoard = renderDraftAuctionDashboard(props);
-    expect(defaultBoard).toContain('data-player-details="available"');
-    expect(defaultBoard).not.toContain('data-player-details="unavailable"');
-    expect(defaultBoard).not.toContain('data-player-details="removed"');
-
-    const unavailableFilterBoard = renderDraftAuctionDashboard({
-      ...props,
-      availabilityFilter: 'unavailable',
-    });
-    expect(unavailableFilterBoard).toContain('data-player-details="unavailable"');
-
-    const allPlayersBoard = renderDraftAuctionDashboard({
-      ...props,
-      showAllAhlPlayers: true,
-      highlightUnavailablePlayers: true,
-    });
-    expect(allPlayersBoard).toContain('data-player-details="unavailable"');
-    expect(allPlayersBoard).toContain('class="ahl-unavailable"');
-    expect(allPlayersBoard).not.toContain('data-player-details="removed"');
+    const boardPanel = defaultBoard.slice(defaultBoard.indexOf('id="draft-board-panel"'), defaultBoard.indexOf('id="best-available-panel"'));
+    expect(boardPanel.match(/<th>[^<]+<\/th>/g)).toEqual([
+      '<th>Player</th>', '<th>Final Position</th>', '<th>Experience Tier</th>',
+      '<th>Owner</th>', '<th>Auction Value</th>', '<th>Remove Locally</th>',
+    ]);
+    expect(boardPanel).not.toContain('data-player-details="available"');
+    expect(boardPanel).toContain('data-player-details="drafted"');
+    expect(boardPanel).toMatch(/<td>C\/LW<\/td>\s*<td>Farm<\/td>\s*<td>TEAM A<\/td>\s*<td>\$7\.50<\/td>/);
+    expect(boardPanel).not.toContain('$48.00');
+    expect(boardPanel).not.toContain('data-player-details="removed"');
+    expect(boardPanel).not.toContain('data-personal-add');
+    expect(boardPanel).not.toContain('data-shortlist-player');
 
     const removedBoard = renderDraftAuctionDashboard({
       ...props,
@@ -277,11 +283,98 @@ describe('draft auction dashboard rendering', () => {
     expect(removedBoard).toContain('data-player-details="removed"');
     expect(removedBoard).toContain('class="removed-local"');
 
-    const emptyBoard = renderDraftAuctionDashboard({
+    const emptyBoard = renderDraftAuctionDashboard({ ...props, draftedPlayers: [] });
+    expect(emptyBoard).toContain('No drafted players match the current filters.');
+    const bestPanel = renderDraftAuctionDashboard({ ...props, activeTab: 'best-available' });
+    expect(bestPanel).toContain('data-player-details="available"');
+    expect(bestPanel).not.toContain('data-player-details="drafted"');
+    expect(bestPanel).toContain('data-personal-add="available"');
+    const draftedModal = renderDraftAuctionDashboard({ ...props, selectedPlayer: draftedPlayer });
+    expect(draftedModal).toMatch(/Record winning bid<\/button>/);
+    expect(draftedModal).toMatch(/<button class="primary" type="submit" disabled>Record winning bid<\/button>/);
+    const availableModal = renderDraftAuctionDashboard({
       ...props,
-      availableKeys: new Set(),
+      activeTab: 'best-available',
+      selectedPlayer: { ...availablePlayer, available: true },
+      teamNames: ['TEAM A'],
     });
-    expect(emptyBoard).toContain('No draftable players available under current filters.');
+    expect(availableModal).toMatch(/<button class="primary" type="submit" >Record winning bid<\/button>/);
+  });
+
+  test('classifies career GP at boundaries and keeps missing GP Veteran', () => {
+    expect([null, undefined, 0, 9, 10, 82, 83].map(getExperienceTierFromGames))
+      .toEqual(['Veteran', 'Veteran', 'Farm', 'Farm', 'Rookie', 'Rookie', 'Veteran']);
+  });
+
+  test('Draft Board keeps player GP and reads cached NHL GP when live profiles lack it', () => {
+    const players = [
+      { id: 'farm', name: 'Farm Player', status: 'in-ahl', nhlCareerGamesPlayed: 0 },
+      { id: 'rookie', name: 'Rookie Player', status: 'in-ahl' },
+      { id: 'veteran', name: 'Veteran Player', status: 'in-ahl' },
+      { id: 'missing', name: 'Missing Player', status: 'in-ahl' },
+    ];
+    const state = {
+      datasets: { roster: { sources: { 'retained-grid': { players: Object.fromEntries(
+        players.map((player) => [player.id, { name: player.name, owner: 'TEAM A', cost: 1 }]),
+      ) } } } },
+    };
+    const cachedProfiles = {
+      'roster:rookie': { playerName: 'Rookie Player', historical: { gamesPlayed: 10 } },
+      'roster:veteran': { playerName: 'Veteran Player', historical: { gamesPlayed: 83 } },
+    };
+    const liveProfiles = {
+      'draft:rookie': { playerName: 'Rookie Player', historical: { gamesPlayed: null } },
+      'draft:farm': { playerName: 'Farm Player', historical: { gamesPlayed: 82 } },
+    };
+    const draftedPlayers = buildDraftBoardPlayers(players, state, liveProfiles, cachedProfiles);
+    expect(draftedPlayers.map((player) => player.nhlCareerGamesPlayed)).toEqual([0, 10, 83, null]);
+    const rendered = renderDraftAuctionDashboard({
+      activeTab: 'draft-board', players, draftedPlayers,
+      availableKeys: new Set(), search: '', positionFilter: '',
+      categoryFilter: '', bestAvailableSort: 'ADP',
+      teamBudgets: [], teamNames: [], selectedPlayer: null, selectedTeam: '',
+      sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+    });
+    expect(rendered).toMatch(/Farm Player[\s\S]*?<td>Farm<\/td>/);
+    expect(rendered).toMatch(/Rookie Player[\s\S]*?<td>Rookie<\/td>/);
+    expect(rendered).toMatch(/Veteran Player[\s\S]*?<td>Veteran<\/td>/);
+    expect(rendered).toMatch(/Missing Player[\s\S]*?<td>Veteran<\/td>/);
+  });
+
+  test('Draft 2026 owners and prices take precedence over local winning bids and model estimates', () => {
+    const players = [
+      { id: 'one', name: 'Player One', status: 'in-ahl', auctionValue: 40 },
+      { id: 'two', name: 'Player Two', status: 'in-ahl', auctionValue: 50 },
+      { id: 'override', name: 'Override', status: 'not-in-ahl', auctionValue: null },
+    ];
+    const state = {
+      datasets: { roster: { sources: { 'retained-grid': { players: {
+        one: { name: 'P One', owner: 'SHEET TEAM', cost: 3.5 },
+      } } } } },
+      workingAssignments: {
+        one: { name: 'Player One', team: 'LOCAL TEAM', bid: 8 },
+        two: { name: 'Player Two', team: 'WINNING TEAM', bid: 6.5 },
+        override: { name: 'Override', team: 'LOCAL TEAM', bid: 2 },
+      },
+    };
+    const profiles = {
+      one: { playerName: 'Player One', historical: { gamesPlayed: 9 } },
+      two: { playerName: 'Player Two', historical: { gamesPlayed: 45 } },
+    };
+    expect(buildDraftBoardPlayers(players, state, profiles)).toMatchObject([
+      { name: 'Player One', draftOwner: 'SHEET TEAM', draftPrice: 3.5, nhlCareerGamesPlayed: 9 },
+      { name: 'Player Two', draftOwner: 'WINNING TEAM', draftPrice: 6.5, nhlCareerGamesPlayed: 45 },
+    ]);
+    expect(buildDraftBoardPlayers(players, { ...state, workingAssignments: {} }, profiles)).toHaveLength(1);
+    const afterBid = buildDraftBoardPlayers(players, state, profiles);
+    const rendered = renderDraftAuctionDashboard({
+      activeTab: 'draft-board', players, draftedPlayers: afterBid,
+      availableKeys: new Set(['player two']), search: '', positionFilter: '',
+      categoryFilter: '', bestAvailableSort: 'ADP', personalDraftList: [],
+      teamBudgets: [], teamNames: [], selectedPlayer: null, selectedTeam: '',
+      sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+    });
+    expect(rendered).toMatch(/Player Two[\s\S]*?<td>Rookie<\/td>\s*<td>WINNING TEAM<\/td>\s*<td>\$6\.50<\/td>/);
   });
 
   test('Best Available uses the forecast-ready columns, requested sort options, and acronym legend', () => {

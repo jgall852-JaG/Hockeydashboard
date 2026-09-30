@@ -100,6 +100,8 @@ const state = {
   liveCache: loadLiveCache(),
   liveProfiles: {},
   liveRequests: {},
+  draftGpAttempted: new Set(),
+  draftGpLoading: false,
   liveRefreshMessage: '',
   draftIntelligence: null,
   draftIntelligenceFromOfflineSnapshot: false,
@@ -108,7 +110,6 @@ const state = {
   draftBoardSearch: '',
   draftPositionFilter: '',
   draftCategoryFilter: '',
-  draftAvailabilityFilter: 'all',
   bestAvailableSort: 'ADP',
   showAllAhlPlayers: false,
   showRemovedPlayers: false,
@@ -3458,6 +3459,94 @@ async function persistLocalDraftEdits(localEdits) {
   renderOwnerView(next);
 }
 
+export function buildDraftBoardPlayers(players, stateObj, liveProfiles = {}, cachedProfiles = {}) {
+  const fromDraftSheet = new Map();
+  Object.values(stateObj?.datasets?.roster?.sources?.['retained-grid']?.players || {})
+    .filter((record) => record.owner).forEach((record) => {
+      getRosterPlayerIdentityAliases(record.name).forEach((alias) => {
+        if (fromDraftSheet.has(alias)) {
+          fromDraftSheet.set(alias, null);
+        } else {
+          fromDraftSheet.set(alias, {
+            owner: record.owner,
+            price: Number.isFinite(record.cost) ? record.cost : null,
+          });
+        }
+      });
+    });
+  const fromWinningBids = new Map(Object.values(stateObj?.workingAssignments || {})
+    .filter((entry) => entry?.team).map((entry) => [normalizeLookupKey(entry.name), {
+      owner: entry.team,
+      price: Number.isFinite(entry.bid) ? entry.bid : null,
+    }]));
+  const profilesByName = new Map();
+  [...Object.values(cachedProfiles), ...Object.values(liveProfiles)].forEach((profile) => {
+    if (!profile?.playerName) return;
+    const key = normalizeLookupKey(profile.playerName);
+    const previous = profilesByName.get(key);
+    const games = profile.historical?.gamesPlayed;
+    const previousGames = previous?.historical?.gamesPlayed;
+    if (!previous || (Number.isInteger(games) && games >= 0)
+      || !Number.isInteger(previousGames) || previousGames < 0) {
+      profilesByName.set(key, profile);
+    }
+  });
+  return (players || []).flatMap((player) => {
+    if (player.status !== 'in-ahl') return [];
+    const key = normalizeLookupKey(player.name);
+    const aliases = getRosterPlayerIdentityAliases(player.name);
+    const draft = fromDraftSheet.get(key)
+      || aliases.map((alias) => fromDraftSheet.get(alias)).find(Boolean)
+      || fromWinningBids.get(key);
+    if (!draft) return [];
+    const games = player.nhlCareerGamesPlayed ?? profilesByName.get(key)?.historical?.gamesPlayed;
+    return [{
+      ...player,
+      draftOwner: draft.owner,
+      draftPrice: draft.price,
+      nhlCareerGamesPlayed: Number.isInteger(games) && games >= 0 ? games : null,
+    }];
+  });
+}
+
+async function hydrateDraftBoardProfiles(draftedPlayers) {
+  if (state.draftGpLoading) return;
+  const pending = draftedPlayers.filter((player) => {
+    const key = normalizeLookupKey(player.name);
+    return player.nhlCareerGamesPlayed === null && player.team
+      && !state.draftGpAttempted.has(key);
+  });
+  if (!pending.length) return;
+  pending.forEach((player) => state.draftGpAttempted.add(normalizeLookupKey(player.name)));
+  state.draftGpLoading = true;
+  try {
+    for (let offset = 0; offset < pending.length; offset += 4) {
+      const batch = pending.slice(offset, offset + 4);
+      const results = await Promise.all(batch.map(async (player) => {
+        try {
+          const profile = await resolveLivePlayerProfile({
+            player: { name: player.name, nhlteam: player.team, playerKey: `draft:${normalizeLookupKey(player.name)}` },
+            cache: state.liveCache,
+          });
+          state.liveProfiles[profile.playerKey] = profile;
+          return { fetched: Number.isInteger(profile.historical?.gamesPlayed), errors: profile.errors || [] };
+        } catch (error) {
+          console.error(`NHL GP lookup failed for ${player.name}`, error);
+          return { fetched: false, errors: [error instanceof Error ? error.message : String(error)] };
+        }
+      }));
+      if (results.every((result) => !result.fetched && result.errors.some((error) => /failed to fetch/i.test(error)))) {
+        console.warn('NHL career GP lookups are unavailable; remaining drafted players default to Veteran.');
+        break;
+      }
+      if (state.activeDashboardTab === 'draft-board') renderOwnerView(state.importedData || loadState());
+    }
+  } finally {
+    state.draftGpLoading = false;
+    if (state.activeDashboardTab === 'draft-board') renderOwnerView(state.importedData || loadState());
+  }
+}
+
 function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) {
   const app = document.getElementById('app');
   const activeSearch = document.activeElement;
@@ -3504,16 +3593,23 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   );
   const availableKeys = localDraftView.availableKeys;
   const players = localDraftView.players;
+  const draftedPlayers = buildDraftBoardPlayers(players, unifiedState, state.liveProfiles, state.liveCache.players);
   const teamNames = ownerData.owners.map((owner) => owner.name);
   const selectedPlayer = players.find((player) => player.id === state.selectedDraftPlayerId) || null;
   const selectedAvailablePlayer = selectedPlayer && draftValidationReport.availablePlayers.find(
     (entry) => normalizeLookupKey(entry.name) === normalizeLookupKey(selectedPlayer.name),
   );
+  const selectedDraftEntry = draftedPlayers.find((player) => player.id === selectedPlayer?.id);
   const selectedDraftPlayer = selectedPlayer
     ? {
       ...selectedPlayer,
+      ...selectedDraftEntry,
+      ...(selectedDraftEntry ? { ownership: selectedDraftEntry.draftOwner } : {}),
       category: selectedPlayer.category || selectedAvailablePlayer?.type || null,
       assignmentKey: selectedAvailablePlayer?.key || normalizeLookupKey(selectedPlayer.name),
+      available: selectedPlayer.status === 'in-ahl'
+        && selectedPlayer.localStatus !== 'removed-local'
+        && availableKeys.has(normalizeLookupKey(selectedPlayer.name)),
     }
     : null;
   const summary = computeDashboardSummary(unifiedState);
@@ -3552,6 +3648,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   app.innerHTML = renderDraftAuctionDashboard({
     activeTab: state.activeDashboardTab,
     players,
+    draftedPlayers,
     availableKeys,
     shortlist: state.shortlist,
     personalDraftList: state.personalDraftList,
@@ -3562,7 +3659,6 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     search: state.draftBoardSearch,
     positionFilter: state.draftPositionFilter,
     categoryFilter: state.draftCategoryFilter,
-    availabilityFilter: state.draftAvailabilityFilter,
     bestAvailableSort: state.bestAvailableSort,
     showAllAhlPlayers: state.showAllAhlPlayers,
     showRemovedPlayers: state.showRemovedPlayers,
@@ -3574,7 +3670,11 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     sourceAvailability: state.draftIntelligence.players?.sourceAvailability || {},
     toolsHtml: `${state.shortlistStorageError ? `<p class="warning-banner">${escapeHtml(state.shortlistStorageError)}</p>` : ''}${state.personalDraftListStorageError ? `<p class="warning-banner">${escapeHtml(state.personalDraftListStorageError)}</p>` : ''}${state.draftIntelligenceStorageError ? `<p class="warning-banner">${escapeHtml(state.draftIntelligenceStorageError)}</p>` : ''}${state.localDraftEditsStorageError ? `<p class="warning-banner">${escapeHtml(state.localDraftEditsStorageError)}</p>` : ''}${toolsHtml}`,
     workspaceHtml,
+    gpWarning: draftedPlayers.some((player) => player.nhlCareerGamesPlayed === null)
+      ? 'NHL career GP is pending or unavailable for some drafted players; their Experience Tier defaults to Veteran.'
+      : '',
   });
+  if (state.activeDashboardTab === 'draft-board') void hydrateDraftBoardProfiles(draftedPlayers);
   updateTopbarActions(unifiedState);
 
   document.querySelectorAll('[data-dashboard-tab]').forEach((button) => {
@@ -3594,10 +3694,6 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   });
   document.getElementById('draftCategoryFilter')?.addEventListener('change', (event) => {
     state.draftCategoryFilter = event.target.value || '';
-    rerender();
-  });
-  document.getElementById('draftAvailabilityFilter')?.addEventListener('change', (event) => {
-    state.draftAvailabilityFilter = event.target.value || 'all';
     rerender();
   });
   document.querySelectorAll('[data-show-all-ahl-players]').forEach((checkbox) => {
@@ -3854,6 +3950,12 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     const formData = new FormData(form);
     if (!player) {
       alert('Unable to save winning bid. Player record is unavailable.');
+      return;
+    }
+    if (player.status !== 'in-ahl' || player.localStatus === 'removed-local'
+      || !availableKeys.has(normalizeLookupKey(player.name))
+      || draftedPlayers.some((drafted) => drafted.id === player.id)) {
+      alert('Unable to save winning bid. This player is not available to draft.');
       return;
     }
     const team = String(formData.get('team') || '').trim();

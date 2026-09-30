@@ -33,15 +33,9 @@ Use the app to answer four questions:
 4. Can I trust this data right now?
 
 ## How to launch locally
-1. Open the repository root on your machine.
-2. Start a static server from the project root (the folder containing `index.html`).
-3. Open the served URL in your browser.
-
-Example:
-```bash
-python -m http.server 8000
-```
-Then open `http://localhost:8000`.
+1. Install Node.js and run `Start-Hockeydashboard.cmd` from the folder containing `index.html`; keep the launcher running.
+2. Open `http://127.0.0.1:3000/index.html` on that computer. On another device on the same network, use the host's LAN IPv4 address instead of `127.0.0.1`.
+3. Follow [Hockeydashboard_Access.md](./Hockeydashboard_Access.md) for the manual Dobber uploads and cross-device setup.
 
 ## How to access away from your desktop
 - **Hosted access:** enable GitHub Pages for this repository and use the published URL on laptop or phone.
@@ -65,6 +59,7 @@ To work reliably, the app expects current CSV snapshots for any of these dataset
 
 ## Draft Intelligence data
 - The dashboard exposes Draft Board, Best Available, Team Budgets, Personal Draft List, and Tools & Validation.
+- Draft Board lists players in the Draft 2026 grid and local winning bids. Owner and paid Auction Value come from the grid (which takes precedence over a conflicting local bid), or from the local winning bid when the player has not yet appeared in the grid; the model's estimated auction value is not shown as a paid price. Only Best Available offers the Add to Personal List action. Draft Board Experience Tier uses career GP already on the player, from a live NHL profile, or from the saved NHL profile cache: Farm 0–9, Rookie 10–82, Veteran 83+; only missing career GP displays Veteran by default with a warning.
 - Team Budgets and roster validation use the AHL Draft sheet's team balances and open slots; local working assignments subtract their bid and consume one slot. Missing sheet balances remain unavailable and are never replaced with a fixed-cap estimate.
 - Budget values normalize currency strings such as `$71.50`; explicit skater values such as `6/23` normalize to `{ count: 6, max: 23 }`. The current Draft 2026 retained grid supplies TOTAL SPENT and BALANCE, with skater counts derived from its player rows.
 - Final Position is the Utility tab position when a player is listed there; otherwise it is the AHL Position tab position. NHL Position never supplies pool position or eligibility.
@@ -78,7 +73,7 @@ To work reliably, the app expects current CSV snapshots for any of these dataset
 - Dobber PDF metadata is attached only when the PDFs explicitly label pedigree or projection confidence, or explicitly tag a sleeper/bust. These fields add explanations only and do not numerically alter DraftIQ or tiers.
 - AHL Position is used for pool position unless Utility lists the player, in which case Utility is the Final Position. NHL Position comes only from parsed Dobber Excel and never changes pool position.
 - DraftIQ uses `0.45*PPS + 0.20*RSS + 0.15*BPS - 0.10*RRS + 0.10*KVS`, clamped to 0–100. `VALUE` requires price above its band midpoint and RRS `<=33`; `RISK` requires price above midpoint plus RRS `>=67`, usage-decline `>=0.67`, or aging-risk `>=0.67`; `FAIR` is within 10% of band width (minimum $0.50) of midpoint when no high-risk signal applies. Band midpoints are $50, $32, $17, $7, and $2.50 for tiers 1–5. Outputs remain `UNPRICED` when required scores or auction inputs are missing.
-- Shortlists are stored in browser local storage. Winning bids are recorded as local Working Assignments and update availability and team budget calculations immediately; the Google Sheets remain the operational source of truth.
+- Winning bids are recorded as local Working Assignments and update Draft Board ownership, availability, and team budget calculations immediately; the Google Sheets remain the operational source of truth. Remove Locally hides drafted rows until Show Removed Players is enabled, where they can be restored.
 - Personal Draft List ranks and notes are stored only in browser local storage and can be exported locally as JSON.
 
 ## Source-of-truth rules

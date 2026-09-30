@@ -11,6 +11,14 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 
 const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL';
 
+export function getExperienceTierFromGames(gamesPlayed) {
+  if (gamesPlayed === null || gamesPlayed === undefined) return 'Veteran';
+  const games = Number(gamesPlayed);
+  if (!Number.isInteger(games) || games < 0) return 'Veteran';
+  if (games < 10) return 'Farm';
+  return games <= 82 ? 'Rookie' : 'Veteran';
+}
+
 function getAhlPlayerPositions(player) {
   const finalPosition = String(player.finalPosition || '')
     .split(/[\/,\s]+/)
@@ -24,12 +32,12 @@ function getAhlPlayerPositions(player) {
   return [...new Set(finalPosition)];
 }
 
-function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, {
+function renderPlayerRows(players, availableKeys, personalDraftList, {
   kind = 'board',
   emptyMessage = 'No matching players.',
   highlightUnavailable = false,
 } = {}) {
-  if (!players.length) return `<tr><td colspan="${kind === 'best-available' ? 6 : 12}" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+  if (!players.length) return `<tr><td colspan="6" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
   return players.map((player) => {
     const isAvailable = player.status !== 'not-in-ahl'
       && player.localStatus !== 'removed-local'
@@ -48,7 +56,8 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
       const forecastedPoints = player.forecast?.projectedPoints ?? player.forecastedPoints ?? null;
       const compositeScore = player.forecast?.compositeScore ?? player.compositeForecastScore ?? null;
       return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
-        <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button></td>
+        <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button>
+          <button type="button" class="secondary personal-list-toggle" data-personal-add="${escapeHtml(player.id)}" ${isPersonal ? 'disabled aria-disabled="true"' : ''}>${isPersonal ? 'In List' : 'Add to Personal List'}</button></td>
         <td>${escapeHtml(finalPosition)}</td>
         <td>${escapeHtml(experienceTier)}</td>
         <td>${forecastedPoints ?? 'NULL'}</td>
@@ -59,15 +68,9 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
     return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
       <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button></td>
       <td>${escapeHtml(finalPosition)}</td>
-      <td>${escapeHtml(experienceTier)}</td>
-      <td>${player.tier ?? 'NULL'}</td>
-      <td>${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}</td>
-      <td>${player.recommendedMaxBid === null ? 'NULL' : money(player.recommendedMaxBid)}</td>
-      <td>${escapeHtml(player.classification || 'UNPRICED')}</td>
-      <td>${escapeHtml(player.ownership || 'Unassigned')}${player.localAssignmentTeam ? ' (local)' : ''}</td>
-      <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
-      <td><button type="button" class="secondary shortlist-toggle" data-shortlist-player="${escapeHtml(player.id)}" aria-pressed="${shortlist.has(player.id)}">${shortlist.has(player.id) ? '★' : '☆'}</button></td>
-      <td><button type="button" class="secondary personal-list-toggle" data-personal-add="${escapeHtml(player.id)}" ${isPersonal ? 'disabled aria-disabled="true"' : ''}>${isPersonal ? 'In List' : 'Add to Personal List'}</button></td>
+      <td>${getExperienceTierFromGames(player.nhlCareerGamesPlayed)}</td>
+      <td>${escapeHtml(player.draftOwner)}</td>
+      <td>${Number.isFinite(player.draftPrice) ? money(player.draftPrice) : 'UNPRICED'}</td>
       <td><button type="button" class="secondary" ${removed
     ? `data-undo-player="${escapeHtml(player.id)}">Undo remove`
     : `data-remove-player="${escapeHtml(player.id)}">Remove locally`}</button></td>
@@ -75,14 +78,14 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
   }).join('');
 }
 
-function renderPlayerTable(players, shortlist, availableKeys, personalDraftList, options = {}) {
+function renderPlayerTable(players, availableKeys, personalDraftList, options = {}) {
   const normalizedOptions = { kind: 'board', ...options };
   const headers = normalizedOptions.kind === 'best-available'
     ? ['Player', 'Final Position', 'Experience Tier', 'Forecasted Points', 'Composite Score', 'Availability']
-    : ['Player', 'Final Position', 'Experience Tier', 'Tier', 'Auction Value', 'Max Bid', 'Value/Risk', 'Owner', 'Availability', 'Shortlist', 'Personal List', 'Local Edit'];
+    : ['Player', 'Final Position', 'Experience Tier', 'Owner', 'Auction Value', 'Remove Locally'];
   return `<div class="table-wrap"><table class="validation-table">
     <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
-    <tbody>${renderPlayerRows(players, shortlist, availableKeys, personalDraftList, normalizedOptions)}</tbody>
+    <tbody>${renderPlayerRows(players, availableKeys, personalDraftList, normalizedOptions)}</tbody>
   </table></div>`;
 }
 
@@ -226,8 +229,8 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     <section class="draft-modal panel" role="dialog" aria-modal="true" aria-labelledby="draftModalTitle">
       <button type="button" class="modal-close secondary" aria-label="Close player profile" data-close-player-details>Close</button>
       <h2 id="draftModalTitle">${escapeHtml(player.name)}</h2>
-      <p>Final Position ${escapeHtml(player.finalPosition || player.finalPositionOverride || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | Experience Tier ${escapeHtml(player.experienceTier || player.category || 'NULL')}</p>
-      ${player.valuationStatus !== 'priced' ? '<p class="warning-banner">UNPRICED - required source-backed inputs are missing. No auction value or max bid is estimated.</p>' : ''}
+      <p>Final Position ${escapeHtml(player.finalPosition || player.finalPositionOverride || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | Experience Tier ${escapeHtml(player.draftOwner ? getExperienceTierFromGames(player.nhlCareerGamesPlayed) : player.experienceTier || player.category || 'NULL')}</p>
+      ${player.valuationStatus !== 'priced' ? '<p class="warning-banner">Estimated value UNPRICED - required source-backed inputs are missing. A paid Draft 2026 price or local winning bid, when present, is shown separately.</p>' : ''}
       <form class="local-player-assignment-form" data-local-assignment-form="${escapeHtml(player.id)}">
         <label>Local owner
           <select name="team" required>
@@ -273,7 +276,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
         ])}</dl></article>
       </div>
       <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
-        <strong>Recommended max bid:</strong> ${money(recommendation)}</p>
+        <strong>Recommended max bid:</strong> ${money(recommendation)}${player.draftOwner ? ` <strong>Draft 2026 / winning bid:</strong> ${money(player.draftPrice)}` : ''}</p>
       <form class="winning-bid-form" data-winning-bid-form="${escapeHtml(player.id)}" data-assignment-key="${escapeHtml(player.assignmentKey || player.id)}">
         <label>Winning team
           <select name="team" required>
@@ -290,7 +293,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
             ${['Farm', 'Rookie', 'Veteran'].map((category) => `<option value="${category}" ${player.category === category ? 'selected' : ''}>${category}</option>`).join('')}
           </select>
         </label>
-        <button class="primary" type="submit" ${teams.length ? '' : 'disabled'}>Record winning bid</button>
+        <button class="primary" type="submit" ${teams.length && player.available && player.status !== 'not-in-ahl' && !player.draftOwner ? '' : 'disabled'}>Record winning bid</button>
       </form>
     </section>
   </div>`;
@@ -299,8 +302,8 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
 export function renderDraftAuctionDashboard({
   activeTab,
   players,
+  draftedPlayers = [],
   availableKeys,
-  shortlist,
   personalDraftList = [],
   personalDraftListSort = 'rank',
   personalDraftPositionFilter = '',
@@ -309,7 +312,6 @@ export function renderDraftAuctionDashboard({
   search,
   positionFilter,
   categoryFilter,
-  availabilityFilter,
   bestAvailableSort,
   showAllAhlPlayers = false,
   showRemovedPlayers = false,
@@ -321,25 +323,18 @@ export function renderDraftAuctionDashboard({
   sourceAvailability,
   toolsHtml,
   workspaceHtml,
+  gpWarning = '',
 }) {
   const eligiblePlayers = players.filter((player) => player.status !== 'not-in-ahl');
-  const allPositions = [...new Set(eligiblePlayers.flatMap(getAhlPlayerPositions))].sort();
-  const filtered = eligiblePlayers.filter((player) => {
+  const draftedKeys = new Set(draftedPlayers.map((player) => normalizeLookupKey(player.name)));
+  const allPositions = [...new Set(draftedPlayers.flatMap(getAhlPlayerPositions))].sort();
+  const filtered = draftedPlayers.filter((player) => {
     const removed = player.localStatus === 'removed-local';
     if (removed && !showRemovedPlayers) return false;
-    const isAvailable = !removed && availableKeys.has(normalizeLookupKey(player.name));
-    if (
-      !showAllAhlPlayers
-      && availabilityFilter !== 'unavailable'
-      && !isAvailable
-      && !(removed && showRemovedPlayers)
-    ) return false;
     const matchesSearch = !search || `${player.name} ${player.team || ''}`.toLowerCase().includes(search.toLowerCase());
     const matchesPosition = !positionFilter || getAhlPlayerPositions(player).includes(positionFilter);
-    const matchesCategory = !categoryFilter || player.category === categoryFilter;
-    const matchesAvailability = availabilityFilter === 'all'
-      || (availabilityFilter === 'available' ? isAvailable : !isAvailable);
-    return matchesSearch && matchesPosition && matchesCategory && matchesAvailability;
+    const matchesCategory = !categoryFilter || getExperienceTierFromGames(player.nhlCareerGamesPlayed) === categoryFilter;
+    return matchesSearch && matchesPosition && matchesCategory;
   });
   const availableEligibleCount = eligiblePlayers.filter((player) => (
     player.localStatus !== 'removed-local'
@@ -348,6 +343,7 @@ export function renderDraftAuctionDashboard({
   const bestPlayers = eligiblePlayers.filter((player) => {
     const removed = player.localStatus === 'removed-local';
     const isAvailable = !removed && availableKeys.has(normalizeLookupKey(player.name));
+    if (draftedKeys.has(normalizeLookupKey(player.name))) return false;
     if (removed && !showRemovedPlayers) return false;
     return showAllAhlPlayers || isAvailable || (removed && showRemovedPlayers);
   });
@@ -388,7 +384,7 @@ export function renderDraftAuctionDashboard({
   const bestAvailableEmptyMessage = availableEligibleCount === 0
     ? 'All AHL-eligible players are currently unavailable.'
     : 'No matching players.';
-  const draftBoardEmptyMessage = 'No draftable players available under current filters.';
+  const draftBoardEmptyMessage = 'No drafted players match the current filters.';
   const sourceRows = Object.entries(sourceAvailability || {}).map(([name, loaded]) => `<tr><td>${escapeHtml(name)}</td><td>${loaded ? 'Available' : 'Missing'}</td></tr>`).join('');
   const legend = `<details class="acronym-legend"><summary class="secondary">Legend</summary>
     <dl>${[
@@ -405,23 +401,25 @@ export function renderDraftAuctionDashboard({
   </details>`;
   const boardPanel = `<section id="draft-board-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'draft-board' ? '' : 'hidden'}>
     <div class="panel draft-board-panel">
-      <div class="preview-header"><div><h2>Draft Board</h2><p class="panel-subtitle">Source-backed values only; missing values remain unpriced.</p></div>
-        <span class="meta-pill">${availableEligibleCount} available</span></div>
-      ${localPlayerFilters}
+      <div class="preview-header"><div><h2>Draft Board</h2><p class="panel-subtitle">Draft 2026 owners and paid prices, plus local winning bids; estimated auction values are not shown here.</p></div>
+        <span class="meta-pill">${draftedPlayers.length} drafted</span></div>
+      ${gpWarning ? `<p class="warning-banner">${escapeHtml(gpWarning)}</p>` : ''}
+      <div class="draft-board-filters draft-local-edit-toggles">
+        <label><input type="checkbox" data-show-removed-players ${showRemovedPlayers ? 'checked' : ''} /> Show Removed Players</label>
+      </div>
       <div class="draft-board-filters">
         <label>Search <input id="draftBoardSearch" type="search" value="${escapeHtml(search)}" placeholder="Player or NHL team" /></label>
         <label>Position <select id="draftPositionFilter"><option value="">All positions</option>${allPositions.map((position) => `<option ${selected(position, positionFilter)}>${escapeHtml(position)}</option>`).join('')}</select></label>
         <label>Experience Tier <select id="draftCategoryFilter"><option value="">All tiers</option>${['Farm', 'Rookie', 'Veteran'].map((category) => `<option ${selected(category, categoryFilter)}>${category}</option>`).join('')}</select></label>
-        <label>Availability <select id="draftAvailabilityFilter"><option value="all" ${selected('all', availabilityFilter)}>All</option><option value="available" ${selected('available', availabilityFilter)}>Available</option><option value="unavailable" ${selected('unavailable', availabilityFilter)}>Unavailable</option></select></label>
       </div>
-      ${renderPlayerTable(filtered, shortlist, availableKeys, personalDraftList, { emptyMessage: draftBoardEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
+      ${renderPlayerTable(filtered, availableKeys, personalDraftList, { emptyMessage: draftBoardEmptyMessage })}
     </div>
   </section>`;
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
     <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Forecast fields remain NULL until source-backed projections are available.</p></div>
       <div class="best-available-toolbar"><label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
       ${localPlayerFilters}
-      ${renderPlayerTable(bestPlayers, shortlist, availableKeys, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
+      ${renderPlayerTable(bestPlayers, availableKeys, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>
   </section>`;
   const budgetsPanel = `<section id="team-budgets-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'team-budgets' ? '' : 'hidden'}>

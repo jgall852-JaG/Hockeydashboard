@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hockey-dashboard-static-v9';
+const CACHE_NAME = 'hockey-dashboard-static-v11';
 const APP_SHELL = [
   './',
   './index.html',
@@ -13,6 +13,7 @@ const APP_SHELL = [
   './offlineSnapshotStore.js',
   './localDraftEdits.js',
   './dobberIngestion.js',
+  './forecastedStats.js',
   './liveNhlApi.js',
   './rosterParser.js',
   './prospectParser.js',
