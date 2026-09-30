@@ -29,9 +29,11 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
   emptyMessage = 'No matching players.',
   highlightUnavailable = false,
 } = {}) {
-  if (!players.length) return `<tr><td colspan="${kind === 'best-available' ? 7 : 12}" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+  if (!players.length) return `<tr><td colspan="${kind === 'best-available' ? 6 : 12}" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
   return players.map((player) => {
-    const isAvailable = availableKeys.has(normalizeLookupKey(player.name));
+    const isAvailable = player.status !== 'not-in-ahl'
+      && player.localStatus !== 'removed-local'
+      && availableKeys.has(normalizeLookupKey(player.name));
     const isPersonal = personalDraftList.some((entry) => entry.playerId === player.id);
     const removed = player.localStatus === 'removed-local';
     const unavailable = highlightUnavailable
@@ -44,16 +46,14 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
     const finalPosition = player.finalPosition || player.finalPositionOverride || 'NULL';
     if (kind === 'best-available') {
       const forecastedPoints = player.forecast?.projectedPoints ?? player.forecastedPoints ?? null;
-      const compositeScore = player.forecast?.compositeForecastScore ?? player.compositeForecastScore ?? null;
-      const adp = player.forecast?.adp ?? player.adp ?? null;
+      const compositeScore = player.forecast?.compositeScore ?? player.compositeForecastScore ?? null;
       return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
         <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button></td>
         <td>${escapeHtml(finalPosition)}</td>
         <td>${escapeHtml(experienceTier)}</td>
-        <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
         <td>${forecastedPoints ?? 'NULL'}</td>
         <td>${compositeScore ?? 'NULL'}</td>
-        <td>${adp ?? 'NULL'}</td>
+        <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
       </tr>`;
     }
     return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
@@ -78,7 +78,7 @@ function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, 
 function renderPlayerTable(players, shortlist, availableKeys, personalDraftList, options = {}) {
   const normalizedOptions = { kind: 'board', ...options };
   const headers = normalizedOptions.kind === 'best-available'
-    ? ['Player', 'Final Position', 'Experience Tier', 'Availability', 'Forecasted Points', 'Composite Score', 'ADP']
+    ? ['Player', 'Final Position', 'Experience Tier', 'Forecasted Points', 'Composite Score', 'Availability']
     : ['Player', 'Final Position', 'Experience Tier', 'Tier', 'Auction Value', 'Max Bid', 'Value/Risk', 'Owner', 'Availability', 'Shortlist', 'Personal List', 'Local Edit'];
   return `<div class="table-wrap"><table class="validation-table">
     <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
@@ -197,7 +197,9 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     .join('');
   const projectionRows = Object.entries(projections).map(([label, value]) => [label, value]);
   const forecastRows = [
-    ['ProjPts', projectionValue('ProjPts', 'Projected Points', 'Forecasted Points')],
+    ['Projected Points', player.forecast?.projectedPoints ?? player.forecastedPoints],
+    ['Projected Games', player.forecast?.projectedGames],
+    ['Projected Shots', player.forecast?.projectedShots],
     ['PPS', player.production?.PPS],
     ['RSS', player.deployment?.RSS],
     ['RRS', player.deployment?.RRS],
@@ -205,7 +207,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     ...projectionRows,
   ];
   const scoreRows = [
-    ['Composite Forecast Score', player.compositeForecastScore ?? player.forecast?.compositeForecastScore],
+    ['Composite Score', player.forecast?.compositeScore ?? player.compositeForecastScore],
     ['Forecasted Points', player.forecastedPoints ?? player.forecast?.projectedPoints],
     ['ADP', player.adp ?? player.forecast?.adp],
   ];
@@ -249,8 +251,8 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
         ])}</dl></article>
         <article class="detail-card"><h3>Forecasted Stats (Dobber Projections)</h3><dl class="kv-list">${metricMarkup(forecastRows)}</dl></article>
         <article class="detail-card"><h3>Historical Splits (AHL Scores)</h3><dl class="kv-list">${metricMarkup([
-          ['FHPPG', player.historicalSplits?.FHPPG],
-          ['SHPPG', player.historicalSplits?.SHPPG],
+          ['FHPPG', player.forecast?.FHPPG ?? player.historicalSplits?.FHPPG],
+          ['SHPPG', player.forecast?.SHPPG ?? player.historicalSplits?.SHPPG],
           ['Source tab', player.historicalSplits?.sourceTab],
         ])}</dl></article>
         <article class="detail-card"><h3>Composite Forecast Score</h3><dl class="kv-list">${metricMarkup(scoreRows)}</dl></article>
@@ -352,16 +354,16 @@ export function renderDraftAuctionDashboard({
   const sortKeys = {
     ADP: 'adp',
     'Forecasted Points': 'forecastedPoints',
-    'Composite Forecast Score': 'compositeForecastScore',
-    'First-Half PPG (FHPPG)': 'historicalSplits.FHPPG',
-    'Second-Half PPG (SHPPG)': 'historicalSplits.SHPPG',
-    'Risk Score': 'riskScore',
-    'Pedigree Score': 'pedigreeScore',
+    'Composite Score': 'compositeScore',
+    FHPPG: 'FHPPG',
+    SHPPG: 'SHPPG',
   };
   const sortValueKeys = {
     adp: ['adp', 'forecast.adp'],
-    forecastedPoints: ['forecastedPoints', 'forecast.projectedPoints'],
-    compositeForecastScore: ['compositeForecastScore', 'forecast.compositeForecastScore'],
+    forecastedPoints: ['forecast.projectedPoints', 'forecastedPoints'],
+    compositeScore: ['forecast.compositeScore', 'compositeForecastScore'],
+    FHPPG: ['forecast.FHPPG', 'historicalSplits.FHPPG'],
+    SHPPG: ['forecast.SHPPG', 'historicalSplits.SHPPG'],
   };
   const readSortValue = (player, key) => key.split('.').reduce((value, part) => value?.[part], player);
   const getSortValue = (player) => {

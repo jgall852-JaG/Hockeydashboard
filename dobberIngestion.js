@@ -1,4 +1,5 @@
 import { normalizeLookupKey } from './liveNhlApi.js';
+import { applyForecastedStats, buildForecastedStats } from './forecastedStats.js';
 import {
   calculateAuctionValue,
   calculateDraftIqScores,
@@ -60,6 +61,20 @@ function projectionScore(row, projections, field) {
   return normalizeScore(readField(projections, field), `Dobber Projections.${field}`);
 }
 
+function forecastProjections(row, projections) {
+  const directFields = {
+    ProjPts: ['ProjPts', 'Proj Pts', 'Projected Points', 'Forecasted Points'],
+    ProjGP: ['ProjGP', 'Proj Games', 'Projected Games'],
+    ProjSOG: ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots'],
+  };
+  const direct = Object.fromEntries(Object.entries(directFields).flatMap(([field, aliases]) => {
+    const value = aliases.map((alias) => readField(row, alias))
+      .find((candidate) => candidate !== undefined && candidate !== null && String(candidate).trim() !== '');
+    return value === undefined ? [] : [[field, value]];
+  }));
+  return { ...(projections && typeof projections === 'object' ? projections : {}), ...direct };
+}
+
 function parseRiskFlags(value) {
   if (Array.isArray(value)) return value.map((entry) => String(entry).trim()).filter(Boolean);
   return String(value || '').split(/[;,|]/).map((entry) => entry.trim()).filter(Boolean);
@@ -76,6 +91,8 @@ export function normalizeDobberRows(rows) {
       throw new Error(`Dobber workbook contains duplicate player rows for ${player}.`);
     }
     const projections = parseProjectionPayload(readField(row, 'Projections'));
+    const normalizedForecastProjections = forecastProjections(row, projections);
+    buildForecastedStats(normalizedForecastProjections, null);
     players[playerKey] = {
       player,
       team: String(readField(row, 'Team') || '').trim().toUpperCase(),
@@ -88,6 +105,7 @@ export function normalizeDobberRows(rows) {
       rss: projectionScore(row, projections, 'RSS'),
       rrs: projectionScore(row, projections, 'RRS'),
       projections,
+      forecastProjections: normalizedForecastProjections,
       riskFlags: parseRiskFlags(readField(row, 'RiskFlags')),
       intelEdge: null,
       sourceRow: index + 2,
@@ -128,7 +146,7 @@ export function parseDobberWorkbook(arrayBuffer, xlsx = globalThis.XLSX) {
   if (!normalizedHeaders.has('player')) {
     throw new Error('Dobber workbook is missing the required Player column.');
   }
-  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags'];
+  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags', 'projpts', 'projgp', 'projsog', 'projshots', 'projectedpoints', 'projectedgames', 'projectedshots'];
   if (!dataColumns.some((column) => normalizedHeaders.has(column))) {
     throw new Error('Dobber workbook is missing expected skater data columns.');
   }
@@ -436,7 +454,7 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
       player.classification = 'UNPRICED';
       player.valuationStatus = 'unpriced';
       player.missingSources[hasExcel ? 'DobberExcel player match' : 'DobberExcel'] = true;
-      return player;
+      return applyForecastedStats(player, null);
     }
 
     player.nhlPosition = dobber.nhlPos;
@@ -473,7 +491,7 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
         player.missingSources[`Dobber projection ${metric}`] = true;
       }
     });
-    return player;
+    return applyForecastedStats(player, dobber.forecastProjections || dobber.projections);
   });
 
   const stagedPlayers = beforePricing(ingestedPlayers);
