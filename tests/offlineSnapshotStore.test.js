@@ -45,6 +45,11 @@ describe('offline AHL snapshot storage', () => {
   const snapshot = {
     datasets: { roster: { players: {} } },
     metadata: { ahlSheets: { status: 'ok', importedAt: '2026-09-29T12:00:00.000Z' } },
+    localEdits: {
+      removedPlayers: ['player one'],
+      manualAssignments: { 'player two': 'TEAM A' },
+      manualUnassign: ['player three'],
+    },
   };
   const draftIntelligence = Object.fromEntries(
     ['players', 'auction', 'tiers', 'keepers', 'prospects'].map((name) => [name, {}]),

@@ -36,6 +36,22 @@
         </div>
       </header>
 
+      <section class="dobber-import-panel" aria-label="Local Dobber file imports">
+        <h2>Local Dobber Imports</h2>
+        <div class="dobber-import-grid">
+          <div id="dobberExcelDropZone" class="dobber-drop-zone" role="button" tabindex="0" aria-label="Drop a Dobber Excel workbook or choose a file">
+            <strong>Dobber Excel</strong>
+            <span>Drop one .xlsx workbook here or choose a file.</span>
+            <span id="dobberExcelImportStatus" class="dobber-import-status" aria-live="polite">Dobber Excel unavailable. Select a local .xlsx workbook.</span>
+          </div>
+          <div id="dobberPdfDropZone" class="dobber-drop-zone" role="button" tabindex="0" aria-label="Drop Dobber PDF files or choose files">
+            <strong>Dobber PDFs</strong>
+            <span>Drop one or more .pdf files here or choose files.</span>
+            <span id="dobberPdfImportStatus" class="dobber-import-status" aria-live="polite">Dobber PDFs unavailable. Select local PDF files.</span>
+          </div>
+        </div>
+      </section>
+
       <main id="app" class="app" aria-live="polite"></main>
     </div>
 

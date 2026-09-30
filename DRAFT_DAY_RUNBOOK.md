@@ -6,8 +6,8 @@
 3. Import your saved state file if you are moving from another machine.
 4. Confirm the AHL source status is loaded and validation shows no blocking ownership or availability conflicts.
 5. Confirm UNPRICED warnings when Dobber Excel or player-level score inputs have not been supplied.
-6. If OneDrive refresh reports 401/403, use **Import Dobber Excel** and select the workbook containing `EVERYTHING (Skaters)`; optionally import both Dobber PDFs.
-7. Confirm Dobber shows `loaded-local` only after the selected files parse; remote failures must remain visibly `unavailable`.
+6. If OneDrive refresh reports 401/403, use **Import Dobber Excel** or its drop zone with the workbook containing `EVERYTHING (Skaters)`; optionally import both Dobber PDFs using their button or drop zone.
+7. Confirm successful local imports show `loaded-local`, a parsed player count, and the last-import time. Invalid workbook/PDF warnings remain visible; remote failures stay `unavailable`.
 8. Confirm the offline snapshot timestamp and install the dashboard from the browser or use **Install Dashboard**.
 9. Use your laptop for drafting. Use your phone only for quick lookup or emergency access.
 
@@ -40,6 +40,10 @@
 - If Dobber is imported, do the required PPS/RSS/RRS projection fields exist? BPS/KVS alone do not complete DraftIQ.
 - Are player-level score inputs available? If not, DraftIQ and auction values must remain UNPRICED.
 - Is Final Position sourced from Utility when listed, and from AHL Position otherwise?
+- Are manual removals, assignments, and unassignments intentional? They are browser-local overlays, remain offline, and clear only after a successful AHL refresh. Local Dobber imports preserve them.
+- If no eligible skaters are available, use **Show All AHL Players** to inspect the AHL pool; **Show Removed Players** controls visibility of commissioner removals.
+- Draft Board defaults to available AHL players; commissioner toggles can reveal the full AHL pool or removed players. Optional highlighting marks eligible players unavailable under the current AHL/local assignment view.
+- **Reset Local Edits** is in Tools & Validation and runs the normal authoritative AHL refresh. Edits clear only when that refresh succeeds; local Dobber files are retained and reapplied.
 - Have you exported your Personal Draft List JSON if using another device? LocalStorage and IndexedDB do not sync between devices.
 
 The previous-year OneDrive roster example and separate house-budget workbook are not part of the operational workflow. Refreshed JSON can be exported from Tools & Validation; GitHub Pages cannot write repository files.

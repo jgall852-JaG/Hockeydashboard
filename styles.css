@@ -69,6 +69,61 @@ button, input {
   text-align: right;
 }
 
+.dobber-import-panel {
+  margin-bottom: 20px;
+  padding: 16px 20px;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: rgba(23, 34, 52, 0.72);
+}
+
+.dobber-import-panel h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.dobber-import-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dobber-drop-zone {
+  display: flex;
+  min-height: 116px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+}
+
+.dobber-drop-zone.dragover,
+.dobber-drop-zone:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid rgba(103, 183, 255, 0.25);
+}
+
+.dobber-drop-zone > span {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.dobber-drop-zone > .dobber-import-status {
+  margin-top: 4px;
+}
+
+.dobber-import-status[data-status="loaded-local"] {
+  color: var(--success);
+}
+
+.dobber-import-status[data-status="invalid-format"] {
+  color: var(--danger);
+}
+
 .eyebrow {
   margin: 0 0 6px;
   color: var(--accent);
@@ -174,6 +229,20 @@ button.secondary {
   gap: 6px;
   min-width: 150px;
   color: var(--muted);
+}
+
+.draft-local-edit-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: auto;
+}
+
+.draft-local-edit-toggles input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
 }
 
 .draft-board-filters input,
@@ -958,7 +1027,37 @@ button.secondary {
   background: rgba(245, 108, 108, 0.05);
 }
 
+.validation-table tr.removed-local {
+  background: rgba(168, 183, 201, 0.08);
+  opacity: 0.55;
+}
+
+.validation-table tr.ahl-unavailable:not(.removed-local) {
+  background: rgba(245, 183, 76, 0.1);
+  box-shadow: inset 3px 0 0 rgba(245, 183, 76, 0.72);
+}
+
+.local-player-assignment-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin: 16px 0 8px;
+  padding: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+}
+
+.local-player-assignment-form label {
+  display: grid;
+  gap: 6px;
+}
+
 @media (max-width: 760px) {
+  .dobber-import-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .topbar-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

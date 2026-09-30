@@ -4,6 +4,8 @@ import { parseAhlBudgetSheet, parseRoster } from './rosterParser.js';
 import { renderDraftAuctionDashboard } from './draftAuctionUI.js';
 import {
   AHL_SHEET_SOURCES,
+  applyAhlEligibility,
+  applyAhlEligibilityToPlayers,
   buildAhlDraftIntelligenceOutputs,
   parseAhlScoreSheet,
 } from './ahlSheetIngestion.js';
@@ -16,19 +18,25 @@ import {
 } from './personalDraftList.js';
 import { loadAhlSnapshot, saveAhlSnapshot } from './offlineSnapshotStore.js';
 import {
+  applyLocalDraftEdits,
+  createEmptyLocalEdits,
+  normalizeLocalEdits,
+} from './localDraftEdits.js';
+import {
   applyDobberIntelligence,
   attachDobberIntel,
-  extractDobberIntelFromText,
-  extractPdfText,
   fetchDobberPdfIntel,
   fetchDobberWorkbook,
-  parseDobberWorkbook,
+  ingestDobberExcelFile,
+  ingestDobberPdfFiles,
+  updateDobberImportMetadata,
 } from './dobberIngestion.js';
 import {
   loadLiveCache,
   persistLiveCache,
   resolveLivePlayerProfile,
   normalizeLookupKey,
+  getRosterPlayerIdentityAliases,
   pickRecordValue,
   extractTeamAbbrev,
 } from './liveNhlApi.js';
@@ -101,7 +109,10 @@ const state = {
   draftPositionFilter: '',
   draftCategoryFilter: '',
   draftAvailabilityFilter: 'all',
-  bestAvailableSort: 'AuctionValue',
+  bestAvailableSort: 'ADP',
+  showAllAhlPlayers: false,
+  showRemovedPlayers: false,
+  highlightUnavailablePlayers: false,
   selectedDraftPlayerId: null,
   selectedDraftTeam: '',
   draftIntelligenceStorageError: '',
@@ -184,14 +195,6 @@ function createEmptyMetadata() {
     ahlSheets: { status: 'empty' },
     dobberStatus: 'unavailable',
   };
-}
-
-function getRosterPlayerIdentityAliases(name) {
-  const normalized = normalizeLookupKey(name);
-  if (!normalized) return [];
-  const parts = normalized.split(' ').filter(Boolean);
-  if (parts.length < 2) return [normalized];
-  return [...new Set([normalized, `${parts[0][0]} ${parts.slice(1).join(' ')}`])];
 }
 
 function parseDraftBoard(csvText) {
@@ -524,9 +527,10 @@ function findRosterMatchForPlayer(player, rosterIndex) {
 const DEFAULT_STATE = {
   version: APP_STATE_VERSION,
   datasets: createEmptyDatasets(),
-  metadata: createEmptyMetadata(),
+  metadata: { ...createEmptyMetadata(), localDraftEdits: createEmptyLocalEdits() },
   manualOverrides: [],
   workingAssignments: {},
+  localEdits: createEmptyLocalEdits(),
 };
 
 function loadState() {
@@ -555,15 +559,35 @@ function loadState() {
 
 function persistState(stateObj) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stateObj));
+    const topLevelEdits = normalizeLocalEdits(stateObj?.localEdits);
+    const metadataEdits = normalizeLocalEdits(stateObj?.metadata?.localDraftEdits);
+    const localEdits = (metadataEdits.lastUpdated || 0) > (topLevelEdits.lastUpdated || 0)
+      ? metadataEdits
+      : topLevelEdits;
+    const persistedState = {
+      ...stateObj,
+      localEdits,
+      metadata: { ...(stateObj?.metadata || {}), localDraftEdits: localEdits },
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedState));
   } catch (err) {
     console.error('Failed to persist state', err);
   }
 }
 
+function markLocalEditsUpdated(localEdits, previousTimestamp = null) {
+  const normalized = normalizeLocalEdits(localEdits);
+  return {
+    ...normalized,
+    lastUpdated: Math.max(Date.now(), (normalized.lastUpdated || previousTimestamp || 0) + 1),
+  };
+}
+
 function migrateOldState(oldObj) {
   const newState = JSON.parse(JSON.stringify(DEFAULT_STATE));
   if (!oldObj) return newState;
+  newState.localEdits = normalizeLocalEdits(oldObj.localEdits || oldObj.metadata?.localDraftEdits);
+  newState.metadata.localDraftEdits = newState.localEdits;
 
   // if oldObj already contains datasets-like keys, map them
   if (oldObj.prospects) {
@@ -615,18 +639,44 @@ function normalizeState(stateObj) {
   next.workingAssignments = stateObj.workingAssignments && typeof stateObj.workingAssignments === 'object' && !Array.isArray(stateObj.workingAssignments)
     ? stateObj.workingAssignments
     : {};
+  const topLevelEdits = normalizeLocalEdits(stateObj.localEdits);
+  const metadataEdits = normalizeLocalEdits(stateObj.metadata?.localDraftEdits);
+  next.localEdits = (metadataEdits.lastUpdated || 0) > (topLevelEdits.lastUpdated || 0)
+    ? metadataEdits
+    : topLevelEdits;
+  next.metadata.localDraftEdits = next.localEdits;
   return next;
 }
 
 function applyAhlSheetIntelligence(stateObj) {
   if (!state.draftIntelligence || stateObj?.metadata?.ahlSheets?.status !== 'ok') return;
   const report = buildDraftValidationReport(stateObj);
-  const ahlOutputs = buildAhlDraftIntelligenceOutputs(
+  let ahlOutputs = buildAhlDraftIntelligenceOutputs(
     state.draftIntelligence,
     stateObj,
     report.availablePlayers,
   );
-  state.draftIntelligence = applyDobberIntelligence(ahlOutputs, stateObj);
+  const generatedOverrides = ahlOutputs.missingPositionOverrides || [];
+  const retainedOverrides = (stateObj.manualOverrides || [])
+    .filter((entry) => entry.manualOverrideSource !== 'missing-ahl-position');
+  const retainedOverrideNames = new Set(retainedOverrides.map((entry) => normalizeLookupKey(entry.name)));
+  stateObj.manualOverrides = [
+    ...retainedOverrides,
+    ...generatedOverrides.filter((entry) => !retainedOverrideNames.has(normalizeLookupKey(entry.name))),
+  ];
+  if (state.importedData) state.importedData.manualOverrides = stateObj.manualOverrides;
+  persistState(stateObj);
+  state.draftIntelligence = applyAhlEligibility(
+    applyDobberIntelligence(ahlOutputs, stateObj, (players) => {
+      const eligiblePlayers = applyAhlEligibilityToPlayers(players, stateObj);
+      return applyLocalDraftEdits(
+        eligiblePlayers,
+        new Set(report.availablePlayers.map((player) => normalizeLookupKey(player.name))),
+        stateObj.localEdits,
+      ).players;
+    }),
+    stateObj,
+  );
   state.draftIntelligenceStorageError = '';
 }
 
@@ -689,6 +739,8 @@ function hasLocalDobberImport(metadata, sourceName, records) {
 
 async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
   const next = normalizeState(stateObj);
+  const existingExcelMetadata = next.metadata.dobberExcel || {};
+  const existingPdfMetadata = next.metadata.dobberPdfs || {};
   const current = next.datasets.dobber && typeof next.datasets.dobber === 'object'
     ? next.datasets.dobber
     : { players: {}, intelByPlayerKey: {} };
@@ -722,6 +774,10 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
       ? current.excelSourceName
       : 'Dobber Excel OneDrive',
     importedAt: hasLocalExcel ? current.excelImportedAt || null : null,
+    lastImport: hasLocalExcel
+      ? current.excelImportedAt || existingExcelMetadata.lastImport || null
+      : existingExcelMetadata.lastImport || null,
+    lastAttempt: existingExcelMetadata.lastAttempt,
     records: hasLocalExcel ? Object.keys(players).length : 0,
     error: excelError,
   };
@@ -738,6 +794,10 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
     sourceType: hasLocalPdfs ? 'local' : 'remote',
     sourceName: hasLocalPdfs ? current.pdfSourceName : 'Dobber PDFs OneDrive',
     importedAt: hasLocalPdfs ? current.pdfImportedAt || null : null,
+    lastImport: hasLocalPdfs
+      ? current.pdfImportedAt || existingPdfMetadata.lastImport || null
+      : existingPdfMetadata.lastImport || null,
+    lastAttempt: existingPdfMetadata.lastAttempt,
     records: hasLocalPdfs ? Object.keys(intelByPlayerKey).length : 0,
     error: pdfError,
   };
@@ -777,6 +837,8 @@ async function refreshAhlSheetsOnPageLoad() {
     state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
     state.draftIntelligenceFromOfflineSnapshot = false;
     applyAhlSheetIntelligence(nextState);
+    renderDobberImportStatus('excel', nextState.metadata.dobberExcel);
+    renderDobberImportStatus('pdfs', nextState.metadata.dobberPdfs);
     const offlineWarning = await persistOfflineAhlSnapshot(nextState);
     state.liveRefreshMessage = [
       'AHL Sheets loaded',
@@ -804,6 +866,8 @@ async function refreshAhlSheetsOnPageLoad() {
       persistState(cachedState);
       state.importedData = cachedState;
       state.manualOverrides = Array.isArray(cachedState.manualOverrides) ? cachedState.manualOverrides : [];
+      renderDobberImportStatus('excel', cachedState.metadata.dobberExcel);
+      renderDobberImportStatus('pdfs', cachedState.metadata.dobberPdfs);
       const importedAt = cachedState.metadata.ahlSheets.importedAt || offlineRecord.savedAt;
       state.liveRefreshMessage = `Offline AHL snapshot loaded (${formatTimestamp(importedAt)})`;
       applyAhlSheetIntelligence(cachedState);
@@ -1079,6 +1143,8 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
     sourceName: 'AHL Google Sheets',
     tabs: loadedTabs,
   };
+  next.localEdits = markLocalEditsUpdated(createEmptyLocalEdits(), next.localEdits.lastUpdated);
+  next.metadata.localDraftEdits = next.localEdits;
   return next;
 }
 
@@ -1233,7 +1299,10 @@ function updateTopbarActions(currentState = state.importedData || DEFAULT_STATE)
   if (exportStateBtn) {
     const hasPortableContent = hasData
       || Boolean(currentState?.manualOverrides?.length)
-      || Boolean(Object.keys(currentState?.workingAssignments || {}).length);
+      || Boolean(Object.keys(currentState?.workingAssignments || {}).length)
+      || Boolean(currentState?.localEdits?.removedPlayers?.length)
+      || Boolean(Object.keys(currentState?.localEdits?.manualAssignments || {}).length)
+      || Boolean(currentState?.localEdits?.manualUnassign?.length);
     exportStateBtn.disabled = !hasPortableContent;
   }
 }
@@ -1505,10 +1574,11 @@ function getAvailableStatus(record) {
 
 function createManualOverrideDraft(data) {
   const name = String(data?.name || '').trim();
-  const position = String(data?.position || '').trim();
+  const position = String(data?.position || '').trim().toUpperCase();
+  const finalPositionOverride = ['C', 'LW', 'RW', 'D', 'G'].includes(position) ? position : '';
   const classification = normalizeClassification(data?.classification);
   const notes = String(data?.notes || '').trim();
-  if (!name || !position || !classification) {
+  if (!name || !finalPositionOverride || !classification) {
     return null;
   }
 
@@ -1519,8 +1589,15 @@ function createManualOverrideDraft(data) {
   return {
     id: overrideId,
     name,
-    position,
+    position: finalPositionOverride,
+    finalPositionOverride,
     classification,
+    experienceTier: classification,
+    status: 'not-in-ahl',
+    pricing: null,
+    forecast: null,
+    owner: null,
+    availability: 'unavailable',
     notes,
     createdAt,
     addedBy: 'Local User',
@@ -2589,18 +2666,36 @@ function renderManualOverridePanel(report, stateObj) {
           <div class="override-player-name">${escapeHtml(override.name)}</div>
           <div class="manual-override-tag">MANUAL OVERRIDE</div>
         </div>
-        ${renderResponsiveActionButton({
+        ${override.manualOverrideSource === 'missing-ahl-position' ? '' : renderResponsiveActionButton({
           label: compactMode ? 'Remove on laptop' : 'Remove',
           className: 'secondary remove-override-btn',
           attributes: `data-override-id="${escapeHtml(override.id)}"`
         })}
       </div>
       <div class="override-meta">
-        <span class="meta-pill">${escapeHtml(override.position || '—')}</span>
-        <span class="meta-pill">${escapeHtml(override.classification || '—')}</span>
+        <span class="meta-pill">Final Position Override: ${escapeHtml(override.finalPositionOverride || override.position || 'Pending')}</span>
+        <span class="meta-pill">Experience Tier: ${escapeHtml(override.experienceTier || override.classification || 'Pending')}</span>
+        <span class="meta-pill">Status: ${escapeHtml(override.status || 'not-in-ahl')}</span>
         <span class="meta-pill">${escapeHtml(override.createdAt ? new Date(override.createdAt).toLocaleString() : '—')}</span>
       </div>
       <div class="override-notes">${escapeHtml(override.notes || 'No notes provided.')}</div>
+      ${override.manualOverrideSource === 'missing-ahl-position' && !compactMode ? `
+        <form class="manual-override-form" data-missing-position-override="${escapeHtml(override.id)}">
+          <label>Final Position Override
+            <select name="position" required>
+              <option value="">Select position</option>
+              ${['C', 'LW', 'RW', 'D', 'G'].map((position) => `<option value="${position}" ${override.finalPositionOverride === position ? 'selected' : ''}>${position}</option>`).join('')}
+            </select>
+          </label>
+          <label>Experience Tier
+            <select name="experienceTier" required>
+              <option value="">Select tier</option>
+              ${['Farm', 'Rookie', 'Veteran'].map((tier) => `<option value="${tier}" ${override.experienceTier === tier ? 'selected' : ''}>${tier}</option>`).join('')}
+            </select>
+          </label>
+          <button type="submit" class="secondary">Save manual details</button>
+        </form>
+      ` : ''}
     </div>
   `).join('') : '<div class="empty-state">No manual overrides have been added.</div>';
 
@@ -2627,11 +2722,18 @@ function renderManualOverridePanel(report, stateObj) {
               <input name="name" type="text" required />
             </label>
             <label>
-              <span>Position</span>
-              <input name="position" type="text" required />
+              <span>Final Position Override</span>
+              <select name="position" required>
+                <option value="">Select position</option>
+                <option value="C">C</option>
+                <option value="LW">LW</option>
+                <option value="RW">RW</option>
+                <option value="D">D</option>
+                <option value="G">G</option>
+              </select>
             </label>
             <label>
-              <span>Classification</span>
+              <span>Experience Tier</span>
               <select name="classification" required>
                 <option value="">Select</option>
                 <option value="Veteran">Veteran</option>
@@ -3275,6 +3377,42 @@ function renderOwnerView(unifiedState) {
       renderOwnerView(nextState);
     });
   });
+  document.querySelectorAll('[data-missing-position-override]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const overrideId = form.dataset.missingPositionOverride;
+      const formData = new FormData(form);
+      const finalPositionOverride = String(formData.get('position') || '');
+      const experienceTier = normalizeClassification(formData.get('experienceTier'));
+      if (!['C', 'LW', 'RW', 'D', 'G'].includes(finalPositionOverride) || !experienceTier) {
+        alert('Select a valid final-position override and experience tier.');
+        return;
+      }
+      const nextState = normalizeState(state.importedData || unifiedState);
+      nextState.manualOverrides = nextState.manualOverrides.map((override) => (
+        override.id === overrideId
+          ? {
+            ...override,
+            position: finalPositionOverride,
+            finalPositionOverride,
+            classification: experienceTier,
+            experienceTier,
+            status: 'not-in-ahl',
+            pricing: null,
+            forecast: null,
+            owner: null,
+            availability: 'unavailable',
+            updatedAt: new Date().toISOString(),
+          }
+          : override
+      ));
+      persistState(nextState);
+      state.importedData = nextState;
+      state.manualOverrides = nextState.manualOverrides;
+      applyAhlSheetIntelligence(nextState);
+      renderOwnerView(nextState);
+    });
+  });
 
   document.querySelectorAll('.save-assignment-btn').forEach((button) => {
     button.addEventListener('click', () => {
@@ -3306,6 +3444,18 @@ function renderOwnerView(unifiedState) {
     const rosterMatch = findRosterMatchForPlayer(selectedPlayer, rosterIndex);
     queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterMatch);
   }
+}
+
+async function persistLocalDraftEdits(localEdits) {
+  const next = normalizeState(state.importedData || loadState());
+  next.localEdits = markLocalEditsUpdated(localEdits, next.localEdits.lastUpdated);
+  next.metadata.localDraftEdits = next.localEdits;
+  persistState(next);
+  state.importedData = next;
+  if (state.draftIntelligence && next.metadata.ahlSheets?.status === 'ok') {
+    state.localDraftEditsStorageError = await persistOfflineAhlSnapshot(next);
+  }
+  renderOwnerView(next);
 }
 
 function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) {
@@ -3344,8 +3494,17 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       adjustments: budget.adjustments,
     };
   });
-  const availableKeys = new Set((draftValidationReport.availablePlayers || []).map((player) => normalizeLookupKey(player.name)));
-  const players = state.draftIntelligence.players?.players || [];
+  const sourceAvailableKeys = new Set(
+    (draftValidationReport.availablePlayers || []).map((player) => normalizeLookupKey(player.name)),
+  );
+  const localDraftView = applyLocalDraftEdits(
+    state.draftIntelligence.players?.players || [],
+    sourceAvailableKeys,
+    unifiedState.localEdits,
+  );
+  const availableKeys = localDraftView.availableKeys;
+  const players = localDraftView.players;
+  const teamNames = ownerData.owners.map((owner) => owner.name);
   const selectedPlayer = players.find((player) => player.id === state.selectedDraftPlayerId) || null;
   const selectedAvailablePlayer = selectedPlayer && draftValidationReport.availablePlayers.find(
     (entry) => normalizeLookupKey(entry.name) === normalizeLookupKey(selectedPlayer.name),
@@ -3405,12 +3564,15 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     categoryFilter: state.draftCategoryFilter,
     availabilityFilter: state.draftAvailabilityFilter,
     bestAvailableSort: state.bestAvailableSort,
+    showAllAhlPlayers: state.showAllAhlPlayers,
+    showRemovedPlayers: state.showRemovedPlayers,
+    highlightUnavailablePlayers: state.highlightUnavailablePlayers,
     teamBudgets,
-    teamNames: ownerData.owners.map((owner) => owner.name),
+    teamNames,
     selectedPlayer: selectedDraftPlayer,
     selectedTeam: state.selectedDraftTeam,
     sourceAvailability: state.draftIntelligence.players?.sourceAvailability || {},
-    toolsHtml: `${state.shortlistStorageError ? `<p class="warning-banner">${escapeHtml(state.shortlistStorageError)}</p>` : ''}${state.personalDraftListStorageError ? `<p class="warning-banner">${escapeHtml(state.personalDraftListStorageError)}</p>` : ''}${state.draftIntelligenceStorageError ? `<p class="warning-banner">${escapeHtml(state.draftIntelligenceStorageError)}</p>` : ''}${toolsHtml}`,
+    toolsHtml: `${state.shortlistStorageError ? `<p class="warning-banner">${escapeHtml(state.shortlistStorageError)}</p>` : ''}${state.personalDraftListStorageError ? `<p class="warning-banner">${escapeHtml(state.personalDraftListStorageError)}</p>` : ''}${state.draftIntelligenceStorageError ? `<p class="warning-banner">${escapeHtml(state.draftIntelligenceStorageError)}</p>` : ''}${state.localDraftEditsStorageError ? `<p class="warning-banner">${escapeHtml(state.localDraftEditsStorageError)}</p>` : ''}${toolsHtml}`,
     workspaceHtml,
   });
   updateTopbarActions(unifiedState);
@@ -3438,9 +3600,84 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     state.draftAvailabilityFilter = event.target.value || 'all';
     rerender();
   });
+  document.querySelectorAll('[data-show-all-ahl-players]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      state.showAllAhlPlayers = checkbox.checked;
+      rerender();
+    });
+  });
+  document.querySelectorAll('[data-show-removed-players]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      state.showRemovedPlayers = checkbox.checked;
+      rerender();
+    });
+  });
+  document.querySelectorAll('[data-highlight-ahl-unavailable]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      state.highlightUnavailablePlayers = checkbox.checked;
+      rerender();
+    });
+  });
   document.getElementById('bestAvailableSort')?.addEventListener('change', (event) => {
-    state.bestAvailableSort = event.target.value || 'AuctionValue';
+    state.bestAvailableSort = event.target.value || 'ADP';
     rerender();
+  });
+  const localPlayerKey = (playerId) => normalizeLookupKey(
+    (state.draftIntelligence.players?.players || []).find((player) => player.id === playerId)?.name,
+  );
+  const saveLocalEdits = (edits) => {
+    void persistLocalDraftEdits(edits);
+  };
+  const currentLocalEdits = () => normalizeLocalEdits(state.importedData?.localEdits || unifiedState.localEdits);
+  const setPlayerRemovedLocally = (playerId, removed) => {
+    const playerKey = localPlayerKey(playerId);
+    if (!playerKey) return;
+    const edits = currentLocalEdits();
+    edits.removedPlayers = removed
+      ? [...new Set([...edits.removedPlayers, playerKey])]
+      : edits.removedPlayers.filter((key) => key !== playerKey);
+    saveLocalEdits(edits);
+  };
+  document.querySelectorAll('[data-remove-player]').forEach((button) => {
+    button.addEventListener('click', () => setPlayerRemovedLocally(button.dataset.removePlayer, true));
+  });
+  document.querySelectorAll('[data-undo-player]').forEach((button) => {
+    button.addEventListener('click', () => setPlayerRemovedLocally(button.dataset.undoPlayer, false));
+  });
+  document.querySelectorAll('[data-local-assignment-form]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const playerKey = localPlayerKey(form.dataset.localAssignmentForm);
+      const team = new FormData(form).get('team');
+      if (!playerKey || typeof team !== 'string' || !teamNames.includes(team)) {
+        alert('Select a team from the AHL roster before assigning locally.');
+        return;
+      }
+      const edits = currentLocalEdits();
+      edits.manualAssignments[playerKey] = team;
+      edits.manualUnassign = edits.manualUnassign.filter((key) => key !== playerKey);
+      saveLocalEdits(edits);
+    });
+  });
+  document.querySelectorAll('[data-manual-unassign]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const playerKey = localPlayerKey(button.dataset.manualUnassign);
+      if (!playerKey) return;
+      const edits = currentLocalEdits();
+      delete edits.manualAssignments[playerKey];
+      edits.manualUnassign = [...new Set([...edits.manualUnassign, playerKey])];
+      saveLocalEdits(edits);
+    });
+  });
+  document.querySelectorAll('[data-clear-local-assignment]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const playerKey = localPlayerKey(button.dataset.clearLocalAssignment);
+      if (!playerKey) return;
+      const edits = currentLocalEdits();
+      delete edits.manualAssignments[playerKey];
+      edits.manualUnassign = edits.manualUnassign.filter((key) => key !== playerKey);
+      saveLocalEdits(edits);
+    });
   });
   document.getElementById('personalDraftSort')?.addEventListener('change', (event) => {
     state.personalDraftListSort = event.target.value || 'rank';
@@ -3595,6 +3832,17 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     }
   });
   document.querySelector('[data-export-draft-json]')?.addEventListener('click', downloadDraftIntelligenceBundle);
+  document.getElementById('reset-local-edits')?.addEventListener('click', () => {
+    if (!window.confirm('Reset local draft edits by refreshing authoritative AHL Sheets? Locally imported Dobber data will be retained.')) {
+      return;
+    }
+    const refreshButton = document.getElementById('liveRefreshBtn');
+    if (!refreshButton || refreshButton.disabled) {
+      alert('AHL refresh is not available right now. Local edits were not cleared.');
+      return;
+    }
+    refreshButton.click();
+  });
   document.querySelector('[data-winning-bid-form]')?.addEventListener('submit', (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -3824,56 +4072,123 @@ async function commitDobberImport(nextState, message) {
   if (status) status.textContent = state.liveRefreshMessage;
 }
 
-async function importDobberExcelFile(file) {
-  const players = parseDobberWorkbook(await file.arrayBuffer());
+function renderDobberImportStatus(kind, metadata, result = null) {
+  const statusElement = document.getElementById(
+    kind === 'excel' ? 'dobberExcelImportStatus' : 'dobberPdfImportStatus',
+  );
+  if (!statusElement) return;
+  const source = metadata || {};
+  const latestAttempt = result || source.lastAttempt;
+  const label = kind === 'excel' ? 'Dobber Excel' : 'Dobber PDFs';
+  if (latestAttempt?.status === 'invalid-format') {
+    const detail = (latestAttempt.warnings || []).join(' ');
+    statusElement.textContent = `${label}: Invalid ${kind === 'excel' ? 'workbook' : 'PDF'} format. ${detail}`;
+    statusElement.dataset.status = 'invalid-format';
+    return;
+  }
+  if (latestAttempt?.status === 'loaded-local' || source.status === 'loaded-local') {
+    const count = latestAttempt?.playersParsed ?? source.records ?? 0;
+    const timestamp = latestAttempt?.lastImport || source.lastImport || source.importedAt;
+    const importedAt = timestamp ? ` Last imported ${new Date(timestamp).toLocaleString()}.` : '';
+    const parsedMessage = kind === 'excel'
+      ? `loaded locally (${count} players).`
+      : `parsed successfully (${count} player intel records).`;
+    statusElement.textContent = `${label} ${parsedMessage}${importedAt}`;
+    const warnings = latestAttempt?.warnings || source.warnings || [];
+    if (warnings.length) statusElement.textContent += ` ${warnings.join(' ')}`;
+    statusElement.dataset.status = 'loaded-local';
+    return;
+  }
+  statusElement.textContent = `${label} unavailable. Select a local ${kind === 'excel' ? '.xlsx workbook' : 'PDF file'}.`;
+  statusElement.dataset.status = source.status || 'unavailable';
+}
+
+function failedDobberImport(fileName, warning) {
+  return {
+    status: 'invalid-format',
+    fileName,
+    lastImport: null,
+    warnings: [warning],
+    playersParsed: 0,
+    players: {},
+    intelByPlayerKey: {},
+  };
+}
+
+function persistDobberImportFailure(kind, result) {
   const next = normalizeState(state.importedData || loadState());
+  const metadataKey = kind === 'excel' ? 'dobberExcel' : 'dobberPdfs';
+  next.metadata[metadataKey] = updateDobberImportMetadata(
+    next.metadata[metadataKey],
+    result,
+  );
+  persistState(next);
+  state.importedData = next;
+  renderDobberImportStatus(kind, next.metadata[metadataKey], result);
+}
+
+async function importDobberExcelFile(file) {
+  const result = await ingestDobberExcelFile(file);
+  console.info('Dobber Excel import', {
+    status: result.status,
+    fileName: result.fileName,
+    lastImport: result.lastImport,
+    warnings: result.warnings,
+    playersParsed: result.playersParsed,
+  });
+  if (result.status !== 'loaded-local') {
+    persistDobberImportFailure('excel', result);
+    return result;
+  }
+  const next = normalizeState(state.importedData || loadState());
+  next.metadata.dobberExcel = updateDobberImportMetadata(next.metadata.dobberExcel, result);
   const current = next.datasets.dobber || {};
-  const importedAt = new Date().toISOString();
   next.datasets.dobber = {
     ...current,
-    players: attachDobberIntel(players, current.intelByPlayerKey),
-    excelSourceName: file.name,
-    excelImportedAt: importedAt,
-  };
-  next.metadata.dobberExcel = {
-    status: 'loaded-local',
-    sourceType: 'local',
-    sourceName: file.name,
-    importedAt,
-    records: Object.keys(players).length,
+    players: attachDobberIntel(result.players, current.intelByPlayerKey),
+    excelSourceName: result.fileName,
+    excelImportedAt: result.lastImport,
   };
   next.metadata.dobberStatus = 'loaded-local';
-  await commitDobberImport(next, `Dobber Excel loaded (${Object.keys(players).length} players)`);
+  renderDobberImportStatus('excel', next.metadata.dobberExcel, result);
+  await commitDobberImport(next, `Dobber Excel loaded locally (${result.playersParsed} players)`);
+  return result;
 }
 
 async function importDobberPdfFiles(files) {
   const selectedFiles = [...files];
-  if (!selectedFiles.length) return;
-  const pdfjs = await loadPdfJs();
-  const texts = [];
-  for (const file of selectedFiles) {
-    texts.push(await extractPdfText(await file.arrayBuffer(), pdfjs));
-  }
+  if (!selectedFiles.length) return null;
   const next = normalizeState(state.importedData || loadState());
+  const result = await ingestDobberPdfFiles(
+    selectedFiles,
+    getDobberPlayerNames(next),
+    loadPdfJs(),
+  );
+  console.info('Dobber PDFs import', {
+    status: result.status,
+    fileName: result.fileName,
+    lastImport: result.lastImport,
+    warnings: result.warnings,
+    playersParsed: result.playersParsed,
+    intelEdgeAttached: result.playersParsed,
+  });
+  if (result.status !== 'loaded-local') {
+    persistDobberImportFailure('pdfs', result);
+    return result;
+  }
+  next.metadata.dobberPdfs = updateDobberImportMetadata(next.metadata.dobberPdfs, result);
   const current = next.datasets.dobber || {};
-  const intelByPlayerKey = extractDobberIntelFromText(texts.join('\n'), getDobberPlayerNames(next));
-  const importedAt = new Date().toISOString();
   next.datasets.dobber = {
     ...current,
-    players: attachDobberIntel(current.players, intelByPlayerKey),
-    intelByPlayerKey,
-    pdfSourceName: selectedFiles.map((file) => file.name).join(', '),
-    pdfImportedAt: importedAt,
-  };
-  next.metadata.dobberPdfs = {
-    status: 'loaded-local',
-    sourceType: 'local',
-    sourceName: next.datasets.dobber.pdfSourceName,
-    importedAt,
-    records: Object.keys(intelByPlayerKey).length,
+    players: attachDobberIntel(current.players, result.intelByPlayerKey),
+    intelByPlayerKey: result.intelByPlayerKey,
+    pdfSourceName: result.fileName,
+    pdfImportedAt: result.lastImport,
   };
   next.metadata.dobberStatus = 'loaded-local';
-  await commitDobberImport(next, `Dobber PDFs loaded (${Object.keys(intelByPlayerKey).length} explicit player tags)`);
+  renderDobberImportStatus('pdfs', next.metadata.dobberPdfs, result);
+  await commitDobberImport(next, `Dobber PDFs parsed successfully (${result.playersParsed} player intel records)`);
+  return result;
 }
 
 function initialize() {
@@ -3886,6 +4201,69 @@ function initialize() {
   const importDobberPdfsBtn = document.getElementById('importDobberPdfsBtn');
   const dobberExcelFileInput = document.getElementById('dobberExcelFileInput');
   const dobberPdfFileInput = document.getElementById('dobberPdfFileInput');
+  const dobberExcelDropZone = document.getElementById('dobberExcelDropZone');
+  const dobberPdfDropZone = document.getElementById('dobberPdfDropZone');
+
+  const handleExcelFiles = async (files) => {
+    const selectedFiles = [...(files || [])];
+    if (!selectedFiles.length) return;
+    if (selectedFiles.length !== 1) {
+      const result = failedDobberImport(
+        selectedFiles.map((file) => file.name).join(', '),
+        'Drop one Excel workbook at a time.',
+      );
+      console.error('Dobber Excel import status', result);
+      persistDobberImportFailure('excel', result);
+      return;
+    }
+    const statusElement = document.getElementById('dobberExcelImportStatus');
+    if (statusElement) statusElement.textContent = 'Reading Dobber workbook...';
+    try {
+      await importDobberExcelFile(selectedFiles[0]);
+    } catch (error) {
+      const warning = error instanceof Error ? error.message : 'Dobber Excel import failed.';
+      if (statusElement) statusElement.textContent = `Dobber Excel import failed. ${warning}`;
+      console.error('Dobber Excel import failed', error);
+      alert(warning);
+    }
+  };
+
+  const handlePdfFiles = async (files) => {
+    const selectedFiles = [...(files || [])];
+    if (!selectedFiles.length) return;
+    const statusElement = document.getElementById('dobberPdfImportStatus');
+    if (statusElement) statusElement.textContent = `Reading ${selectedFiles.length} Dobber PDF file(s)...`;
+    try {
+      await importDobberPdfFiles(selectedFiles);
+    } catch (error) {
+      const warning = error instanceof Error ? error.message : 'Dobber PDF import failed.';
+      if (statusElement) statusElement.textContent = `Dobber PDF import failed. ${warning}`;
+      console.error('Dobber PDF import failed', error);
+      alert(warning);
+    }
+  };
+
+  const bindDobberDropZone = (zone, handleFiles, acceptFiles) => {
+    if (!zone) return;
+    zone.addEventListener('click', () => acceptFiles());
+    zone.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        acceptFiles();
+      }
+    });
+    zone.addEventListener('dragenter', (event) => {
+      event.preventDefault();
+      zone.classList.add('dragover');
+    });
+    zone.addEventListener('dragover', (event) => event.preventDefault());
+    zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+    zone.addEventListener('drop', (event) => {
+      event.preventDefault();
+      zone.classList.remove('dragover');
+      void handleFiles(event.dataTransfer?.files || []);
+    });
+  };
 
   if (liveRefreshBtn && liveRefreshStatus) {
     liveRefreshBtn.addEventListener('click', async () => {
@@ -3902,6 +4280,8 @@ function initialize() {
         state.manualOverrides = Array.isArray(nextState.manualOverrides) ? nextState.manualOverrides : [];
         state.draftIntelligenceFromOfflineSnapshot = false;
         applyAhlSheetIntelligence(nextState);
+        renderDobberImportStatus('excel', nextState.metadata.dobberExcel);
+        renderDobberImportStatus('pdfs', nextState.metadata.dobberPdfs);
         const offlineWarning = await persistOfflineAhlSnapshot(nextState);
         state.liveRefreshMessage = [
           `Updated ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
@@ -3935,35 +4315,27 @@ function initialize() {
   });
 
   importDobberExcelBtn?.addEventListener('click', () => {
-    dobberExcelFileInput.value = '';
-    dobberExcelFileInput.click();
+    if (dobberExcelFileInput) {
+      dobberExcelFileInput.value = '';
+      dobberExcelFileInput.click();
+    }
   });
   dobberExcelFileInput?.addEventListener('change', async () => {
-    const file = dobberExcelFileInput.files?.[0];
-    if (!file) return;
-    try {
-      await importDobberExcelFile(file);
-    } catch (error) {
-      console.error('Dobber Excel import failed', error);
-      alert(error instanceof Error ? error.message : 'Dobber Excel import failed.');
-    } finally {
-      dobberExcelFileInput.value = '';
-    }
+    await handleExcelFiles(dobberExcelFileInput.files || []);
+    dobberExcelFileInput.value = '';
   });
   importDobberPdfsBtn?.addEventListener('click', () => {
-    dobberPdfFileInput.value = '';
-    dobberPdfFileInput.click();
-  });
-  dobberPdfFileInput?.addEventListener('change', async () => {
-    try {
-      await importDobberPdfFiles(dobberPdfFileInput.files || []);
-    } catch (error) {
-      console.error('Dobber PDF import failed', error);
-      alert(error instanceof Error ? error.message : 'Dobber PDF import failed.');
-    } finally {
+    if (dobberPdfFileInput) {
       dobberPdfFileInput.value = '';
+      dobberPdfFileInput.click();
     }
   });
+  dobberPdfFileInput?.addEventListener('change', async () => {
+    await handlePdfFiles(dobberPdfFileInput.files || []);
+    dobberPdfFileInput.value = '';
+  });
+  bindDobberDropZone(dobberExcelDropZone, handleExcelFiles, () => dobberExcelFileInput?.click());
+  bindDobberDropZone(dobberPdfDropZone, handlePdfFiles, () => dobberPdfFileInput?.click());
 
   if (topbarCsvFileInput) {
     topbarCsvFileInput.addEventListener('change', async (event) => {
@@ -4007,6 +4379,26 @@ function initialize() {
 
   if (typeof window !== 'undefined') {
     let compactViewport = isCompactViewport();
+    window.addEventListener('storage', (event) => {
+      if (event.key !== STORAGE_KEY || !event.newValue) return;
+      let incomingState;
+      try {
+        incomingState = normalizeState(JSON.parse(event.newValue));
+      } catch (error) {
+        console.error('Unable to reconcile local draft edits from another tab', error);
+        return;
+      }
+      const currentTimestamp = normalizeLocalEdits(state.importedData?.localEdits).lastUpdated || 0;
+      const incomingTimestamp = incomingState.localEdits.lastUpdated || 0;
+      if (incomingTimestamp <= currentTimestamp) return;
+      state.importedData = incomingState;
+      state.manualOverrides = Array.isArray(incomingState.manualOverrides) ? incomingState.manualOverrides : [];
+      applyAhlSheetIntelligence(incomingState);
+      void persistOfflineAhlSnapshot(incomingState).then((warning) => {
+        state.localDraftEditsStorageError = warning;
+        renderOwnerView(incomingState);
+      });
+    });
     window.addEventListener('resize', () => {
       const nextCompactViewport = isCompactViewport();
       if (nextCompactViewport === compactViewport) {
@@ -4024,6 +4416,8 @@ function initialize() {
 
   const stored = loadState();
   state.importedData = stored;
+  renderDobberImportStatus('excel', stored.metadata.dobberExcel);
+  renderDobberImportStatus('pdfs', stored.metadata.dobberPdfs);
   state.shortlist = loadDraftShortlist();
   state.personalDraftList = loadPersonalDraftList();
   state.manualOverrides = Array.isArray(stored.manualOverrides) ? stored.manualOverrides : [];
@@ -4080,6 +4474,7 @@ if (typeof document !== 'undefined') {
 export {
   STORAGE_KEY,
   DRAFT_ROSTER_RULES,
+  persistState,
   state,
   addManualOverrideEntry,
   removeManualOverrideById,

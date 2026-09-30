@@ -415,13 +415,25 @@ describe('draft validation report', () => {
     expect(entry).toMatchObject({
       name: 'Late Add',
       position: 'RW',
+      finalPositionOverride: 'RW',
       classification: 'Rookie',
+      experienceTier: 'Rookie',
+      status: 'not-in-ahl',
+      pricing: null,
+      forecast: null,
+      owner: null,
+      availability: 'unavailable',
       notes: 'league correction',
       addedBy: 'Local User',
       manualOverride: true,
     });
     expect(entry.id).toContain('manual-');
     expect(entry.createdAt).toBeDefined();
+    expect(createManualOverrideDraft({
+      name: 'Unsupported Position',
+      position: 'C/LW',
+      classification: 'Rookie',
+    })).toBeNull();
   });
 
   test('does not misclassify a transaction log as veteran data', () => {

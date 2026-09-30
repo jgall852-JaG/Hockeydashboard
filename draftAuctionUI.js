@@ -12,7 +12,7 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL';
 
 function getAhlPlayerPositions(player) {
-  const finalPosition = String(player.finalPosition || player.utilityPosition || player.ahlPosition || player.position || '')
+  const finalPosition = String(player.finalPosition || '')
     .split(/[\/,\s]+/)
     .filter(Boolean)
     .map((position) => {
@@ -24,31 +24,65 @@ function getAhlPlayerPositions(player) {
   return [...new Set(finalPosition)];
 }
 
-function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, { showAvailable = true } = {}) {
-  if (!players.length) return `<tr><td colspan="${showAvailable ? 11 : 10}" class="empty-state">No matching players.</td></tr>`;
+function renderPlayerRows(players, shortlist, availableKeys, personalDraftList, {
+  kind = 'board',
+  emptyMessage = 'No matching players.',
+  highlightUnavailable = false,
+} = {}) {
+  if (!players.length) return `<tr><td colspan="${kind === 'best-available' ? 7 : 12}" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
   return players.map((player) => {
     const isAvailable = availableKeys.has(normalizeLookupKey(player.name));
     const isPersonal = personalDraftList.some((entry) => entry.playerId === player.id);
-    return `<tr>
+    const removed = player.localStatus === 'removed-local';
+    const unavailable = highlightUnavailable
+      && !removed
+      && player.status === 'in-ahl'
+      && !isAvailable
+      && !player.ownership;
+    const rowClasses = [removed ? 'removed-local' : '', unavailable ? 'ahl-unavailable' : ''].filter(Boolean).join(' ');
+    const experienceTier = player.experienceTier || player.category || 'NULL';
+    const finalPosition = player.finalPosition || player.finalPositionOverride || 'NULL';
+    if (kind === 'best-available') {
+      const forecastedPoints = player.forecast?.projectedPoints ?? player.forecastedPoints ?? null;
+      const compositeScore = player.forecast?.compositeForecastScore ?? player.compositeForecastScore ?? null;
+      const adp = player.forecast?.adp ?? player.adp ?? null;
+      return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
+        <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button></td>
+        <td>${escapeHtml(finalPosition)}</td>
+        <td>${escapeHtml(experienceTier)}</td>
+        <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
+        <td>${forecastedPoints ?? 'NULL'}</td>
+        <td>${compositeScore ?? 'NULL'}</td>
+        <td>${adp ?? 'NULL'}</td>
+      </tr>`;
+    }
+    return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
       <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button></td>
-      <td>${escapeHtml(player.finalPosition || player.utilityPosition || player.ahlPosition || player.position || 'NULL')}</td>
-      <td>${escapeHtml(player.category || 'NULL')}</td>
+      <td>${escapeHtml(finalPosition)}</td>
+      <td>${escapeHtml(experienceTier)}</td>
       <td>${player.tier ?? 'NULL'}</td>
       <td>${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}</td>
       <td>${player.recommendedMaxBid === null ? 'NULL' : money(player.recommendedMaxBid)}</td>
       <td>${escapeHtml(player.classification || 'UNPRICED')}</td>
-      ${showAvailable ? `<td>${isAvailable ? 'Available' : 'Unavailable'}</td>` : ''}
+      <td>${escapeHtml(player.ownership || 'Unassigned')}${player.localAssignmentTeam ? ' (local)' : ''}</td>
+      <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
       <td><button type="button" class="secondary shortlist-toggle" data-shortlist-player="${escapeHtml(player.id)}" aria-pressed="${shortlist.has(player.id)}">${shortlist.has(player.id) ? '★' : '☆'}</button></td>
-      <td><button type="button" class="secondary" data-player-details="${escapeHtml(player.id)}">Insights</button></td>
       <td><button type="button" class="secondary personal-list-toggle" data-personal-add="${escapeHtml(player.id)}" ${isPersonal ? 'disabled aria-disabled="true"' : ''}>${isPersonal ? 'In List' : 'Add to Personal List'}</button></td>
+      <td><button type="button" class="secondary" ${removed
+    ? `data-undo-player="${escapeHtml(player.id)}">Undo remove`
+    : `data-remove-player="${escapeHtml(player.id)}">Remove locally`}</button></td>
     </tr>`;
   }).join('');
 }
 
-function renderPlayerTable(players, shortlist, availableKeys, personalDraftList, options = { showAvailable: true }) {
+function renderPlayerTable(players, shortlist, availableKeys, personalDraftList, options = {}) {
+  const normalizedOptions = { kind: 'board', ...options };
+  const headers = normalizedOptions.kind === 'best-available'
+    ? ['Player', 'Final Position', 'Experience Tier', 'Availability', 'Forecasted Points', 'Composite Score', 'ADP']
+    : ['Player', 'Final Position', 'Experience Tier', 'Tier', 'Auction Value', 'Max Bid', 'Value/Risk', 'Owner', 'Availability', 'Shortlist', 'Personal List', 'Local Edit'];
   return `<div class="table-wrap"><table class="validation-table">
-    <thead><tr><th>Name</th><th>Final Position</th><th>Category</th><th>Tier</th><th>Auction Value</th><th>Max Bid</th><th>Value/Risk</th>${options.showAvailable ? '<th>Availability</th>' : ''}<th>Shortlist</th><th>Insights</th><th>Personal List</th></tr></thead>
-    <tbody>${renderPlayerRows(players, shortlist, availableKeys, personalDraftList, options)}</tbody>
+    <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
+    <tbody>${renderPlayerRows(players, shortlist, availableKeys, personalDraftList, normalizedOptions)}</tbody>
   </table></div>`;
 }
 
@@ -127,7 +161,7 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
         <label>Final Position <select id="personalDraftPositionFilter"><option value="">All positions</option>
           ${allPositions.map((position) => `<option value="${escapeHtml(position)}" ${selected(position, positionFilter)}>${escapeHtml(position)}</option>`).join('')}
         </select></label>
-        <label>Category <select id="personalDraftCategoryFilter"><option value="">All categories</option>
+        <label>Experience Tier <select id="personalDraftCategoryFilter"><option value="">All tiers</option>
           ${['Farm', 'Rookie', 'Veteran'].map((category) => `<option value="${category}" ${selected(category, categoryFilter)}>${category}</option>`).join('')}
         </select></label>
         <label>Availability <select id="personalDraftAvailabilityFilter">
@@ -137,7 +171,7 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
         </select></label>
       </div>
       <div class="table-wrap"><table class="validation-table">
-        <thead><tr><th>Rank</th><th>Name</th><th>Final Position</th><th>Category</th><th>Team</th><th>Availability</th><th>Target</th><th>Avoid</th><th>Keeper Target</th><th>Breakout Target</th><th>Max Bid Note</th><th>Notes</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Rank</th><th>Name</th><th>Final Position</th><th>Experience Tier</th><th>Team</th><th>Availability</th><th>Target</th><th>Avoid</th><th>Keeper Target</th><th>Breakout Target</th><th>Max Bid Note</th><th>Notes</th><th>Actions</th></tr></thead>
         <tbody>${rowMarkup || `<tr><td colspan="13" class="empty-state">${entries.length ? 'No list entries match these filters.' : 'Add players from Draft Board or Best Available.'}</td></tr>`}</tbody>
       </table></div>
     </div>
@@ -150,46 +184,94 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
   const recommendation = budget
     ? calculateRecommendedMaxBid(player.auctionValue, player.tier, budget.remainingBudget, budget.openSlots)
     : null;
-  const sourceRows = Object.entries(player.sourcesUsed || {})
-    .map(([source, loaded]) => `<li>${escapeHtml(source)}: ${loaded ? 'loaded' : 'missing'}</li>`).join('');
-  const missingRows = Object.keys(player.missingSources || {}).map((source) => `<li>${escapeHtml(source)}</li>`).join('');
-  const intelEdgeRows = player.intelEdge
-    ? [
-      ['Pedigree', player.intelEdge.pedigree],
-      ['Projection Confidence', player.intelEdge.projectionConfidence],
-      ['Sleeper Tag', player.intelEdge.sleeperTag],
-      ['Bust Tag', player.intelEdge.bustTag],
-    ].map(([label, value]) => `<div><dt>${label}</dt><dd>${value ?? 'NULL'}</dd></div>`).join('')
-    : '<div><dt>Dobber PDF intelligence</dt><dd>NULL</dd></div>';
-  const scoreRows = [
-    ['DS', player.deployment?.DS], ['RSS', player.deployment?.RSS], ['OS', player.deployment?.OS],
-    ['RRS', player.deployment?.RRS], ['PPS', player.production?.PPS], ['BPS', player.prospect?.BPS],
-    ['KVS', player.keeper?.KVS], ['DraftIQ', player.draftIQ], ['Adjusted DraftIQ', player.adjustedDraftIQ],
-    ['Category Multiplier', player.keeper?.categoryMultiplier],
-    ['Scarcity Multiplier', player.scarcityMultiplier], ['Keeper Inflation', player.keeperInflation],
-    ['Price Curve Factor', player.priceCurveFactor],
+  const projections = player.dobberProjections && typeof player.dobberProjections === 'object'
+    ? player.dobberProjections
+    : {};
+  const projectionValue = (...keys) => {
+    const targetKeys = new Set(keys.map((key) => normalizeLookupKey(key).replace(/\s+/g, '')));
+    const found = Object.entries(projections).find(([key]) => targetKeys.has(normalizeLookupKey(key).replace(/\s+/g, '')));
+    return found?.[1] ?? null;
+  };
+  const metricMarkup = (rows) => rows
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value ?? 'NULL')}</dd></div>`)
+    .join('');
+  const projectionRows = Object.entries(projections).map(([label, value]) => [label, value]);
+  const forecastRows = [
+    ['ProjPts', projectionValue('ProjPts', 'Projected Points', 'Forecasted Points')],
+    ['PPS', player.production?.PPS],
+    ['RSS', player.deployment?.RSS],
+    ['RRS', player.deployment?.RRS],
+    ['BPS', player.prospect?.BPS],
+    ...projectionRows,
   ];
-  const scoreMarkup = scoreRows.map(([label, value]) => `<div><dt>${label}</dt><dd>${value ?? 'NULL'}</dd></div>`).join('');
+  const scoreRows = [
+    ['Composite Forecast Score', player.compositeForecastScore ?? player.forecast?.compositeForecastScore],
+    ['Forecasted Points', player.forecastedPoints ?? player.forecast?.projectedPoints],
+    ['ADP', player.adp ?? player.forecast?.adp],
+  ];
+  const riskRows = [
+    ['Risk Score', player.riskScore],
+    ['Pedigree Score', player.pedigreeScore],
+    ['Pedigree', player.intelEdge?.pedigree],
+    ['Projection Confidence', player.intelEdge?.projectionConfidence],
+    ['Sleeper Tag', player.intelEdge?.sleeperTag],
+    ['Bust Tag', player.intelEdge?.bustTag],
+  ];
+  const availability = player.localStatus === 'removed-local'
+    ? 'removed-local'
+    : player.status === 'not-in-ahl' ? 'not-in-ahl' : player.available ? 'available' : 'unavailable';
   return `<div class="draft-modal-backdrop" data-close-player-details>
     <section class="draft-modal panel" role="dialog" aria-modal="true" aria-labelledby="draftModalTitle">
-      <button type="button" class="modal-close secondary" aria-label="Close player insights" data-close-player-details>Close</button>
+      <button type="button" class="modal-close secondary" aria-label="Close player profile" data-close-player-details>Close</button>
       <h2 id="draftModalTitle">${escapeHtml(player.name)}</h2>
-      <p>${escapeHtml(player.team || 'NULL')} | Final Position ${escapeHtml(player.finalPosition || player.utilityPosition || player.ahlPosition || player.position || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | NHL Position ${escapeHtml(player.nhlPosition || 'NULL')} | ${escapeHtml(player.category || 'NULL')} | Tier ${player.tier ?? 'NULL'}</p>
+      <p>Final Position ${escapeHtml(player.finalPosition || player.finalPositionOverride || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | Experience Tier ${escapeHtml(player.experienceTier || player.category || 'NULL')}</p>
+      ${player.valuationStatus !== 'priced' ? '<p class="warning-banner">UNPRICED - required source-backed inputs are missing. No auction value or max bid is estimated.</p>' : ''}
+      <form class="local-player-assignment-form" data-local-assignment-form="${escapeHtml(player.id)}">
+        <label>Local owner
+          <select name="team" required>
+            <option value="">Select owner</option>
+            ${teams.map((team) => `<option value="${escapeHtml(team)}" ${player.localAssignmentTeam === team ? 'selected' : ''}>${escapeHtml(team)}</option>`).join('')}
+          </select>
+        </label>
+        <button type="submit" class="secondary" ${teams.length ? '' : 'disabled'}>Assign locally</button>
+        <button type="button" class="secondary" data-manual-unassign="${escapeHtml(player.id)}" ${player.ownership ? '' : 'disabled'}>Unassign locally</button>
+        ${player.localAssignmentTeam || player.localUnassigned ? `<button type="button" class="secondary" data-clear-local-assignment="${escapeHtml(player.id)}">${player.localUnassigned ? 'Restore AHL assignment' : 'Clear local assignment'}</button>` : ''}
+      </form>
+      <p class="panel-subtitle">Local ownership edits do not change AHL Sheets or infer a bid.</p>
+      <div class="detail-grid">
+        <article class="detail-card"><h3>NHL Profile</h3><dl class="kv-list">${metricMarkup([
+          ['NHL POS', player.nhlPosition],
+          ['Team', player.team || player.dobberProjections?.team],
+          ['Deployment', player.deployment?.DS],
+          ['PP Unit', projectionValue('PP Unit', 'PPUnit')],
+          ['TOI', projectionValue('TOI', 'Time on Ice')],
+          ['PPTOI', projectionValue('PPTOI', 'PP TOI', 'Power Play Time on Ice')],
+        ])}</dl></article>
+        <article class="detail-card"><h3>Forecasted Stats (Dobber Projections)</h3><dl class="kv-list">${metricMarkup(forecastRows)}</dl></article>
+        <article class="detail-card"><h3>Historical Splits (AHL Scores)</h3><dl class="kv-list">${metricMarkup([
+          ['FHPPG', player.historicalSplits?.FHPPG],
+          ['SHPPG', player.historicalSplits?.SHPPG],
+          ['Source tab', player.historicalSplits?.sourceTab],
+        ])}</dl></article>
+        <article class="detail-card"><h3>Composite Forecast Score</h3><dl class="kv-list">${metricMarkup(scoreRows)}</dl></article>
+        <article class="detail-card"><h3>Risk &amp; Pedigree (Dobber PDF Intel)</h3><dl class="kv-list">${metricMarkup(riskRows)}</dl>
+          <p><strong>Strengths:</strong> ${(player.strengths || []).map(escapeHtml).join(', ') || 'NULL'}</p>
+          <p><strong>Risks:</strong> ${(player.risks || []).map(escapeHtml).join(', ') || 'NULL'}</p>
+        </article>
+        <article class="detail-card"><h3>Keeper / Contract</h3><dl class="kv-list">${metricMarkup([
+          ['KVS', player.keeper?.KVS],
+          ['Salary', player.salary],
+          ['AAV', player.aav],
+        ])}</dl></article>
+        <article class="detail-card"><h3>Availability</h3><dl class="kv-list">${metricMarkup([
+          ['Owner', player.ownership || 'NULL'],
+          ['Availability', availability],
+          ['Removed-local', player.localStatus === 'removed-local'],
+          ['Not-in-ahl', player.status === 'not-in-ahl'],
+        ])}</dl></article>
+      </div>
       <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
         <strong>Recommended max bid:</strong> ${money(recommendation)}</p>
-      <p><strong>Dobber salary:</strong> ${money(player.salary)} <strong>AAV:</strong> ${money(player.aav)}</p>
-      ${player.valuationStatus !== 'priced' ? '<p class="warning-banner">UNPRICED - required source-backed inputs are missing. No auction value or max bid is estimated.</p>' : ''}
-      <div class="draft-score-grid">${scoreMarkup}</div>
-      <h3>Dobber Intelligence Edge</h3>
-      <div class="draft-score-grid">${intelEdgeRows}</div>
-      <div class="detail-grid">
-        <article class="detail-card"><h3>WHY VALUE?</h3><ul>${(player.strengths || []).map(escapeHtml).map((text) => `<li>${text}</li>`).join('') || '<li>No source-backed strengths available.</li>'}</ul></article>
-        <article class="detail-card"><h3>WHY RISK?</h3><ul>${(player.risks || []).map(escapeHtml).map((text) => `<li>${text}</li>`).join('') || '<li>No source-backed risks available.</li>'}</ul></article>
-      </div>
-      <details><summary>Data sources and missing inputs</summary><div class="detail-grid">
-        <article class="detail-card"><h3>Sources</h3><ul>${sourceRows}</ul></article>
-        <article class="detail-card"><h3>Missing sources / metric inputs</h3><ul>${missingRows || '<li>No missing-source flags.</li>'}</ul></article>
-      </div></details>
       <form class="winning-bid-form" data-winning-bid-form="${escapeHtml(player.id)}" data-assignment-key="${escapeHtml(player.assignmentKey || player.id)}">
         <label>Winning team
           <select name="team" required>
@@ -227,6 +309,9 @@ export function renderDraftAuctionDashboard({
   categoryFilter,
   availabilityFilter,
   bestAvailableSort,
+  showAllAhlPlayers = false,
+  showRemovedPlayers = false,
+  highlightUnavailablePlayers = false,
   teamBudgets,
   teamNames,
   selectedPlayer,
@@ -235,47 +320,106 @@ export function renderDraftAuctionDashboard({
   toolsHtml,
   workspaceHtml,
 }) {
-  const allPositions = [...new Set(players.flatMap(getAhlPlayerPositions))].sort();
-  const filtered = players.filter((player) => {
+  const eligiblePlayers = players.filter((player) => player.status !== 'not-in-ahl');
+  const allPositions = [...new Set(eligiblePlayers.flatMap(getAhlPlayerPositions))].sort();
+  const filtered = eligiblePlayers.filter((player) => {
+    const removed = player.localStatus === 'removed-local';
+    if (removed && !showRemovedPlayers) return false;
+    const isAvailable = !removed && availableKeys.has(normalizeLookupKey(player.name));
+    if (
+      !showAllAhlPlayers
+      && availabilityFilter !== 'unavailable'
+      && !isAvailable
+      && !(removed && showRemovedPlayers)
+    ) return false;
     const matchesSearch = !search || `${player.name} ${player.team || ''}`.toLowerCase().includes(search.toLowerCase());
     const matchesPosition = !positionFilter || getAhlPlayerPositions(player).includes(positionFilter);
     const matchesCategory = !categoryFilter || player.category === categoryFilter;
-    const isAvailable = availableKeys.has(normalizeLookupKey(player.name));
     const matchesAvailability = availabilityFilter === 'all'
       || (availabilityFilter === 'available' ? isAvailable : !isAvailable);
     return matchesSearch && matchesPosition && matchesCategory && matchesAvailability;
   });
-  const bestPlayers = players.filter((player) => availableKeys.has(normalizeLookupKey(player.name)));
-  const sortKeys = { AuctionValue: 'auctionValue', DraftIQ: 'draftIQ', PPS: 'production.PPS', BPS: 'prospect.BPS', KVS: 'keeper.KVS' };
+  const availableEligibleCount = eligiblePlayers.filter((player) => (
+    player.localStatus !== 'removed-local'
+    && availableKeys.has(normalizeLookupKey(player.name))
+  )).length;
+  const bestPlayers = eligiblePlayers.filter((player) => {
+    const removed = player.localStatus === 'removed-local';
+    const isAvailable = !removed && availableKeys.has(normalizeLookupKey(player.name));
+    if (removed && !showRemovedPlayers) return false;
+    return showAllAhlPlayers || isAvailable || (removed && showRemovedPlayers);
+  });
+  const sortKeys = {
+    ADP: 'adp',
+    'Forecasted Points': 'forecastedPoints',
+    'Composite Forecast Score': 'compositeForecastScore',
+    'First-Half PPG (FHPPG)': 'historicalSplits.FHPPG',
+    'Second-Half PPG (SHPPG)': 'historicalSplits.SHPPG',
+    'Risk Score': 'riskScore',
+    'Pedigree Score': 'pedigreeScore',
+  };
+  const sortValueKeys = {
+    adp: ['adp', 'forecast.adp'],
+    forecastedPoints: ['forecastedPoints', 'forecast.projectedPoints'],
+    compositeForecastScore: ['compositeForecastScore', 'forecast.compositeForecastScore'],
+  };
   const readSortValue = (player, key) => key.split('.').reduce((value, part) => value?.[part], player);
+  const getSortValue = (player) => {
+    const key = sortKeys[bestAvailableSort] || 'adp';
+    const candidates = sortValueKeys[key] || [key];
+    return candidates.map((candidate) => readSortValue(player, candidate)).find(Number.isFinite) ?? null;
+  };
   bestPlayers.sort((left, right) => {
-    const key = sortKeys[bestAvailableSort] || 'auctionValue';
-    const leftValue = readSortValue(left, key);
-    const rightValue = readSortValue(right, key);
+    const leftValue = getSortValue(left);
+    const rightValue = getSortValue(right);
     if (leftValue === null || leftValue === undefined) return rightValue === null || rightValue === undefined ? left.name.localeCompare(right.name) : 1;
     if (rightValue === null || rightValue === undefined) return -1;
     return rightValue - leftValue || left.name.localeCompare(right.name);
   });
   const tab = (id, label) => `<button type="button" role="tab" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
   const selected = (value, current) => value === current ? 'selected' : '';
+  const localPlayerFilters = `<div class="draft-board-filters draft-local-edit-toggles">
+    <label><input type="checkbox" data-show-all-ahl-players ${showAllAhlPlayers ? 'checked' : ''} /> Show All AHL Players</label>
+    <label><input type="checkbox" data-show-removed-players ${showRemovedPlayers ? 'checked' : ''} /> Show Removed Players</label>
+    <label><input type="checkbox" data-highlight-ahl-unavailable ${highlightUnavailablePlayers ? 'checked' : ''} /> Highlight AHL-eligible but unavailable players</label>
+  </div>`;
+  const bestAvailableEmptyMessage = availableEligibleCount === 0
+    ? 'All AHL-eligible players are currently unavailable.'
+    : 'No matching players.';
+  const draftBoardEmptyMessage = 'No draftable players available under current filters.';
   const sourceRows = Object.entries(sourceAvailability || {}).map(([name, loaded]) => `<tr><td>${escapeHtml(name)}</td><td>${loaded ? 'Available' : 'Missing'}</td></tr>`).join('');
+  const legend = `<details class="acronym-legend"><summary class="secondary">Legend</summary>
+    <dl>${[
+      ['PPTOI', 'Power Play Time on Ice'],
+      ['PPG', 'Points per Game'],
+      ['FHPPG', 'First-Half Points per Game'],
+      ['SHPPG', 'Second-Half Points per Game'],
+      ['ProjPts', 'Projected Points'],
+      ['CompScore', 'Composite Forecast Score'],
+      ['KVS', 'Keeper Value Score'],
+      ['BPS', 'Breakout Probability Score'],
+      ['RSS', 'Risk Stability Score'],
+    ].map(([acronym, description]) => `<div><dt>${acronym}</dt><dd>${description}</dd></div>`).join('')}</dl>
+  </details>`;
   const boardPanel = `<section id="draft-board-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'draft-board' ? '' : 'hidden'}>
     <div class="panel draft-board-panel">
       <div class="preview-header"><div><h2>Draft Board</h2><p class="panel-subtitle">Source-backed values only; missing values remain unpriced.</p></div>
-        <span class="meta-pill">${availableKeys.size} available</span></div>
+        <span class="meta-pill">${availableEligibleCount} available</span></div>
+      ${localPlayerFilters}
       <div class="draft-board-filters">
         <label>Search <input id="draftBoardSearch" type="search" value="${escapeHtml(search)}" placeholder="Player or NHL team" /></label>
         <label>Position <select id="draftPositionFilter"><option value="">All positions</option>${allPositions.map((position) => `<option ${selected(position, positionFilter)}>${escapeHtml(position)}</option>`).join('')}</select></label>
-        <label>Category <select id="draftCategoryFilter"><option value="">All categories</option>${['Farm', 'Rookie', 'Veteran'].map((category) => `<option ${selected(category, categoryFilter)}>${category}</option>`).join('')}</select></label>
+        <label>Experience Tier <select id="draftCategoryFilter"><option value="">All tiers</option>${['Farm', 'Rookie', 'Veteran'].map((category) => `<option ${selected(category, categoryFilter)}>${category}</option>`).join('')}</select></label>
         <label>Availability <select id="draftAvailabilityFilter"><option value="all" ${selected('all', availabilityFilter)}>All</option><option value="available" ${selected('available', availabilityFilter)}>Available</option><option value="unavailable" ${selected('unavailable', availabilityFilter)}>Unavailable</option></select></label>
       </div>
-      ${renderPlayerTable(filtered, shortlist, availableKeys, personalDraftList)}
+      ${renderPlayerTable(filtered, shortlist, availableKeys, personalDraftList, { emptyMessage: draftBoardEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>
   </section>`;
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
-    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Draftable players only. Unpriced records are retained and labeled.</p></div>
-      <label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label></div>
-      ${renderPlayerTable(bestPlayers, shortlist, availableKeys, personalDraftList, { showAvailable: false })}
+    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Forecast fields remain NULL until source-backed projections are available.</p></div>
+      <div class="best-available-toolbar"><label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
+      ${localPlayerFilters}
+      ${renderPlayerTable(bestPlayers, shortlist, availableKeys, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>
   </section>`;
   const budgetsPanel = `<section id="team-budgets-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'team-budgets' ? '' : 'hidden'}>
@@ -291,6 +435,8 @@ export function renderDraftAuctionDashboard({
   const toolsPanel = `<section id="tools-validation-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'tools-validation' ? '' : 'hidden'}>
     <div class="panel"><h2>Tools &amp; Validation</h2>
       <button type="button" class="secondary" data-export-draft-json>Export generated Draft Intelligence JSON</button>
+      <button type="button" class="secondary" id="reset-local-edits">Reset Local Edits</button>
+      <p class="panel-subtitle">Reset clears local draft overlays after a successful authoritative AHL refresh; locally imported Dobber data is retained.</p>
       <div class="table-wrap"><table class="validation-table"><thead><tr><th>Source</th><th>Status</th></tr></thead><tbody>${sourceRows}</tbody></table></div>
       <p class="warning-banner">Pricing remains UNPRICED when required source data, scarcity rules, or team budget inputs are absent. Historical statistics are not projections.</p>
     </div>
