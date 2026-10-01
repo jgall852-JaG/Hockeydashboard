@@ -40,6 +40,11 @@ import {
   pickRecordValue,
   extractTeamAbbrev,
 } from './liveNhlApi.js';
+import {
+  NA_HISTORICAL_BID_STATS,
+  getHistoricalBidStats,
+  loadAhlHistoricalBids,
+} from './ahlHistoricalBids.js';
 
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
@@ -495,6 +500,61 @@ function decoratePlayer(player, sourceType) {
     ...player,
     sourceType,
     playerKey: buildPlayerKey(player, sourceType),
+  };
+}
+
+// Builds the unified player object consumed by Tools & Validation (team summary,
+// player cards, intelligence panel). `context` carries optional, already-resolved
+// async data (live NHL profile, the historical bids bundle, the matching Dobber
+// draft-intelligence record) so this stays a pure, synchronous projection.
+function buildUnifiedPlayer(player, context = {}) {
+  if (!player) return null;
+  const { liveProfile = null, historicalBidsBundle = null, draftPlayer = null } = context;
+
+  const rawCost = player.cost ?? player.currentCost ?? player.keeperCost ?? null;
+  const cost = Number.isFinite(Number(rawCost)) ? Number(rawCost) : null;
+  const years = player.termRemaining ?? player.retentionYear ?? null;
+  const owned = Boolean(player.owner);
+  const draftStatus = owned ? 'Drafted' : 'Undrafted';
+  const availability = owned ? 'Unavailable' : 'Available';
+  const farmStatus = Boolean(player.farm);
+
+  const snapshotGames = Number.isInteger(player.nhlCareerGamesPlayed)
+    ? player.nhlCareerGamesPlayed
+    : (Number.isInteger(liveProfile?.historical?.gamesPlayed) ? liveProfile.historical.gamesPlayed : null);
+  const experienceTier = getExperienceTierFromGames(snapshotGames);
+
+  const nhlProfile = (snapshotGames !== null || liveProfile)
+    ? {
+      gamesPlayed: snapshotGames,
+      goals: liveProfile?.historical?.goals ?? null,
+      assists: liveProfile?.historical?.assists ?? null,
+      points: liveProfile?.historical?.points ?? null,
+      shots: liveProfile?.historical?.shots ?? null,
+      avgToi: liveProfile?.historical?.avgToi ?? null,
+      tier: experienceTier,
+    }
+    : null;
+
+  const dobberProjection = draftPlayer?.forecast
+    ? { ...draftPlayer.forecast }
+    : null;
+
+  const historicalBidStats = historicalBidsBundle
+    ? getHistoricalBidStats(historicalBidsBundle, player.name)
+    : { ...NA_HISTORICAL_BID_STATS };
+
+  return {
+    name: player.name || null,
+    availability,
+    experienceTier,
+    cost,
+    years,
+    draftStatus,
+    farmStatus,
+    nhlProfile,
+    dobberProjection,
+    ...historicalBidStats,
   };
 }
 
@@ -2072,12 +2132,13 @@ function computeOwnerStatistics(ownerEntry) {
   const farmCount = (ownerEntry.farmPlayers || []).length;
   const matchingRightsCount = (ownerEntry.matchingRights || []).length;
 
-  const totalProspectCost = (ownerEntry.prospects || []).reduce((sum, p) => sum + (Number(p.cost) || 0), 0);
+  const unifiedProspects = (ownerEntry.prospects || []).map((p) => ({ player: p, unified: buildUnifiedPlayer(p) }));
+  const totalProspectCost = unifiedProspects.reduce((sum, { unified }) => sum + (unified.cost || 0), 0);
   const averageProspectCost = prospectCount ? totalProspectCost / prospectCount : 0;
 
   let highest = null;
-  (ownerEntry.prospects || []).forEach((p) => {
-    const c = Number(p.cost) || 0;
+  unifiedProspects.forEach(({ player: p, unified }) => {
+    const c = unified.cost || 0;
     if (highest === null || c > highest.cost) {
       highest = { playerId: p.playerId, name: p.name, cost: c };
     }
@@ -2123,10 +2184,11 @@ function computeOwnerAggregates(stateObj) {
     const o = p.owner || 'Unknown';
     ensureOwner(o);
     const agg = ownerAggregates[o];
+    const unified = buildUnifiedPlayer(p);
     agg.prospectCount += 1;
-    if (p.farm) agg.farmCount += 1;
+    if (unified.farmStatus) agg.farmCount += 1;
     if (p.matchingRights) agg.matchingRightsCount += 1;
-    const c = Number(p.cost) || 0;
+    const c = unified.cost || 0;
     agg.totalProspectCost += c;
     if (!agg.highestProspect || c > agg.highestProspect.cost) {
       agg.highestProspect = { playerId: p.playerId, name: p.name, cost: c };
@@ -2797,7 +2859,7 @@ function renderKeyValueList(rows) {
   `;
 }
 
-function renderPlayerBadges(player) {
+function renderPlayerBadges(player, historicalBidsBundle) {
   const badges = [];
 
   if (player.sourceType === 'prospect') {
@@ -2816,10 +2878,15 @@ function renderPlayerBadges(player) {
     badges.push(player.sourceType);
   }
 
+  const unified = buildUnifiedPlayer(player, { historicalBidsBundle });
+  badges.push(unified.availability);
+  badges.push(unified.experienceTier);
+  if (unified.avgCost !== 'NA') badges.push(`Avg $${formatValue(unified.avgCost)}`);
+
   return badges.map((badge) => `<span class="player-chip">${escapeHtml(badge)}</span>`).join('');
 }
 
-function renderPlayerList(players, filter) {
+function renderPlayerList(players, filter, historicalBidsBundle) {
   const search = (filter || '').trim().toLowerCase();
   const filtered = search
     ? (players || []).filter((p) => (p.name || '').toLowerCase().includes(search))
@@ -2838,7 +2905,7 @@ function renderPlayerList(players, filter) {
             <button class="player-item ${isActive ? 'active' : ''}" data-player-key="${player.playerKey}">
               <div>
                 <div class="player-name">${escapeHtml(player.name || 'Unnamed Player')}</div>
-                <div class="player-meta">${renderPlayerBadges(player)}</div>
+                <div class="player-meta">${renderPlayerBadges(player, historicalBidsBundle)}</div>
               </div>
               <div class="player-chevron">›</div>
             </button>
@@ -2849,8 +2916,13 @@ function renderPlayerList(players, filter) {
   `;
 }
 
-function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
+function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile, historicalBidsBundle) {
   if (!player) return '';
+
+  const draftPlayerForUnified = state.draftIntelligence?.players?.players?.find(
+    (entry) => normalizeLookupKey(entry.name) === normalizeLookupKey(player.name),
+  );
+  const unified = buildUnifiedPlayer(player, { liveProfile, historicalBidsBundle, draftPlayer: draftPlayerForUnified });
 
   const rosterTeam = String(pickRecordValue(rosterRecord, ['nhlteam', 'team', 'currentteam', 'club'])).trim();
   const rosterPosition = String(pickRecordValue(rosterRecord, ['position', 'primaryposition', 'positioncode'])).trim();
@@ -2943,9 +3015,7 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
       </ul>
     `
     : '<div class="empty-state">No live schedule data.</div>';
-  const draftPlayer = state.draftIntelligence?.players?.players?.find(
-    (entry) => normalizeLookupKey(entry.name) === normalizeLookupKey(player.name),
-  );
+  const draftPlayer = draftPlayerForUnified;
   const draftIntelligenceHtml = draftPlayer
     ? `
       <article class="detail-card">
@@ -2960,6 +3030,48 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
           ['DraftIQ', draftPlayer.draftIQ],
           ['Auction Value', draftPlayer.auctionValue === null ? 'Unpriced' : `$${formatValue(draftPlayer.auctionValue)}`],
           ['Tier', draftPlayer.tier],
+        ])}
+      </article>
+    `
+    : '';
+
+  const unifiedSummaryHtml = `
+    <article class="detail-card">
+      <h3>Unified Summary</h3>
+      ${renderKeyValueList([
+        ['Availability', unified.availability],
+        ['Experience Tier', unified.experienceTier],
+        ['Draft Status', unified.draftStatus],
+        ['Cost', unified.cost === null ? '—' : `$${formatValue(unified.cost)}`],
+        ['Years', unified.years ?? '—'],
+        ['Farm Status', unified.farmStatus ? 'Yes' : 'No'],
+      ])}
+    </article>
+  `;
+
+  const historicalBidHtml = `
+    <article class="detail-card">
+      <h3>Historical Bid Stats</h3>
+      ${renderKeyValueList([
+        ['Avg Cost', unified.avgCost === 'NA' ? 'NA' : `$${formatValue(unified.avgCost)}`],
+        ['Min Cost', unified.minCost === 'NA' ? 'NA' : `$${formatValue(unified.minCost)}`],
+        ['Max Cost', unified.maxCost === 'NA' ? 'NA' : `$${formatValue(unified.maxCost)}`],
+        ['Years Drafted', Array.isArray(unified.yearsDrafted) ? unified.yearsDrafted.join(', ') || 'NA' : 'NA'],
+      ])}
+    </article>
+  `;
+
+  const forecastHtml = unified.dobberProjection
+    ? `
+      <article class="detail-card">
+        <h3>Forecasted Stats</h3>
+        ${renderKeyValueList([
+          ['Projected Points', unified.dobberProjection.projectedPoints ?? '—'],
+          ['Projected Games', unified.dobberProjection.projectedGames ?? '—'],
+          ['Projected Shots', unified.dobberProjection.projectedShots ?? '—'],
+          ['FHPPG', unified.dobberProjection.FHPPG ?? '—'],
+          ['SHPPG', unified.dobberProjection.SHPPG ?? '—'],
+          ['Composite Score', unified.dobberProjection.compositeScore ?? '—'],
         ])}
       </article>
     `
@@ -2998,6 +3110,9 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile) {
           <h3>Team Intelligence</h3>
           ${renderKeyValueList(teamRows)}
         </article>
+        ${unifiedSummaryHtml}
+        ${historicalBidHtml}
+        ${forecastHtml}
         ${draftIntelligenceHtml}
       </div>
     </section>
@@ -3129,6 +3244,13 @@ function renderOwnerDetails(ownerData, report) {
   const selectedPlayer = ownerPlayers.find((player) => player.playerKey === state.selectedPlayerKey) || ownerPlayers[0] || null;
   const rosterMatch = selectedPlayer ? findRosterMatchForPlayer(selectedPlayer, rosterIndex) : null;
   const liveProfile = selectedPlayer ? state.liveProfiles[selectedPlayer.playerKey] : null;
+  const historicalBidsBundle = state.liveCache.historicalBids || null;
+  const unifiedState = ownerData._rawState || state.importedData;
+
+  if (selectedPlayer) {
+    void queuePlayerProfileHydration(unifiedState, selectedPlayer, rosterMatch);
+  }
+  void queueHistoricalBidsHydration(unifiedState);
 
   const ownerSummary = `
     <div class="owner-summary panel">
@@ -3176,25 +3298,25 @@ function renderOwnerDetails(ownerData, report) {
     <div class="detail-grid">
       <article class="detail-card">
         <h3>Prospects</h3>
-        ${renderPlayerList(selectedOwner.prospects, state.playerSearch)}
+        ${renderPlayerList(selectedOwner.prospects, state.playerSearch, historicalBidsBundle)}
       </article>
       <article class="detail-card">
         <h3>Veterans</h3>
-        ${renderPlayerList(selectedOwner.veterans, state.playerSearch)}
+        ${renderPlayerList(selectedOwner.veterans, state.playerSearch, historicalBidsBundle)}
       </article>
       <article class="detail-card">
         <h3>Farm Players</h3>
-        ${renderPlayerList(selectedOwner.farmPlayers, state.playerSearch)}
+        ${renderPlayerList(selectedOwner.farmPlayers, state.playerSearch, historicalBidsBundle)}
       </article>
       <article class="detail-card">
         <h3>Matching Rights</h3>
-        ${renderPlayerList(selectedOwner.matchingRights, state.playerSearch)}
+        ${renderPlayerList(selectedOwner.matchingRights, state.playerSearch, historicalBidsBundle)}
       </article>
       ${localAssignmentHtml}
     </div>
   `;
 
-  const playerIntel = selectedPlayer ? renderPlayerIntelligenceSection(selectedPlayer, rosterMatch, liveProfile) : '';
+  const playerIntel = selectedPlayer ? renderPlayerIntelligenceSection(selectedPlayer, rosterMatch, liveProfile, historicalBidsBundle) : '';
 
   return `
   <section class="panel details-panel">
@@ -3704,6 +3826,27 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     });
   });
   const rerender = () => renderOwnerView(unifiedState);
+  document.querySelectorAll('.owner-item').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedOwner = button.dataset.owner;
+      state.selectedPlayerKey = null;
+      rerender();
+    });
+  });
+  document.querySelectorAll('.player-item[data-player-key]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.selectedPlayerKey = button.dataset.playerKey;
+      rerender();
+    });
+  });
+  document.getElementById('ownerSearchInput')?.addEventListener('input', (event) => {
+    state.ownerSearch = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('playerSearchInput')?.addEventListener('input', (event) => {
+    state.playerSearch = event.target.value || '';
+    rerender();
+  });
   document.getElementById('draftBoardSearch')?.addEventListener('input', (event) => {
     state.draftBoardSearch = event.target.value || '';
     rerender();
@@ -4010,6 +4153,22 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     replacement?.focus();
     if (replacement && focusState.selectionStart !== null && focusState.selectionEnd !== null) {
       replacement.setSelectionRange(focusState.selectionStart, focusState.selectionEnd);
+    }
+  }
+}
+
+async function queueHistoricalBidsHydration(unifiedState) {
+  if (!unifiedState || state.liveCache.historicalBids || state.liveCache.historicalBidsRequest) {
+    return;
+  }
+
+  try {
+    await loadAhlHistoricalBids(state.liveCache, typeof fetch === 'function' ? fetch : undefined);
+  } catch (err) {
+    console.error('Unable to load AHL historical bid stats', err);
+  } finally {
+    if (state.activeDashboardTab) {
+      renderOwnerView(unifiedState);
     }
   }
 }
@@ -4596,6 +4755,9 @@ export {
   DRAFT_ROSTER_RULES,
   persistState,
   state,
+  buildUnifiedPlayer,
+  computeOwnerStatistics,
+  computeOwnerAggregates,
   addManualOverrideEntry,
   removeManualOverrideById,
   buildDraftValidationReport,
