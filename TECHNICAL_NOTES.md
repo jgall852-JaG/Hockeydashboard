@@ -46,3 +46,4 @@
 - exported state JSON = portable working-state handoff
 - Local Working Assignments and Personal Draft List entries are browser-only overlays; completed ownership and draft state remain authoritative in the AHL Sheets.
 - Draft-workflow Final Position uses Utility Position when listed, otherwise AHL Position. NHL Position is supplemental scoring metadata only.
+- Unavailable players (drafted in AHL) are always routed to Draft Board. Best Available only lists players whose availability resolves to `Available`.

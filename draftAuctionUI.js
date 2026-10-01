@@ -339,7 +339,9 @@ export function renderDraftAuctionDashboard({
   const bestPlayers = eligiblePlayers.filter((player) => {
     const removed = player.localStatus === 'removed-local';
     if (draftedKeys.has(normalizeLookupKey(player.name))) return false;
-    return !removed || showRemovedPlayers;
+    if (removed) return showRemovedPlayers;
+    // Routing: unavailable players (drafted in AHL) are routed to Draft Board, not Best Available.
+    return player.availability !== 'Unavailable';
   });
   const sortKeys = {
     ADP: 'adp',

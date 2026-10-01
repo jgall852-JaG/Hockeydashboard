@@ -516,4 +516,40 @@ describe('draft auction dashboard rendering', () => {
     expect(rowIds({ bestPositionFilter: 'D' })).toEqual(wings);
     expect(rowIds({ bestPositionFilter: 'RW' })).toEqual([]);
   });
+
+  test('routes players with availability "Unavailable" to Draft Board instead of Best Available', () => {
+    const undraftedUnavailable = {
+      id: 'owned-in-ahl',
+      name: 'Owned In AHL',
+      status: 'in-ahl',
+      availability: 'Unavailable',
+    };
+    const undraftedAvailable = {
+      id: 'open-prospect',
+      name: 'Open Prospect',
+      status: 'in-ahl',
+      availability: 'Available',
+    };
+    const props = {
+      activeTab: 'best-available',
+      players: [undraftedUnavailable, undraftedAvailable],
+      draftedPlayers: [],
+      availableKeys: new Set(['open prospect']),
+      search: '',
+      positionFilter: '',
+      categoryFilter: '',
+      bestAvailableSort: 'ADP',
+      teamBudgets: [],
+      teamNames: [],
+      selectedPlayer: null,
+      selectedTeam: '',
+      sourceAvailability: {},
+      toolsHtml: '',
+      workspaceHtml: '',
+    };
+    const html = renderDraftAuctionDashboard(props);
+    const panel = html.slice(html.indexOf('id="best-available-panel"'));
+    expect(panel).toContain('data-player-details="open-prospect"');
+    expect(panel).not.toContain('data-player-details="owned-in-ahl"');
+  });
 });
