@@ -221,6 +221,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     ['Projection Confidence', player.intelEdge?.projectionConfidence],
     ['Sleeper Tag', player.intelEdge?.sleeperTag],
     ['Bust Tag', player.intelEdge?.bustTag],
+    ['Pricing Method', player.pricingMethod],
   ];
   const prospect = player.prospectMetadata || null;
   const prospectRows = prospect ? [

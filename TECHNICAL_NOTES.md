@@ -36,9 +36,10 @@
 - Google Sheets and OneDrive sources are network-only. Offline mode serves the last successful IndexedDB snapshot and cannot refresh authoritative league state.
 - The supplied Dobber OneDrive shares currently respond HTTP 401/403 from an unauthenticated static fetch. The app surfaces that error and supports local Excel/PDF import; cached successfully parsed Dobber data remains available offline.
 - The vendored SheetJS and PDF.js browser builds are cached by the PWA and retain their upstream licenses in `vendor/`.
-- Dobber projection text is not treated as a score. PPS, RSS, and RRS must be explicit numeric fields on a 0–1 or 0–100 scale before DraftIQ and pricing activate.
+- Dobber projection text is not treated as a score. The real bundled Dobber Excel's "EVERYTHING (Skaters)" tab has no literal BPS/KVS/PPS/RSS/RRS columns; when they are absent, `normalizeDobberRows` (`dobberIngestion.js`) re-derives all five DraftIQ pricing inputs from Rank, Upside, 3YP, Games, Points, and PP Unit using league-wide percentile scoring, and the player record's `pricingMethod` reports `excel` (literal columns present), `derived` (re-derived), or `unavailable` (neither signal exists). Explicit BPS/KVS/PPS/RSS/RRS columns, when present, always take priority over the derived values.
 - Dobber remote responses never establish source availability. HTTP 401/403 leaves `metadata.dobberStatus`, `dobberExcel.status`, and `dobberPdfs.status` as `unavailable`; only successfully parsed local files use `loaded-local`.
 - PDF pedigree/confidence/sleeper/bust metadata is explainability-only. It does not modify DraftIQ or tier because no numeric adjustment was defined.
+- The `compositeScore` in `forecastedStats.js` is a distinct, separate metric from DraftIQ's `auctionValue`/`classification`. It still requires `FHPPG`/`SHPPG` from AHL historical splits and remains null for players without that data, independent of the PPS/RSS/BPS/RRS/KVS pricing-input derivation above.
 
 ## Draft-day operating model
 - GitHub repo = code and doc source of truth

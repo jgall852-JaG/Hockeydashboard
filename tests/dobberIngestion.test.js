@@ -24,7 +24,7 @@ describe('Dobber ingestion', () => {
     });
   });
 
-  test('normalizes EVERYTHING (Skaters) rows without inferring missing projection scores', () => {
+  test('normalizes EVERYTHING (Skaters) rows, preferring explicit score columns over derived ones', () => {
     const players = normalizeDobberRows([{
       Player: '  Player One ',
       Team: 'edm',
@@ -48,10 +48,58 @@ describe('Dobber ingestion', () => {
       pps: 80,
       rss: 70,
       rrs: 20,
+      pricingMethod: 'excel',
       riskFlags: ['Usage decline', 'Injury'],
     });
     expect(normalizeDobberRows([{ Player: 'No Projection', BPS: '', KVS: '' }])['no projection'])
-      .toMatchObject({ bps: null, kvs: null, pps: null, rss: null, rrs: null });
+      .toMatchObject({ bps: null, kvs: null, pps: null, rss: null, rrs: null, pricingMethod: 'unavailable' });
+  });
+
+  test('derives PPS/RSS/BPS/RRS/KVS pricing inputs from Rank/Upside/3YP/Games/Points/PP Unit when explicit score columns are absent', () => {
+    const players = normalizeDobberRows([
+      {
+        Player: 'Star Forward',
+        POS: 'C',
+        Rank: '1',
+        Upside: '160',
+        '3YP': '135',
+        Games: '77',
+        Points: '131',
+        'PP Unit': '1',
+      },
+      {
+        Player: 'Depth Forward',
+        POS: 'C',
+        Rank: '200',
+        Upside: '60',
+        '3YP': '55',
+        Games: '60',
+        Points: '45',
+        'PP Unit': '3',
+      },
+    ]);
+
+    const star = players['star forward'];
+    const depth = players['depth forward'];
+    [star, depth].forEach((player) => {
+      ['pps', 'rss', 'bps', 'rrs', 'kvs'].forEach((metric) => {
+        expect(player[metric]).toBeGreaterThanOrEqual(0);
+        expect(player[metric]).toBeLessThanOrEqual(100);
+      });
+      expect(player.pricingMethod).toBe('derived');
+    });
+    // The higher-ranked player with the bigger projection and PP1 role should
+    // score higher across the board than the depth option.
+    expect(star.pps).toBeGreaterThan(depth.pps);
+    expect(star.rss).toBeGreaterThan(depth.rss);
+    expect(star.kvs).toBeGreaterThan(depth.kvs);
+  });
+
+  test('leaves pricing inputs null when neither explicit score columns nor Rank/Upside/3YP signals are available', () => {
+    const players = normalizeDobberRows([{ Player: 'Unknown Player', POS: 'C' }]);
+    expect(players['unknown player']).toMatchObject({
+      bps: null, kvs: null, pps: null, rss: null, rrs: null, pricingMethod: 'unavailable',
+    });
   });
 
   test('requires the named skater tab and an actual XLSX payload', () => {
