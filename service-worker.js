@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hockey-dashboard-static-v14';
+const CACHE_NAME = 'hockey-dashboard-static-v15';
 const APP_SHELL = [
   './',
   './index.html',
@@ -9,6 +9,7 @@ const APP_SHELL = [
   './draftAuctionUI.js',
   './draftIntelligence.js',
   './ahlSheetIngestion.js',
+  './ahlHistoricalBids.js',
   './personalDraftList.js',
   './offlineSnapshotStore.js',
   './localDraftEdits.js',
@@ -29,6 +30,7 @@ const APP_SHELL = [
   './data/keepers.json',
   './data/prospects.json',
   './data/nhl-snapshot.json',
+  './data/ahl-historical-bids.json',
 ];
 
 self.addEventListener('install', (event) => {
