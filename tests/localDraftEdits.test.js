@@ -1,6 +1,7 @@
 import {
   applyLocalDraftEdits,
   createEmptyLocalEdits,
+  detectLocalEditMismatches,
   normalizeLocalEdits,
 } from '../localDraftEdits.js';
 
@@ -74,5 +75,71 @@ describe('local draft edits', () => {
     expect(result.players[1]).toMatchObject({ ownership: null, available: true });
     expect(result.availableKeys.has('available player')).toBe(false);
     expect(result.availableKeys.has('owned player')).toBe(true);
+  });
+
+  test('working assignments (winning bids) fill in cost and owner only when the sheet has no owner yet', () => {
+    const players = [
+      { id: 'undrafted', name: 'Undrafted Player', status: 'in-ahl', ownership: null, cost: null, available: true },
+      { id: 'owned', name: 'Owned Player', status: 'in-ahl', ownership: 'TEAM A', cost: 5, available: false },
+    ];
+    const workingAssignments = {
+      w1: { name: 'Undrafted Player', team: 'TEAM C', bid: 12 },
+      w2: { name: 'Owned Player', team: 'TEAM D', bid: 7 },
+    };
+    const result = applyLocalDraftEdits(players, new Set(['undrafted player']), createEmptyLocalEdits(), workingAssignments);
+
+    expect(result.players[0]).toMatchObject({
+      owner: 'TEAM C',
+      ownership: 'TEAM C',
+      cost: 12,
+      localWorkingAssignment: true,
+      available: false,
+    });
+    expect(result.availableKeys.has('undrafted player')).toBe(false);
+    // Already-owned player keeps the authoritative sheet owner/cost; the working
+    // assignment is not silently applied over it.
+    expect(result.players[1]).toMatchObject({ ownership: 'TEAM A', cost: 5 });
+    expect(result.players[1].localWorkingAssignment).toBeUndefined();
+  });
+
+  test('manual assignments still take precedence over a conflicting working assignment', () => {
+    const players = [
+      { id: 'undrafted', name: 'Undrafted Player', status: 'in-ahl', ownership: null, cost: null, available: true },
+    ];
+    const workingAssignments = { w1: { name: 'Undrafted Player', team: 'TEAM C', bid: 12 } };
+    const result = applyLocalDraftEdits(players, new Set(['undrafted player']), {
+      manualAssignments: { 'undrafted player': 'TEAM B' },
+    }, workingAssignments);
+
+    expect(result.players[0]).toMatchObject({ owner: 'TEAM B', ownership: 'TEAM B' });
+    expect(result.players[0].localWorkingAssignment).toBeUndefined();
+  });
+
+  test('detectLocalEditMismatches flags conflicts between local edits and the sheet owner', () => {
+    const players = [
+      { name: 'Conflicted Player', owner: 'TEAM A' },
+      { name: 'Agreeing Player', owner: 'TEAM B' },
+      { name: 'Undrafted Player', owner: null },
+    ];
+    const mismatches = detectLocalEditMismatches(players, {
+      manualAssignments: { 'conflicted player': 'TEAM Z', 'agreeing player': 'TEAM B' },
+    }, {
+      w1: { name: 'Undrafted Player', team: 'TEAM C' },
+    });
+
+    expect(mismatches).toEqual([
+      { name: 'Conflicted Player', sheetOwner: 'TEAM A', localOwner: 'TEAM Z', source: 'manual-assignment' },
+    ]);
+  });
+
+  test('detectLocalEditMismatches flags conflicting working assignments too', () => {
+    const players = [{ name: 'Flipped Player', ownership: 'TEAM A' }];
+    const mismatches = detectLocalEditMismatches(players, createEmptyLocalEdits(), {
+      w1: { name: 'Flipped Player', team: 'TEAM Z', bid: 20 },
+    });
+
+    expect(mismatches).toEqual([
+      { name: 'Flipped Player', sheetOwner: 'TEAM A', localOwner: 'TEAM Z', source: 'working-assignment' },
+    ]);
   });
 });

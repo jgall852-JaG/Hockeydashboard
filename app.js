@@ -20,6 +20,7 @@ import { loadAhlSnapshot, saveAhlSnapshot } from './offlineSnapshotStore.js';
 import {
   applyLocalDraftEdits,
   createEmptyLocalEdits,
+  detectLocalEditMismatches,
   normalizeLocalEdits,
 } from './localDraftEdits.js';
 import {
@@ -372,9 +373,28 @@ export function buildOwnerViewData(rawState) {
   }
 
   // Extract arrays of players from datasets
-  const prospectsArr = Object.values(stateObj.datasets.prospects?.prospects || {}).map((player) => decoratePlayer(player, 'prospect'));
-  const veteransArr = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
-  const rosterArr = Object.values(stateObj.datasets.roster?.players || {}).map((player) => decoratePlayer(player, 'roster'));
+  const prospectsArrRaw = Object.values(stateObj.datasets.prospects?.prospects || {}).map((player) => decoratePlayer(player, 'prospect'));
+  const veteransArrRaw = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
+  const rosterArrRaw = Object.values(stateObj.datasets.roster?.players || {}).map((player) => decoratePlayer(player, 'roster'));
+
+  // Merge in local draft edits (manual assignments) and recorded winning bids
+  // (workingAssignments) so Tools & Validation reflects drafted players
+  // before the authoritative AHL Sheet/Draft 2026 tab catches up.
+  const localEditMismatches = detectLocalEditMismatches(
+    [...prospectsArrRaw, ...veteransArrRaw, ...rosterArrRaw],
+    stateObj.localEdits,
+    stateObj.workingAssignments,
+  );
+  const localEditView = applyLocalDraftEdits(
+    [...prospectsArrRaw, ...veteransArrRaw, ...rosterArrRaw],
+    new Set(),
+    stateObj.localEdits,
+    stateObj.workingAssignments,
+  );
+  const effectiveByKey = new Map(localEditView.players.map((player) => [player.playerKey, player]));
+  const prospectsArr = prospectsArrRaw.map((player) => effectiveByKey.get(player.playerKey) || player);
+  const veteransArr = veteransArrRaw.map((player) => effectiveByKey.get(player.playerKey) || player);
+  const rosterArr = rosterArrRaw.map((player) => effectiveByKey.get(player.playerKey) || player);
 
   const ownerSet = new Set();
   // derive owners from dataset owners maps if present
@@ -407,6 +427,7 @@ export function buildOwnerViewData(rawState) {
   return {
     owners,
     totalOwners: owners.length,
+    localEditMismatches,
     metadata: stateObj.metadata || DEFAULT.metadata,
     _rawState: stateObj,
   };
@@ -734,6 +755,7 @@ function applyAhlSheetIntelligence(stateObj) {
         eligiblePlayers,
         new Set(report.availablePlayers.map((player) => normalizeLookupKey(player.name))),
         stateObj.localEdits,
+        stateObj.workingAssignments,
       ).players;
     }),
     stateObj,
@@ -2274,6 +2296,40 @@ function renderLeagueIntelligence(aggregates) {
   `;
 }
 
+function renderLocalEditMismatchesPanel(mismatches) {
+  const issues = mismatches || [];
+  if (!issues.length) {
+    return `
+      <section class="panel local-edit-mismatches">
+        <h3>Local Edit Mismatches</h3>
+        <div class="empty-state">No conflicts between local draft edits and the AHL Sheets.</div>
+      </section>
+    `;
+  }
+
+  const rows = issues.map((issue) => `
+    <tr>
+      <td>${escapeHtml(issue.name)}</td>
+      <td>${escapeHtml(issue.sheetOwner)}</td>
+      <td>${escapeHtml(issue.localOwner)}</td>
+      <td>${escapeHtml(issue.source === 'manual-assignment' ? 'Manual Assignment' : 'Winning Bid')}</td>
+    </tr>
+  `).join('');
+
+  return `
+    <section class="panel local-edit-mismatches">
+      <h3>Local Edit Mismatches</h3>
+      <p class="panel-subtitle">These players have a local draft edit that disagrees with the AHL Sheets owner. Refresh AHL Sheets or clear the local edit to resolve.</p>
+      <div class="table-wrap">
+        <table class="validation-table">
+          <thead><tr><th>Player</th><th>Sheet Owner</th><th>Local Owner</th><th>Source</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
 function renderDataQualityPanel(stateObj) {
   const sources = getDataQualitySources(stateObj);
   const rows = sources.map((source) => {
@@ -3367,6 +3423,7 @@ function renderOwnerView(unifiedState) {
   const aggregates = computeOwnerAggregates(unifiedState);
   const leagueHtml = renderLeagueIntelligence(aggregates);
   const dataQualityHtml = renderDataQualityPanel(unifiedState);
+  const localEditMismatchesHtml = renderLocalEditMismatchesPanel(ownerData.localEditMismatches);
   const validationCenterHtml = renderDraftValidationCenter(draftValidationReport);
   const bestAvailableHtml = renderBestAvailablePanel(draftValidationReport);
   const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
@@ -3404,6 +3461,7 @@ function renderOwnerView(unifiedState) {
     </section>
     <section id="qualityCheckPanel" role="tabpanel" aria-labelledby="qualityCheckTab" ${state.activeDashboardTab === 'quality-check' ? '' : 'hidden'}>
       ${dataQualityHtml}
+      ${localEditMismatchesHtml}
       ${validationCenterHtml}
     </section>
   `;
@@ -3726,6 +3784,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     state.draftIntelligence.players?.players || [],
     sourceAvailableKeys,
     unifiedState.localEdits,
+    unifiedState.workingAssignments,
   );
   const availableKeys = localDraftView.availableKeys;
   const players = localDraftView.players.map((player) => ({
@@ -3779,6 +3838,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   const toolsHtml = `${summaryHtml}
     ${jsonHealthHtml}
     ${renderDataQualityPanel(unifiedState)}
+    ${renderLocalEditMismatchesPanel(ownerData.localEditMismatches)}
     ${renderDraftValidationCenter(draftValidationReport)}
     ${renderManualOverridePanel(draftValidationReport, unifiedState)}
     ${ownerData.owners.length ? `<div class="owner-layout">${ownerListMarkup}<div>${renderLeagueIntelligence(computeOwnerAggregates(unifiedState))}${ownerDetailMarkup}</div></div>` : ''}`;
