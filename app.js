@@ -1538,6 +1538,19 @@ function getRecordType(record) {
   return '';
 }
 
+function getPlayerAvailability(player, availableKeys) {
+  const isAvailable = player.status !== 'not-in-ahl'
+    && player.localStatus !== 'removed-local'
+    && availableKeys.has(normalizeLookupKey(player.name));
+  return isAvailable ? 'Available' : 'Unavailable';
+}
+
+// Token-efficient routing: unavailable players (drafted in AHL) are always routed to Draft Board.
+function routePlayerPanel(player) {
+  if (player.availability === 'Unavailable') return 'DraftBoard';
+  return 'BestAvailable';
+}
+
 function getAvailableStatus(record) {
   const owner = getRecordOwner(record);
   const availableField = pickRecordValue(record, ['available', 'isavailable', 'undrafted']);
@@ -3593,7 +3606,10 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     unifiedState.localEdits,
   );
   const availableKeys = localDraftView.availableKeys;
-  const players = localDraftView.players;
+  const players = localDraftView.players.map((player) => ({
+    ...player,
+    availability: getPlayerAvailability(player, availableKeys),
+  }));
   const draftedPlayers = buildDraftBoardPlayers(players, unifiedState, state.liveProfiles, state.liveCache.players);
   const teamNames = ownerData.owners.map((owner) => owner.name);
   const selectedPlayer = players.find((player) => player.id === state.selectedDraftPlayerId) || null;
