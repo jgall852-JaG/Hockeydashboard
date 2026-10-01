@@ -1,4 +1,2 @@
 @echo off
-cd /d "%~dp0"
-node scripts\serve-dashboard.mjs
-if errorlevel 1 pause
+call "%~dp0Launch-Hockey-Dashboard.bat"

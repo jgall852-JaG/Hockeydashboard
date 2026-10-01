@@ -4,6 +4,7 @@ import {
 
 import {
   normalizeLookupKey,
+  normalizeTeamAbbrev,
   summarizePlayerLanding,
   resolveLivePlayerProfile,
 } from '../liveNhlApi.js';
@@ -12,6 +13,7 @@ describe('liveNhlApi helpers', () => {
   test('normalizes names for roster matching', () => {
     expect(normalizeLookupKey('Macklin Celebrini')).toBe('macklin celebrini');
     expect(normalizeLookupKey('José Núñez')).toBe('jose nunez');
+    expect(normalizeTeamAbbrev('FLO')).toBe('FLA');
   });
 
   test('summarizes player landing payloads', () => {
@@ -61,6 +63,51 @@ describe('liveNhlApi helpers', () => {
 describe('resolveLivePlayerProfile', () => {
   afterEach(() => {
     delete global.fetch;
+  });
+
+  test('draft GP lookup shares team roster requests and skips unrelated team context', async () => {
+    const urls = [];
+    const fetchImpl = jest.fn(async (url) => {
+      urls.push(url);
+      if (url.endsWith('/roster/FLA/current')) return {
+        ok: true,
+        json: async () => ({ forwards: [
+          { id: 1, firstName: { default: 'Farm' }, lastName: { default: 'Player' } },
+          { id: 2, firstName: { default: 'Rookie' }, lastName: { default: 'Player' } },
+        ] }),
+      };
+      if (/\/player\/[12]\/landing$/.test(url)) return {
+        ok: true,
+        json: async () => ({
+          playerId: Number(url.match(/\/player\/(\d+)\//)[1]),
+          careerTotals: { regularSeason: { gamesPlayed: url.includes('/1/') ? 9 : 10 } },
+        }),
+      };
+      throw new Error(`Unexpected NHL endpoint: ${url}`);
+    });
+    const cache = { version: 1, players: {}, teams: {} };
+    const teamRosterRequests = new Map();
+    const [farm, rookie] = await Promise.all(['Farm Player', 'Rookie Player'].map((name) => (
+      resolveLivePlayerProfile({
+        player: { name, nhlteam: 'FLO', playerKey: `draft:${name}` },
+        cache, fetchImpl, includeTeamContext: false, teamRosterRequests,
+      })
+    )));
+    expect([farm.historical.gamesPlayed, rookie.historical.gamesPlayed]).toEqual([9, 10]);
+    expect(urls.filter((url) => url.endsWith('/roster/FLA/current'))).toHaveLength(1);
+    expect(urls).toHaveLength(3);
+    const stale = {
+      status: 'ok', fetchedAt: '2026-09-29T12:00:00.000Z',
+      playerKey: 'draft:Farm Player', playerName: 'Farm Player',
+      historical: { gamesPlayed: null },
+    };
+    cache.players['draft:Farm Player'] = stale;
+    const refreshed = await resolveLivePlayerProfile({
+      player: { name: 'Farm Player', nhlteam: 'FLA', playerKey: 'draft:Farm Player' },
+      cache, fetchImpl, includeTeamContext: false, teamRosterRequests,
+    });
+    expect(refreshed.historical.gamesPlayed).toBe(9);
+    expect(refreshed).not.toBe(stale);
   });
 
   test('hydrates player and team context from NHL API responses', async () => {

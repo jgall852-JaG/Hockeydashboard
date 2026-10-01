@@ -152,7 +152,7 @@ describe('draft auction dashboard rendering', () => {
     expect(bestPanel).not.toContain('data-player-details="official-player"');
   });
 
-  test('shows the unavailable empty state and optional commissioner player toggles', () => {
+  test('shows undrafted unavailable players without treating them as draftable', () => {
     const player = {
       id: 'unavailable-player',
       name: 'Unavailable Player',
@@ -187,29 +187,22 @@ describe('draft auction dashboard rendering', () => {
       toolsHtml: '',
       workspaceHtml: '',
     };
-    const emptyHtml = renderDraftAuctionDashboard(props);
-    expect(emptyHtml).toContain('All AHL-eligible players are currently unavailable.');
-    expect(emptyHtml).toContain('data-show-all-ahl-players');
-    expect(emptyHtml).toContain('data-show-removed-players ');
-    expect(emptyHtml).not.toContain('Brandt Clarke');
-    expect(emptyHtml).toContain('data-highlight-ahl-unavailable');
+    const defaultHtml = renderDraftAuctionDashboard(props);
+    expect(defaultHtml).toContain('data-show-removed-players ');
+    expect(defaultHtml).not.toContain('Brandt Clarke');
+    expect(defaultHtml).toContain('data-highlight-ahl-unavailable');
     const toolsHtml = renderDraftAuctionDashboard({ ...props, activeTab: 'tools-validation' });
     expect(toolsHtml).toContain('id="reset-local-edits"');
 
-    const allPlayersHtml = renderDraftAuctionDashboard({
-      ...props,
-      showAllAhlPlayers: true,
-      showRemovedPlayers: false,
-    });
-    const bestPanel = allPlayersHtml.slice(allPlayersHtml.indexOf('id="best-available-panel"'));
+    const bestPanel = defaultHtml.slice(defaultHtml.indexOf('id="best-available-panel"'));
     expect(bestPanel).toContain('Unavailable Player');
     expect(bestPanel).not.toContain('data-player-details="removed-player"');
-    expect(bestPanel).not.toContain('All AHL-eligible players are currently unavailable.');
-    expect(bestPanel).toContain('data-show-all-ahl-players checked');
+    expect(bestPanel).toMatch(/data-player-details="unavailable-player"[\s\S]*?<td>Unavailable<\/td>/);
     expect(bestPanel).toContain('data-show-removed-players');
+    expect(renderDraftAuctionDashboard({ ...props, players: [] }))
+      .toContain('No undrafted AHL-eligible players match the current filters.');
     const commissionerHtml = renderDraftAuctionDashboard({
       ...props,
-      showAllAhlPlayers: true,
       showRemovedPlayers: true,
     });
     const commissionerPanel = commissionerHtml.slice(commissionerHtml.indexOf('id="best-available-panel"'));
@@ -302,8 +295,8 @@ describe('draft auction dashboard rendering', () => {
   });
 
   test('classifies career GP at boundaries and keeps missing GP Veteran', () => {
-    expect([null, undefined, 0, 9, 10, 82, 83].map(getExperienceTierFromGames))
-      .toEqual(['Veteran', 'Veteran', 'Farm', 'Farm', 'Rookie', 'Rookie', 'Veteran']);
+    expect([null, undefined, 0, 9, 10, 82, 83, '', -1].map(getExperienceTierFromGames))
+      .toEqual(['Veteran', 'Veteran', 'Farm', 'Farm', 'Rookie', 'Rookie', 'Veteran', 'Unknown', 'Unknown']);
   });
 
   test('Draft Board keeps player GP and reads cached NHL GP when live profiles lack it', () => {
@@ -339,6 +332,12 @@ describe('draft auction dashboard rendering', () => {
     expect(rendered).toMatch(/Rookie Player[\s\S]*?<td>Rookie<\/td>/);
     expect(rendered).toMatch(/Veteran Player[\s\S]*?<td>Veteran<\/td>/);
     expect(rendered).toMatch(/Missing Player[\s\S]*?<td>Veteran<\/td>/);
+    const explicitGpPlayers = buildDraftBoardPlayers(
+      [{ ...players[0], nhlCareerGamesPlayed: '9' }, { ...players[1], nhlCareerGamesPlayed: 'bad' }],
+      state, {}, {},
+    );
+    expect(explicitGpPlayers.map((player) => getExperienceTierFromGames(player.nhlCareerGamesPlayed)))
+      .toEqual(['Farm', 'Unknown']);
   });
 
   test('Draft 2026 owners and prices take precedence over local winning bids and model estimates', () => {
@@ -429,15 +428,17 @@ describe('draft auction dashboard rendering', () => {
     expect(header).not.toContain('Max Bid');
     expect(panel).toContain('data-player-details="available"');
     expect(panel).toMatch(/<td>C\/L<\/td>\s*<td>Veteran<\/td>\s*<td>60<\/td>\s*<td>86<\/td>\s*<td>Available<\/td>/);
-    expect(panel).not.toContain('RW');
+    expect(panel.slice(panel.indexOf('<tbody>'))).not.toContain('RW');
     const sortOptions = panel.match(/<select id="bestAvailableSort">([\s\S]*?)<\/select>/)[1];
     expect(sortOptions.match(/<option [^>]*>[^<]+<\/option>/g)).toEqual([
       '<option selected>ADP</option>',
-      '<option >Forecasted Points</option>',
-      '<option >Composite Score</option>',
       '<option >FHPPG</option>',
       '<option >SHPPG</option>',
+      '<option >Forecasted Points</option>',
+      '<option >Composite Score</option>',
+      '<option >Games Played</option>',
     ]);
+    expect(panel).toMatch(/<select id="bestPositionFilter"><option value="">All<\/option><option value="C" >C<\/option><option value="LW" >LW<\/option><option value="RW" >RW<\/option><option value="D" >D<\/option><\/select>/);
     [
       'Power Play Time on Ice',
       'Points per Game',
@@ -460,9 +461,9 @@ describe('draft auction dashboard rendering', () => {
 
   test('Best Available sorts actual composite and split metrics, with missing values last', () => {
     const players = [
-      { id: 'low', name: 'Low', status: 'in-ahl', finalPosition: 'C', forecast: { projectedPoints: 65, compositeScore: 50, FHPPG: 0.8, SHPPG: 0.7 } },
+      { id: 'low', name: 'Low', status: 'in-ahl', finalPosition: 'C', seasonStats: { gamesPlayed: 40 }, forecast: { projectedPoints: 65, compositeScore: 50, FHPPG: 0.8, SHPPG: 0.7 } },
       { id: 'missing', name: 'Missing', status: 'in-ahl', finalPosition: 'D', forecast: { projectedPoints: null, compositeScore: null, FHPPG: null, SHPPG: null } },
-      { id: 'high', name: 'High', status: 'in-ahl', finalPosition: 'LW', forecast: { projectedPoints: 60, compositeScore: 86, FHPPG: 0.6, SHPPG: 0.9 } },
+      { id: 'high', name: 'High', status: 'in-ahl', finalPosition: 'LW', seasonStats: { gamesPlayed: 82 }, forecast: { projectedPoints: 60, compositeScore: 86, FHPPG: 0.6, SHPPG: 0.9 } },
     ];
     const props = {
       activeTab: 'best-available', players, availableKeys: new Set(['low', 'missing', 'high']),
@@ -480,5 +481,39 @@ describe('draft auction dashboard rendering', () => {
     expect(rowIds('Forecasted Points')).toEqual(['low', 'high', 'missing']);
     expect(rowIds('FHPPG')).toEqual(['low', 'high', 'missing']);
     expect(rowIds('SHPPG')).toEqual(['high', 'low', 'missing']);
+    expect(rowIds('Games Played')).toEqual(['high', 'low', 'missing']);
+  });
+
+  test('Best Available limits to 25 after position and sort, never including drafted players', () => {
+    const players = Array.from({ length: 32 }, (_, index) => ({
+      id: `player-${index}`,
+      name: `Player ${String(index).padStart(2, '0')}`,
+      status: 'in-ahl',
+      finalPosition: index % 2 ? 'LW/D' : 'C',
+      seasonStats: { gamesPlayed: index },
+    }));
+    const draftedPlayers = [{ ...players[31], draftOwner: 'TEAM A', draftPrice: 3 }];
+    const props = {
+      activeTab: 'best-available', players, draftedPlayers,
+      availableKeys: new Set(players.map((player) => player.name.toLowerCase())),
+      bestAvailableSort: 'Games Played', search: '', positionFilter: '',
+      categoryFilter: '', teamBudgets: [], teamNames: [], selectedPlayer: null,
+      selectedTeam: '', sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+    };
+    const rowIds = (options) => {
+      const html = renderDraftAuctionDashboard({ ...props, ...options });
+      const panel = html.slice(html.indexOf('id="best-available-panel"'), html.indexOf('id="team-budgets-panel"'));
+      return [...panel.matchAll(/data-player-details="([^"]+)"/g)].map((match) => match[1]);
+    };
+    const all = rowIds({});
+    expect(all).toHaveLength(25);
+    expect(all[0]).toBe('player-30');
+    expect(all).not.toContain('player-31');
+    const wings = rowIds({ bestPositionFilter: 'LW' });
+    expect(wings).toHaveLength(15);
+    expect(wings[0]).toBe('player-29');
+    expect(wings).not.toContain('player-31');
+    expect(rowIds({ bestPositionFilter: 'D' })).toEqual(wings);
+    expect(rowIds({ bestPositionFilter: 'RW' })).toEqual([]);
   });
 });

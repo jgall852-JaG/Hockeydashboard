@@ -13,8 +13,8 @@ const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL
 
 export function getExperienceTierFromGames(gamesPlayed) {
   if (gamesPlayed === null || gamesPlayed === undefined) return 'Veteran';
-  const games = Number(gamesPlayed);
-  if (!Number.isInteger(games) || games < 0) return 'Veteran';
+  const games = gamesPlayed === '' ? NaN : Number(gamesPlayed);
+  if (!Number.isInteger(games) || games < 0) return 'Unknown';
   if (games < 10) return 'Farm';
   return games <= 82 ? 'Rookie' : 'Veteran';
 }
@@ -311,9 +311,9 @@ export function renderDraftAuctionDashboard({
   personalDraftAvailabilityFilter = 'all',
   search,
   positionFilter,
+  bestPositionFilter = '',
   categoryFilter,
   bestAvailableSort,
-  showAllAhlPlayers = false,
   showRemovedPlayers = false,
   highlightUnavailablePlayers = false,
   teamBudgets,
@@ -336,23 +336,18 @@ export function renderDraftAuctionDashboard({
     const matchesCategory = !categoryFilter || getExperienceTierFromGames(player.nhlCareerGamesPlayed) === categoryFilter;
     return matchesSearch && matchesPosition && matchesCategory;
   });
-  const availableEligibleCount = eligiblePlayers.filter((player) => (
-    player.localStatus !== 'removed-local'
-    && availableKeys.has(normalizeLookupKey(player.name))
-  )).length;
   const bestPlayers = eligiblePlayers.filter((player) => {
     const removed = player.localStatus === 'removed-local';
-    const isAvailable = !removed && availableKeys.has(normalizeLookupKey(player.name));
     if (draftedKeys.has(normalizeLookupKey(player.name))) return false;
-    if (removed && !showRemovedPlayers) return false;
-    return showAllAhlPlayers || isAvailable || (removed && showRemovedPlayers);
+    return !removed || showRemovedPlayers;
   });
   const sortKeys = {
     ADP: 'adp',
-    'Forecasted Points': 'forecastedPoints',
-    'Composite Score': 'compositeScore',
     FHPPG: 'FHPPG',
     SHPPG: 'SHPPG',
+    'Forecasted Points': 'forecastedPoints',
+    'Composite Score': 'compositeScore',
+    'Games Played': 'gamesPlayed',
   };
   const sortValueKeys = {
     adp: ['adp', 'forecast.adp'],
@@ -360,6 +355,7 @@ export function renderDraftAuctionDashboard({
     compositeScore: ['forecast.compositeScore', 'compositeForecastScore'],
     FHPPG: ['forecast.FHPPG', 'historicalSplits.FHPPG'],
     SHPPG: ['forecast.SHPPG', 'historicalSplits.SHPPG'],
+    gamesPlayed: ['seasonStats.gamesPlayed'],
   };
   const readSortValue = (player, key) => key.split('.').reduce((value, part) => value?.[part], player);
   const getSortValue = (player) => {
@@ -374,16 +370,16 @@ export function renderDraftAuctionDashboard({
     if (rightValue === null || rightValue === undefined) return -1;
     return rightValue - leftValue || left.name.localeCompare(right.name);
   });
+  const rankedBestPlayers = bestPlayers
+    .filter((player) => !bestPositionFilter || getAhlPlayerPositions(player).includes(bestPositionFilter))
+    .slice(0, 25);
   const tab = (id, label) => `<button type="button" role="tab" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
   const selected = (value, current) => value === current ? 'selected' : '';
   const localPlayerFilters = `<div class="draft-board-filters draft-local-edit-toggles">
-    <label><input type="checkbox" data-show-all-ahl-players ${showAllAhlPlayers ? 'checked' : ''} /> Show All AHL Players</label>
     <label><input type="checkbox" data-show-removed-players ${showRemovedPlayers ? 'checked' : ''} /> Show Removed Players</label>
     <label><input type="checkbox" data-highlight-ahl-unavailable ${highlightUnavailablePlayers ? 'checked' : ''} /> Highlight AHL-eligible but unavailable players</label>
   </div>`;
-  const bestAvailableEmptyMessage = availableEligibleCount === 0
-    ? 'All AHL-eligible players are currently unavailable.'
-    : 'No matching players.';
+  const bestAvailableEmptyMessage = 'No undrafted AHL-eligible players match the current filters.';
   const draftBoardEmptyMessage = 'No drafted players match the current filters.';
   const sourceRows = Object.entries(sourceAvailability || {}).map(([name, loaded]) => `<tr><td>${escapeHtml(name)}</td><td>${loaded ? 'Available' : 'Missing'}</td></tr>`).join('');
   const legend = `<details class="acronym-legend"><summary class="secondary">Legend</summary>
@@ -416,10 +412,10 @@ export function renderDraftAuctionDashboard({
     </div>
   </section>`;
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
-    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Forecast fields remain NULL until source-backed projections are available.</p></div>
-      <div class="best-available-toolbar"><label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
+    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Top 25 undrafted players matching the selected position; check Availability before bidding. Forecast fields remain NULL until source-backed projections are available.</p></div>
+      <div class="best-available-toolbar"><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
       ${localPlayerFilters}
-      ${renderPlayerTable(bestPlayers, availableKeys, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
+      ${renderPlayerTable(rankedBestPlayers, availableKeys, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>
   </section>`;
   const budgetsPanel = `<section id="team-budgets-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'team-budgets' ? '' : 'hidden'}>

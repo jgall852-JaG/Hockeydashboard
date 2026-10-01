@@ -30,6 +30,7 @@ function getRosterPlayerIdentityAliases(name) {
 
 function normalizeTeamAbbrev(value) {
   const text = String(value || '').trim().toUpperCase();
+  if (text === 'FLO') return 'FLA';
   return /^[A-Z]{3}$/.test(text) ? text : '';
 }
 
@@ -134,9 +135,13 @@ async function fetchJson(url, fetchImpl = globalThis.fetch) {
     throw new Error('fetch is not available');
   }
 
-  const response = await fetchImpl(url);
+  const localLauncher = typeof location !== 'undefined' && location.protocol === 'http:'
+    && location.port === '3000' && /^(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(location.hostname);
+  const requestUrl = localLauncher && url.startsWith(`${NHL_API_BASE}/`)
+    ? `/nhl-api/v1/${url.slice(`${NHL_API_BASE}/`.length)}` : url;
+  const response = await fetchImpl(requestUrl);
   if (!response.ok) {
-    throw new Error(`Request failed (${response.status}) for ${url}`);
+    throw new Error(`Request failed (${response.status}) for ${requestUrl}`);
   }
 
   return response.json();
@@ -377,12 +382,16 @@ async function fetchPlayerLanding(playerId, fetchImpl = globalThis.fetch) {
   return fetchJson(`${NHL_API_BASE}/player/${id}/landing`, fetchImpl);
 }
 
-async function resolveLivePlayerProfile({ player, rosterRecord = null, cache, fetchImpl = globalThis.fetch }) {
+async function resolveLivePlayerProfile({
+  player, rosterRecord = null, cache, fetchImpl = globalThis.fetch,
+  includeTeamContext = true, teamRosterRequests = null,
+}) {
   const playerName = extractPlayerName(player) || extractPlayerName(rosterRecord);
   const playerKey = player?.playerKey || `player:${normalizeLookupKey(playerName)}`;
   const cacheStore = cache || createEmptyLiveCache();
   const cached = cacheStore.players?.[playerKey] || null;
-  if (cached && cached.status === 'ok' && cached.fetchedAt) {
+  if (cached && cached.status === 'ok' && cached.fetchedAt
+    && (includeTeamContext || Number.isInteger(cached.historical?.gamesPlayed))) {
     return cached;
   }
 
@@ -428,7 +437,12 @@ async function resolveLivePlayerProfile({ player, rosterRecord = null, cache, fe
 
   if (!livePlayerId && teamAbbrev && playerName) {
     try {
-      const teamRosterPayload = await fetchJson(`${NHL_API_BASE}/roster/${teamAbbrev}/current`, fetchImpl);
+      const rosterUrl = `${NHL_API_BASE}/roster/${teamAbbrev}/current`;
+      if (teamRosterRequests && !teamRosterRequests.has(teamAbbrev)) {
+        teamRosterRequests.set(teamAbbrev, fetchJson(rosterUrl, fetchImpl));
+      }
+      const teamRosterPayload = teamRosterRequests
+        ? await teamRosterRequests.get(teamAbbrev) : await fetchJson(rosterUrl, fetchImpl);
       profile.sources.live = true;
       profile.sources.rosterMatch = true;
       const rosterMatch = findRosterMatch(teamRosterPayload, playerName);
@@ -467,9 +481,9 @@ async function resolveLivePlayerProfile({ player, rosterRecord = null, cache, fe
         profile.currentSeason = playerLanding.currentSeason;
         profile.historical = playerLanding.careerTotals;
         const liveTeamAbbrev = profile.identity.currentTeamAbbrev || profile.identity.teamAbbrev;
-        if (liveTeamAbbrev && cacheStore.teams?.[liveTeamAbbrev]) {
+        if (includeTeamContext && liveTeamAbbrev && cacheStore.teams?.[liveTeamAbbrev]) {
           teamContext = cacheStore.teams[liveTeamAbbrev];
-        } else {
+        } else if (includeTeamContext) {
           teamContext = liveTeamAbbrev
             ? await fetchTeamContext(liveTeamAbbrev, fetchImpl)
             : null;
@@ -485,7 +499,7 @@ async function resolveLivePlayerProfile({ player, rosterRecord = null, cache, fe
 
   const currentTeamAbbrev = profile.identity.currentTeamAbbrev || teamAbbrev;
 
-  if (!teamContext && currentTeamAbbrev) {
+  if (includeTeamContext && !teamContext && currentTeamAbbrev) {
     try {
       if (cacheStore.teams?.[currentTeamAbbrev]) {
         teamContext = cacheStore.teams[currentTeamAbbrev];

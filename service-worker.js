@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hockey-dashboard-static-v11';
+const CACHE_NAME = 'hockey-dashboard-static-v13';
 const APP_SHELL = [
   './',
   './index.html',
@@ -53,7 +53,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const requestUrl = new URL(request.url);
-  if (request.method !== 'GET' || requestUrl.origin !== self.location.origin) return;
+  if (request.method !== 'GET' || requestUrl.origin !== self.location.origin || requestUrl.pathname.startsWith('/nhl-api/')) return;
 
   const networkResponse = fetch(request).then(async (response) => {
     if (response.ok) {
