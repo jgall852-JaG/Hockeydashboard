@@ -24,6 +24,21 @@ describe('draft auction dashboard rendering', () => {
       missingSources: { 'AHLSheets metric inputs': true },
       strengths: [],
       risks: [],
+      prospectMetadata: {
+        position: 'C',
+        grade: 15,
+        priorGrade: 44,
+        tier: 'Elite Prospect',
+        fantasyTrajectory: 'Rising',
+        upside: 30,
+        risk: 15,
+        readiness: 'This fall.',
+        comparable: { name: 'Seth Jarvis', statLine: '35 - 45 - 80+ , 40 PIM' },
+        threeYearProjection: '25 - 25 - 50, 30 PIM',
+        draftPedigree: 'Should be drafted in the first couple of rounds.',
+        organizationalDepth: ['Top prospect'],
+        writeUp: 'Some scouting bio paragraph about the player.',
+      },
     };
     const html = renderDraftAuctionDashboard({
       activeTab: 'draft-board',
@@ -79,6 +94,9 @@ describe('draft auction dashboard rendering', () => {
     expect(html).toContain('Forecasted Stats (Dobber Projections)');
     expect(html).toContain('Historical Splits (AHL Scores)');
     expect(html).toContain('Risk &amp; Pedigree');
+    expect(html).toContain('Prospect Intelligence (Dobber Report)');
+    expect(html).toContain('Elite Prospect');
+    expect(html).toContain('Seth Jarvis (35 - 45 - 80+ , 40 PIM)');
     expect(personalHtml).toContain('Keeper Target');
     expect(personalHtml).toContain('Breakout Target');
     expect(personalHtml).toContain('Max Bid Note');

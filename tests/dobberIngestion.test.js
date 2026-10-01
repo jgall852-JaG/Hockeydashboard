@@ -266,14 +266,92 @@ describe('Dobber ingestion', () => {
       'Expected Arrival: This fall.',
       'DH Draft Advice: Should be drafted in the first couple of rounds.',
     ].join('\n');
-    expect(extractDobberProspectMetadata(text, ['Bradly Nadeau'])).toEqual({
+    expect(extractDobberProspectMetadata(text)).toEqual({
       'bradly nadeau': {
         upside: 30,
         risk: 15,
         readiness: 'This fall.',
         grade: 15,
         upsideComparable: 'Seth Jarvis (35 - 45 - 80+ , 40 PIM)',
+        position: 'C/RW',
+        priorGrade: 44,
+        tier: 'Elite Prospect',
+        fantasyTrajectory: 'Rising',
+        threeYearProjection: '25 - 25 - 50, 30 PIM',
+        comparable: { name: 'Seth Jarvis', statLine: '35 - 45 - 80+ , 40 PIM' },
+        draftPedigree: 'Should be drafted in the first couple of rounds.',
+        organizationalDepth: null,
+        writeUp: 'Some scouting bio paragraph about the player.',
       },
+    });
+  });
+
+  test('extractDobberProspectMetadata tolerates PDF.js kerning whitespace artifacts in labels', () => {
+    const text = [
+      'Connor Example , LD',
+      '(2026: 180 ) (2025: N/A )',
+      'A scouting bio with no prior history in the rankings.',
+      'Upside Compar able: Some Player (20 - 20 - 40, 20 PIM)',
+      '3 YP: 15 - 15 - 30, 15 PIM',
+      'Fantas y Upside / NHL Cer tainty: 20%, 60%',
+      'E xpected Arrival: 2-3 seasons.',
+      'DH Draf t Advice: Deep sleeper pick.',
+    ].join('\n');
+    expect(extractDobberProspectMetadata(text)).toMatchObject({
+      'connor example': {
+        upside: 20,
+        risk: 40,
+        readiness: '2-3 seasons.',
+        grade: 180,
+        priorGrade: null,
+        tier: 'Depth Prospect',
+        fantasyTrajectory: 'New to rankings',
+        draftPedigree: 'Deep sleeper pick.',
+        threeYearProjection: '15 - 15 - 30, 15 PIM',
+        comparable: { name: 'Some Player', statLine: '20 - 20 - 40, 20 PIM' },
+      },
+    });
+  });
+
+  test('extractDobberProspectMetadata extracts every player in a team block and tags organizational depth', () => {
+    const text = [
+      'At a Glance Most Fantasy Upside',
+      'Top prospect: Player Alpha Forward: Player Alpha',
+      'Long - term project: Player Beta Defense: Player Beta',
+      '2026 Draftees: None',
+      'by A Writer',
+      'Player Alpha , C',
+      '(2026: 10 ) (2025: 25 )',
+      'Bio for Alpha.',
+      'Upside Comparable: Star One (40 - 40 - 80, 20 PIM)',
+      '3YP: 30 - 30 - 60, 20 PIM',
+      'Fantasy Upside / NHL Certainty: 70%, 80%',
+      'Expected Arrival: Now.',
+      'DH Draft Advice: Lock.',
+      'Player Beta , D',
+      '(2026: 220 ) (2025: 190 )',
+      'Bio for Beta.',
+      'Upside Comparable: Star Two (10 - 20 - 30, 40 PIM)',
+      '3YP: 5 - 10 - 15, 30 PIM',
+      'Fantasy Upside / NHL Certainty: 15%, 40%',
+      'Expected Arrival: Multiple seasons.',
+      'DH Draft Advice: Long shot.',
+    ].join('\n');
+    const metadata = extractDobberProspectMetadata(text);
+    expect(Object.keys(metadata)).toEqual(['player alpha', 'player beta']);
+    expect(metadata['player alpha']).toMatchObject({
+      grade: 10,
+      priorGrade: 25,
+      tier: 'Elite Prospect',
+      fantasyTrajectory: 'Rising',
+      organizationalDepth: ['Top prospect', 'Forward'],
+    });
+    expect(metadata['player beta']).toMatchObject({
+      grade: 220,
+      priorGrade: 190,
+      tier: 'Long Shot',
+      fantasyTrajectory: 'Falling',
+      organizationalDepth: ['Long - term project', 'Defense'],
     });
   });
 
@@ -325,7 +403,9 @@ describe('Dobber ingestion', () => {
     const prospectsFile = {
       name: 'dobberhockey202627fantasyprospectsreport.pdf',
       arrayBuffer: async () => new TextEncoder().encode([
-        '%PDF-1.7Player One',
+        '%PDF-1.7',
+        'Player One , C',
+        '(2026: 10 ) (2025: N/A )',
         'Fantasy Upside / NHL Certainty: 40%, 90%',
         'Expected Arrival: Next season.',
       ].join('\n')).buffer,

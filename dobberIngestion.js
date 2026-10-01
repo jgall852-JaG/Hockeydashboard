@@ -235,33 +235,197 @@ export function extractDobberIntelFromText(text, playerNames) {
   return intelByPlayerKey;
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// The real Prospects Report's PDF text extraction introduces random internal
+// whitespace artifacts from pdf.js kerning/ligature reconstruction (e.g.
+// "E xpected Arrival", "DH Draf t Advice", "At a Gl ance"), so labels have to
+// be matched tolerating optional whitespace between every character rather
+// than as literal strings.
+function fuzzyLabelSource(label) {
+  return String(label).split('').map((char) => (
+    /\s/.test(char) ? '\\s+' : `${escapeRegExp(char)}\\s*`
+  )).join('');
+}
+
+function fuzzyLabelValue(text, label) {
+  const pattern = new RegExp(`${fuzzyLabelSource(label)}\\s*[:\\-]\\s*([^\\n]+)`, 'i');
+  return text.match(pattern)?.[1]?.trim().replace(/\s+/g, ' ') || null;
+}
+
+// Anchors a player profile: every profile in the team-by-team section is
+// immediately followed by a "(2026: rank|N/A) (2025: rank|N/A)" marker line,
+// which is far more reliable than searching the ~230 page document for the
+// first substring match of a player's name (that could land on a Top-50
+// chart, a "2026 Draftees" list, or another team's roster instead).
+const PROSPECT_RANK_PATTERN = /\(\s*20\s*\d\s*\d\s*:\s*(N\s*\/\s*A|\d+)\s*\)\s*\(\s*20\s*\d\s*\d\s*:\s*(N\s*\/\s*A|\d+)\s*\)/i;
+// The line directly preceding the rank marker is the player's header, e.g.
+// "Bradly Nadeau , C/RW" (goalies and multi-position prospects use the same
+// "Name , POS[/POS]" shape).
+const PROSPECT_HEADER_PATTERN = /^(.+?)\s*,\s*([A-Za-z]{1,2}(?:\s*\/\s*[A-Za-z]{1,2})*)\s*$/;
+
+const PROSPECT_FIELD_LABELS = ['Upside Comparable', 'Upside', '3YP', 'Fantasy Upside', 'Expected Arrival', 'DH Draft Advice'];
+
+const PROSPECT_ROLE_TAGS = [
+  'Top prospect',
+  'Boom / Bust potential',
+  'Long - term project',
+  'Top sniper',
+  'Best setup man',
+  'Forward',
+  'Defense',
+  'Goal',
+  'Points only',
+  'Multicategory',
+];
+
+// Each team's "At a Glance" mini-section lists role-tag: player-name pairs
+// (two per line); used to populate "Organizational Depth" per prospect.
+function extractOrganizationalDepthTags(teamBlockText) {
+  const tagsByPlayerKey = {};
+  const alternation = PROSPECT_ROLE_TAGS.map(fuzzyLabelSource).join('|');
+  const pattern = new RegExp(`(${alternation})\\s*:\\s*([^\\n]+?)(?=\\s*(?:${alternation})\\s*:|\\n|$)`, 'gi');
+  let match = pattern.exec(teamBlockText);
+  while (match) {
+    const label = PROSPECT_ROLE_TAGS.find((tag) => new RegExp(`^${fuzzyLabelSource(tag)}$`, 'i').test(match[1].trim()));
+    const key = normalizeLookupKey(match[2]);
+    if (label && key) {
+      tagsByPlayerKey[key] = [...new Set([...(tagsByPlayerKey[key] || []), label])];
+    }
+    match = pattern.exec(teamBlockText);
+  }
+  return tagsByPlayerKey;
+}
+
+function bucketProspectTier(grade) {
+  if (!Number.isFinite(grade)) return null;
+  if (grade <= 25) return 'Elite Prospect';
+  if (grade <= 75) return 'Top Prospect';
+  if (grade <= 200) return 'Depth Prospect';
+  return 'Long Shot';
+}
+
+function deriveFantasyTrajectory(grade, priorGrade) {
+  if (!Number.isFinite(grade)) return null;
+  if (!Number.isFinite(priorGrade)) return 'New to rankings';
+  const delta = priorGrade - grade;
+  if (delta >= 15) return 'Rising';
+  if (delta <= -15) return 'Falling';
+  return 'Steady';
+}
+
+function parseComparable(rawValue) {
+  if (!rawValue) return null;
+  const match = rawValue.match(/^(.+?)\s*\(([^)]*)\)\s*$/);
+  return match ? { name: match[1].trim(), statLine: match[2].trim() } : { name: rawValue.trim(), statLine: null };
+}
+
 // Parses the Dobber Fantasy Prospects Report (a different document from the
-// Fantasy Guide): each prospect profile includes labeled "Upside Comparable",
-// "Fantasy Upside / NHL Certainty", "Expected Arrival", and a "(YYYY: rank)"
-// grade line near the player's name.
-export function extractDobberProspectMetadata(text, playerNames) {
-  const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+// Fantasy Guide): hundreds of team-by-team prospect write-ups, each with a
+// write-up paragraph plus labeled Upside/Risk, Readiness, 3YP, Comparable,
+// Draft Pedigree, and a "(YYYY: rank)" grade, from which Tier and Fantasy
+// Trajectory are derived. The out-of-scope "2026 NHL Draft" prospect class
+// section later in the document uses a different write-up format entirely
+// (no dual-year rank marker), so it is naturally excluded without needing an
+// explicit section boundary.
+export function extractDobberProspectMetadata(text) {
+  const lines = String(text || '').split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    // Strip the recurring page header/footer banner ("------- Rule Your
+    // Pool! -------" and "www.dobberhockey.com Page N of N") so it doesn't
+    // bleed into multi-page write-ups.
+    .filter((line) => !/rule your pool|dobberhockey\.com\s*page\s*\d+\s*of\s*\d+/i.test(line));
   const metadataByPlayerKey = {};
-  const locations = (playerNames || []).flatMap((player) => {
-    const key = normalizeLookupKey(player);
-    if (!key) return [];
-    const index = lines.findIndex((line) => normalizeLookupKey(line).includes(key));
-    return index < 0 ? [] : [{ player, key, index }];
-  }).sort((left, right) => left.index - right.index);
-  locations.forEach(({ key, index }, locationIndex) => {
-    const nextPlayerIndex = locations[locationIndex + 1]?.index ?? lines.length;
-    const context = lines.slice(index, Math.min(index + 22, nextPlayerIndex)).join('\n');
-    const upsideCertaintyMatch = context.match(/Fantasy Upside\s*\/\s*NHL Certainty\s*:\s*(\d+(?:\.\d+)?)\s*%\s*,\s*(\d+(?:\.\d+)?)\s*%/i);
+
+  const teamBlockStarts = [];
+  lines.forEach((line, index) => {
+    if (new RegExp(fuzzyLabelSource('At a Glance'), 'i').test(line)) teamBlockStarts.push(index);
+  });
+  const organizationalDepthByPlayerKey = {};
+  teamBlockStarts.forEach((startIndex, teamIndex) => {
+    const draftingIndex = lines.findIndex((line, index) => (
+      index > startIndex && new RegExp(fuzzyLabelSource('Draftees'), 'i').test(line)
+    ));
+    const windowEnd = Math.min(
+      draftingIndex >= 0 ? draftingIndex + 1 : startIndex + 10,
+      teamBlockStarts[teamIndex + 1] ?? lines.length,
+    );
+    const teamBlockText = lines.slice(startIndex, windowEnd).join('\n');
+    Object.entries(extractOrganizationalDepthTags(teamBlockText)).forEach(([key, tags]) => {
+      organizationalDepthByPlayerKey[key] = [...new Set([...(organizationalDepthByPlayerKey[key] || []), ...tags])];
+    });
+  });
+
+  const anchors = [];
+  lines.forEach((line, index) => {
+    const rankMatch = line.match(PROSPECT_RANK_PATTERN);
+    if (!rankMatch) return;
+    const headerMatch = (lines[index - 1] || '').match(PROSPECT_HEADER_PATTERN);
+    if (!headerMatch) return;
+    anchors.push({
+      index,
+      name: headerMatch[1].trim(),
+      position: headerMatch[2].replace(/\s+/g, '') || null,
+      grade: /n/i.test(rankMatch[1]) ? null : Number.parseInt(rankMatch[1], 10),
+      priorGrade: /n/i.test(rankMatch[2]) ? null : Number.parseInt(rankMatch[2], 10),
+    });
+  });
+
+  const writeUpEndPattern = new RegExp(PROSPECT_FIELD_LABELS.map(fuzzyLabelSource).join('|'), 'i');
+  anchors.forEach((anchor, anchorIndex) => {
+    const key = normalizeLookupKey(anchor.name);
+    if (!key) return;
+    const contextEnd = anchors[anchorIndex + 1]
+      ? anchors[anchorIndex + 1].index - 1
+      : Math.min(anchor.index + 40, lines.length);
+    const context = lines.slice(anchor.index, contextEnd).join('\n');
+
+    const upsideCertaintyMatch = context.match(new RegExp(
+      `${fuzzyLabelSource('Fantasy Upside')}\\s*/\\s*${fuzzyLabelSource('NHL Certainty')}\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*%\\s*,\\s*(\\d+(?:\\.\\d+)?)\\s*%`,
+      'i',
+    ));
     const upside = upsideCertaintyMatch ? Number.parseFloat(upsideCertaintyMatch[1]) : null;
     const certainty = upsideCertaintyMatch ? Number.parseFloat(upsideCertaintyMatch[2]) : null;
     const risk = certainty !== null ? Math.round((100 - certainty) * 100) / 100 : null;
-    const readiness = explicitIntelValue(context, 'Expected Arrival');
-    const upsideComparable = explicitIntelValue(context, 'Upside Comparable') || explicitIntelValue(context, 'Upside');
-    const gradeMatch = context.match(/\(20\d{2}\s*:\s*(\d+)\s*\)/);
-    const grade = gradeMatch ? Number.parseInt(gradeMatch[1], 10) : null;
-    if (upside === null && risk === null && !readiness && !upsideComparable && grade === null) return;
-    metadataByPlayerKey[key] = { upside, risk, readiness, grade, upsideComparable };
+
+    const readiness = fuzzyLabelValue(context, 'Expected Arrival');
+    const upsideComparable = fuzzyLabelValue(context, 'Upside Comparable') || fuzzyLabelValue(context, 'Upside');
+    const threeYearProjection = fuzzyLabelValue(context, '3YP');
+    const draftPedigree = fuzzyLabelValue(context, 'DH Draft Advice');
+
+    const contextLines = lines.slice(anchor.index + 1, contextEnd);
+    const writeUpEndOffset = contextLines.findIndex((line) => writeUpEndPattern.test(line));
+    const writeUp = (writeUpEndOffset >= 0 ? contextLines.slice(0, writeUpEndOffset) : contextLines)
+      .join(' ').trim() || null;
+
+    const organizationalDepth = organizationalDepthByPlayerKey[key]?.length
+      ? organizationalDepthByPlayerKey[key]
+      : null;
+
+    metadataByPlayerKey[key] = {
+      // Legacy fields kept for backward compatibility with existing
+      // DraftIQ/forecastedStats consumers.
+      upside,
+      risk,
+      readiness,
+      grade: anchor.grade,
+      upsideComparable,
+      // Expanded Fantasy Prospects Report metadata.
+      position: anchor.position,
+      priorGrade: anchor.priorGrade,
+      tier: bucketProspectTier(anchor.grade),
+      fantasyTrajectory: deriveFantasyTrajectory(anchor.grade, anchor.priorGrade),
+      threeYearProjection,
+      comparable: parseComparable(upsideComparable),
+      draftPedigree,
+      organizationalDepth,
+      writeUp,
+    };
   });
+
   return metadataByPlayerKey;
 }
 
@@ -335,7 +499,7 @@ export async function ingestDobberPdfFiles(files, playerNames, pdfjs, now = () =
       // risk, readiness, grade); everything else uses the Fantasy Guide's
       // pedigree/projection-confidence/sleeper/bust extraction.
       if (/prospect/i.test(String(file?.name || ''))) {
-        Object.assign(prospectMetadataByPlayerKey, extractDobberProspectMetadata(text, playerNames));
+        Object.assign(prospectMetadataByPlayerKey, extractDobberProspectMetadata(text));
       } else {
         Object.assign(intelByPlayerKey, extractDobberIntelFromText(text, playerNames));
       }
@@ -399,7 +563,7 @@ export async function fetchDobberPdfIntel(playerNames, fetchImpl = globalThis.fe
     throw new Error(`Dobber Fantasy Prospects Report PDF fetch failed (HTTP ${prospectsResponse?.status || 'unknown'}).`);
   }
   const prospectsText = await extractPdfText(await prospectsResponse.arrayBuffer(), pdfjs);
-  const prospectMetadataByPlayerKey = extractDobberProspectMetadata(prospectsText, playerNames);
+  const prospectMetadataByPlayerKey = extractDobberProspectMetadata(prospectsText);
 
   return { intelByPlayerKey, prospectMetadataByPlayerKey };
 }
@@ -473,6 +637,12 @@ function mergeIntelStrengths(player, dobber) {
   if (dobber.intelEdge?.sleeperTag) strengths.push('Dobber sleeper tag');
   if (dobber.intelEdge?.bustTag) risks.push('Dobber bust tag');
   dobber.riskFlags.forEach((risk) => risks.push(`Dobber risk: ${risk}`));
+  const prospect = dobber.prospectMetadata;
+  if (prospect?.draftPedigree) strengths.push(`Dobber prospect pedigree: ${prospect.draftPedigree}`);
+  if (prospect?.tier) strengths.push(`Dobber prospect tier: ${prospect.tier}`);
+  if (prospect?.fantasyTrajectory === 'Rising') strengths.push('Dobber prospect trending up');
+  if (prospect?.fantasyTrajectory === 'Falling') risks.push('Dobber prospect trending down');
+  if (Number.isFinite(prospect?.risk) && prospect.risk >= 70) risks.push(`Dobber prospect risk: ${prospect.risk}%`);
   return {
     strengths: [...new Set(strengths)],
     risks: [...new Set(risks)],
