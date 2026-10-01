@@ -84,30 +84,170 @@ function parseRiskFlags(value) {
   return String(value || '').split(/[;,|]/).map((entry) => entry.trim()).filter(Boolean);
 }
 
+// Builds a 0-100 percentile score for every finite value in `entries`
+// (`{ key, value }`), where a higher raw value always produces a higher
+// percentile score. Pass `invert: true` for metrics where a *lower* raw value
+// is better (e.g. draft rank, where 1 is best). Entries with a non-finite
+// value are left out of the returned map entirely.
+function buildPercentileScores(entries, { invert = false } = {}) {
+  const finite = entries.filter((entry) => Number.isFinite(entry.value));
+  const sorted = [...finite].sort((a, b) => (invert ? b.value - a.value : a.value - b.value));
+  const scores = new Map();
+  sorted.forEach((entry, index) => {
+    scores.set(entry.key, sorted.length > 1 ? (index / (sorted.length - 1)) * 100 : 100);
+  });
+  return scores;
+}
+
+function weightedAverage(parts) {
+  const available = parts.filter((part) => Number.isFinite(part.value));
+  const totalWeight = available.reduce((sum, part) => sum + part.weight, 0);
+  if (!available.length || totalWeight <= 0) return null;
+  const weighted = available.reduce((sum, part) => sum + (part.value * part.weight), 0);
+  return Math.max(0, Math.min(100, weighted / totalWeight));
+}
+
+// Re-derives the DraftIQ pricing inputs (PPS/RSS/BPS/RRS/KVS) from columns
+// that actually exist in the real Dobber Excel - Rank, Upside, 3YP, Games,
+// Points, and PP Unit - instead of the literal BPS/KVS/PPS/RSS/RRS columns
+// some older Dobber editions shipped with (and which the real workbook does
+// not contain). This is a *fallback*: normalizeDobberRows only uses these
+// derived scores for a metric when the sheet has no explicit value for it.
+// Every input is optional; a player missing some signals still gets a score
+// computed from whatever is present, and a metric only comes back null when
+// none of its relevant inputs are available for that player at all.
+function derivePricingInputs(pricingRows) {
+  const rankScores = buildPercentileScores(
+    pricingRows.map((row) => ({ key: row.key, value: row.rank })),
+    { invert: true },
+  );
+  const upsideScores = buildPercentileScores(pricingRows.map((row) => ({ key: row.key, value: row.upside })));
+  const threeYearScores = buildPercentileScores(pricingRows.map((row) => ({ key: row.key, value: row.threeYearPoints })));
+  const pointsScores = buildPercentileScores(pricingRows.map((row) => ({ key: row.key, value: row.projectedPoints })));
+  const gamesScores = buildPercentileScores(pricingRows.map((row) => ({ key: row.key, value: row.projectedGames })));
+  // Breakout headroom: how much higher a player's ceiling (Upside) is than
+  // their median projection (Points) - a wide gap signals more upside to grow into.
+  const upsideGapScores = buildPercentileScores(pricingRows.map((row) => ({
+    key: row.key,
+    value: Number.isFinite(row.upside) && Number.isFinite(row.projectedPoints) ? row.upside - row.projectedPoints : null,
+  })));
+  // Regression risk: how far the current-season projection (Points) runs
+  // ahead of the 3-year trend (3YP) - a big positive gap looks like a career year.
+  const regressionGapScores = buildPercentileScores(pricingRows.map((row) => ({
+    key: row.key,
+    value: Number.isFinite(row.projectedPoints) && Number.isFinite(row.threeYearPoints)
+      ? Math.max(0, row.projectedPoints - row.threeYearPoints)
+      : null,
+  })));
+  const ppUnitScores = new Map(pricingRows
+    .filter((row) => Number.isFinite(row.ppUnit))
+    .map((row) => [row.key, row.ppUnit <= 1 ? 100 : row.ppUnit === 2 ? 60 : 30]));
+
+  const derivedByKey = new Map();
+  pricingRows.forEach((row) => {
+    const rank = rankScores.get(row.key) ?? null;
+    const upside = upsideScores.get(row.key) ?? null;
+    const threeYear = threeYearScores.get(row.key) ?? null;
+    const points = pointsScores.get(row.key) ?? null;
+    const games = gamesScores.get(row.key) ?? null;
+    const upsideGap = upsideGapScores.get(row.key) ?? null;
+    const regressionGap = regressionGapScores.get(row.key) ?? null;
+    const ppUnit = ppUnitScores.get(row.key) ?? null;
+
+    derivedByKey.set(row.key, {
+      pps: weightedAverage([
+        { value: points, weight: 0.5 },
+        { value: threeYear, weight: 0.3 },
+        { value: games, weight: 0.2 },
+      ]),
+      rss: weightedAverage([
+        { value: ppUnit, weight: 0.5 },
+        { value: games, weight: 0.3 },
+        { value: rank, weight: 0.2 },
+      ]),
+      bps: weightedAverage([
+        { value: upside, weight: 0.6 },
+        { value: upsideGap, weight: 0.4 },
+      ]),
+      rrs: regressionGap,
+      kvs: weightedAverage([
+        { value: rank, weight: 0.5 },
+        { value: threeYear, weight: 0.5 },
+      ]),
+    });
+  });
+  return derivedByKey;
+}
+
+
 export function normalizeDobberRows(rows) {
-  const players = {};
+  const seenKeys = new Set();
+  const rowEntries = [];
   (rows || []).forEach((row, index) => {
     const player = String(readField(row, 'Player') || '').trim();
     if (!player) return;
     const playerKey = normalizeLookupKey(player);
     if (!playerKey) return;
-    if (players[playerKey]) {
+    if (seenKeys.has(playerKey)) {
       throw new Error(`Dobber workbook contains duplicate player rows for ${player}.`);
     }
+    seenKeys.add(playerKey);
     const projections = parseProjectionPayload(readField(row, 'Projections'));
     const normalizedForecastProjections = forecastProjections(row, projections);
     buildForecastedStats(normalizedForecastProjections, null);
-    players[playerKey] = {
+    rowEntries.push({
+      key: playerKey,
+      index,
+      player,
+      row,
+      projections,
+      normalizedForecastProjections,
+      rank: parseOptionalNumber(readField(row, 'Rank')),
+      upside: parseOptionalNumber(readField(row, 'Upside')),
+      threeYearPoints: parseOptionalNumber(readField(row, '3YP')),
+      projectedPoints: parseOptionalNumber(normalizedForecastProjections.ProjPts),
+      projectedGames: parseOptionalNumber(normalizedForecastProjections.ProjGP),
+      ppUnit: parseOptionalNumber(readField(row, 'PP Unit')),
+    });
+  });
+  if (!rowEntries.length) {
+    throw new Error(`Dobber sheet "${DOBBER_SKATER_SHEET}" contains no player rows.`);
+  }
+
+  const derivedByKey = derivePricingInputs(rowEntries);
+  const players = {};
+  rowEntries.forEach(({ key, index, player, row, projections, normalizedForecastProjections, rank, upside, threeYearPoints }) => {
+    const derived = derivedByKey.get(key) || { pps: null, rss: null, bps: null, rrs: null, kvs: null };
+    const explicitBps = normalizeScore(readField(row, 'BPS'), `${player}.BPS`);
+    const explicitKvs = normalizeScore(readField(row, 'KVS'), `${player}.KVS`);
+    const explicitPps = projectionScore(row, projections, 'PPS');
+    const explicitRss = projectionScore(row, projections, 'RSS');
+    const explicitRrs = projectionScore(row, projections, 'RRS');
+    const bps = explicitBps ?? derived.bps;
+    const kvs = explicitKvs ?? derived.kvs;
+    const pps = explicitPps ?? derived.pps;
+    const rss = explicitRss ?? derived.rss;
+    const rrs = explicitRrs ?? derived.rrs;
+    const usedExplicitInput = [explicitBps, explicitKvs, explicitPps, explicitRss, explicitRrs].some((value) => value !== null);
+    const usedDerivedInput = !usedExplicitInput && [bps, kvs, pps, rss, rrs].some((value) => value !== null);
+    players[key] = {
       player,
       team: String(readField(row, 'Team') || '').trim().toUpperCase(),
       nhlPos: String(readField(row, 'POS') || '').trim().toUpperCase() || null,
       salary: parseOptionalNumber(readField(row, 'Salary')),
       aav: parseOptionalNumber(readField(row, 'AAV')),
-      bps: normalizeScore(readField(row, 'BPS'), `${player}.BPS`),
-      kvs: normalizeScore(readField(row, 'KVS'), `${player}.KVS`),
-      pps: projectionScore(row, projections, 'PPS'),
-      rss: projectionScore(row, projections, 'RSS'),
-      rrs: projectionScore(row, projections, 'RRS'),
+      bps,
+      kvs,
+      pps,
+      rss,
+      rrs,
+      // 'excel' when the sheet has literal BPS/KVS/PPS/RSS/RRS columns,
+      // 'derived' when they were re-derived from Rank/Upside/3YP/Games/Points/
+      // PP Unit instead, 'unavailable' when neither signal exists.
+      pricingMethod: usedExplicitInput ? 'excel' : usedDerivedInput ? 'derived' : 'unavailable',
+      rank,
+      upside,
+      threeYearPoints,
       projections,
       forecastProjections: normalizedForecastProjections,
       riskFlags: parseRiskFlags(readField(row, 'RiskFlags')),
@@ -121,9 +261,6 @@ export function normalizeDobberRows(rows) {
       sourceRow: index + 2,
     };
   });
-  if (!Object.keys(players).length) {
-    throw new Error(`Dobber sheet "${DOBBER_SKATER_SHEET}" contains no player rows.`);
-  }
   return players;
 }
 
@@ -164,7 +301,7 @@ export function parseDobberWorkbook(arrayBuffer, xlsx = globalThis.XLSX) {
   if (!normalizedHeaders.has('player')) {
     throw new Error('Dobber workbook is missing the required Player column.');
   }
-  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags', 'projpts', 'projgp', 'projsog', 'projshots', 'projectedpoints', 'projectedgames', 'projectedshots', 'games', 'points', 'sog'];
+  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags', 'projpts', 'projgp', 'projsog', 'projshots', 'projectedpoints', 'projectedgames', 'projectedshots', 'games', 'points', 'sog', 'rank', 'upside', '3yp'];
   if (!dataColumns.some((column) => normalizedHeaders.has(column))) {
     throw new Error('Dobber workbook is missing expected skater data columns.');
   }
@@ -637,6 +774,9 @@ function mergeIntelStrengths(player, dobber) {
   if (dobber.intelEdge?.sleeperTag) strengths.push('Dobber sleeper tag');
   if (dobber.intelEdge?.bustTag) risks.push('Dobber bust tag');
   dobber.riskFlags.forEach((risk) => risks.push(`Dobber risk: ${risk}`));
+  if (dobber.pricingMethod === 'derived') {
+    strengths.push('Dobber pricing estimated from Rank/Upside/3YP (explicit BPS/KVS/PPS/RSS/RRS columns unavailable)');
+  }
   const prospect = dobber.prospectMetadata;
   if (prospect?.draftPedigree) strengths.push(`Dobber prospect pedigree: ${prospect.draftPedigree}`);
   if (prospect?.tier) strengths.push(`Dobber prospect tier: ${prospect.tier}`);
@@ -693,6 +833,7 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
       player.dobberRole = null;
       player.dobberTier = null;
       player.dobberRookie = null;
+      player.pricingMethod = 'unavailable';
       player.prospectMetadata = null;
       return applyForecastedStats(player, null);
     }
@@ -705,6 +846,7 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
     player.dobberRole = dobber.role ?? null;
     player.dobberTier = dobber.tier ?? null;
     player.dobberRookie = typeof dobber.rookie === 'boolean' ? dobber.rookie : null;
+    player.pricingMethod = dobber.pricingMethod ?? 'unavailable';
     player.prospectMetadata = dobber.prospectMetadata ?? null;
     player.intelEdge = intelEdge;
     player.production = { ...(player.production || {}), PPS: dobber.pps };
