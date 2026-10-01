@@ -11,6 +11,7 @@ describe('forecasted stats', () => {
       projectedShots: 200,
       FHPPG: 0.6,
       SHPPG: 0.9,
+      splitsMethod: 'actual',
       compositeScore: 86,
     });
     expect(applyForecastedStats({ name: 'Player One', historicalSplits: splits }, projections))
@@ -26,6 +27,32 @@ describe('forecasted stats', () => {
       .toBe(0);
     expect(buildForecastedStats({ ProjPts: 60, ProjGP: 80, ProjSOG: 200 }, { FHPPG: null, SHPPG: 1 }).compositeScore)
       .toBeNull();
+  });
+
+  test('derives a trend-based FHPPG/SHPPG split from Rank/Upside/3YP when AHL splits are unavailable', () => {
+    const projections = { ProjPts: '131', ProjGP: '77', ProjSOG: '277' };
+    const rising = buildForecastedStats(projections, null, { threeYearPoints: 100, upside: 160 });
+    expect(rising.splitsMethod).toBe('derived');
+    expect(rising.SHPPG).toBeGreaterThan(rising.FHPPG);
+    expect(rising.compositeScore).not.toBeNull();
+
+    const declining = buildForecastedStats(projections, null, { threeYearPoints: 160, upside: 131 });
+    expect(declining.splitsMethod).toBe('derived');
+    expect(declining.FHPPG).toBeGreaterThan(declining.SHPPG);
+
+    expect(buildForecastedStats(projections, null, {}).splitsMethod).toBe('unavailable');
+    expect(buildForecastedStats(projections, null, {}).compositeScore).toBeNull();
+    expect(buildForecastedStats(null, null, { threeYearPoints: 100, upside: 160 }).splitsMethod).toBe('unavailable');
+
+    const actual = buildForecastedStats(projections, { FHPPG: 0.6, SHPPG: 0.9 }, { threeYearPoints: 100, upside: 160 });
+    expect(actual.splitsMethod).toBe('actual');
+    expect(actual.FHPPG).toBe(0.6);
+
+    const applied = applyForecastedStats({ name: 'Trend Player' }, projections, { threeYearPoints: 100, upside: 160 });
+    expect(applied.forecast.splitsMethod).toBe('derived');
+    expect(applied.strengths).toEqual(
+      expect.arrayContaining(['Forecasted FH/SH splits estimated from Rank/Upside/3YP trend (actual AHL splits unavailable)']),
+    );
   });
 
   test('rejects malformed numeric projection fields rather than treating them as missing', () => {
@@ -83,5 +110,30 @@ describe('forecasted stats', () => {
     expect(result.players.players[0]).toMatchObject({
       forecastedPoints: 60, compositeForecastScore: 86, draftIQ: null, auctionValue: null,
     });
+  });
+
+  test('derives composite score for real Dobber players lacking AHL FH/SH splits, using Rank/Upside/3YP trend', () => {
+    const dobber = normalizeDobberRows([{
+      Player: 'Rising Prospect', Rank: 1, Upside: 160, '3YP': 100, Games: 77, Points: 131, SOG: 277, 'PP Unit': 1,
+    }]);
+    const outputs = {
+      players: {
+        players: [{
+          id: 'one', name: 'Rising Prospect', category: 'Veteran', finalPosition: 'C',
+          historicalSplits: { FHPPG: null, SHPPG: null }, available: true,
+          production: {}, deployment: {}, prospect: {}, keeper: {}, missingSources: {},
+        }],
+        sourceCoverage: {},
+      },
+      auction: {}, tiers: {}, keepers: {}, prospects: {},
+    };
+    const result = applyDobberIntelligence(outputs, {
+      datasets: { dobber: { players: dobber }, roster: { players: {} } },
+      metadata: { dobberExcel: { status: 'loaded-local' } },
+    });
+    const player = result.players.players[0];
+    expect(player.forecast.splitsMethod).toBe('derived');
+    expect(player.forecast.compositeScore).not.toBeNull();
+    expect(player.compositeForecastScore).not.toBeNull();
   });
 });

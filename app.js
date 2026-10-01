@@ -3150,6 +3150,7 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile, hist
           ['Projected Shots', unified.dobberProjection.projectedShots ?? '—'],
           ['FHPPG', unified.dobberProjection.FHPPG ?? '—'],
           ['SHPPG', unified.dobberProjection.SHPPG ?? '—'],
+          ['Splits Method', unified.dobberProjection.splitsMethod ?? '—'],
           ['Composite Score', unified.dobberProjection.compositeScore ?? '—'],
         ])}
       </article>
