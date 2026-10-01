@@ -152,7 +152,7 @@ describe('draft auction dashboard rendering', () => {
     expect(bestPanel).not.toContain('data-player-details="official-player"');
   });
 
-  test('shows undrafted unavailable players without treating them as draftable', () => {
+  test('routes unavailable players away from Best Available instead of listing them as draftable', () => {
     const player = {
       id: 'unavailable-player',
       name: 'Unavailable Player',
@@ -195,10 +195,11 @@ describe('draft auction dashboard rendering', () => {
     expect(toolsHtml).toContain('id="reset-local-edits"');
 
     const bestPanel = defaultHtml.slice(defaultHtml.indexOf('id="best-available-panel"'));
-    expect(bestPanel).toContain('Unavailable Player');
+    expect(bestPanel).not.toContain('Unavailable Player');
+    expect(bestPanel).not.toContain('data-player-details="unavailable-player"');
     expect(bestPanel).not.toContain('data-player-details="removed-player"');
-    expect(bestPanel).toMatch(/data-player-details="unavailable-player"[\s\S]*?<td>Unavailable<\/td>/);
     expect(bestPanel).toContain('data-show-removed-players');
+    expect(bestPanel).toContain('No undrafted AHL-eligible players match the current filters.');
     expect(renderDraftAuctionDashboard({ ...props, players: [] }))
       .toContain('No undrafted AHL-eligible players match the current filters.');
     const commissionerHtml = renderDraftAuctionDashboard({
@@ -206,8 +207,7 @@ describe('draft auction dashboard rendering', () => {
       showRemovedPlayers: true,
     });
     const commissionerPanel = commissionerHtml.slice(commissionerHtml.indexOf('id="best-available-panel"'));
-    expect(commissionerPanel).toContain('data-player-details="removed-player"');
-    expect(commissionerPanel).toMatch(/data-player-details="removed-player"[\s\S]*?<td>Unavailable<\/td>/);
+    expect(commissionerPanel).not.toContain('data-player-details="removed-player"');
   });
 
   test('Draft Board shows only drafted players, keeps local removal, and uses actual paid prices', () => {

@@ -19,6 +19,19 @@ export function getExperienceTierFromGames(gamesPlayed) {
   return games <= 82 ? 'Rookie' : 'Veteran';
 }
 
+function getPlayerAvailability(player, availableKeys) {
+  const isAvailable = player.status !== 'not-in-ahl'
+    && player.localStatus !== 'removed-local'
+    && availableKeys.has(normalizeLookupKey(player.name));
+  return isAvailable ? 'Available' : 'Unavailable';
+}
+
+// Token-efficient routing: unavailable players belong on the Draft Board, not Best Available.
+function routePlayerPanel(player) {
+  if (player.availability === 'Unavailable') return 'DraftBoard';
+  return 'BestAvailable';
+}
+
 function getAhlPlayerPositions(player) {
   const finalPosition = String(player.finalPosition || '')
     .split(/[\/,\s]+/)
@@ -337,9 +350,9 @@ export function renderDraftAuctionDashboard({
     return matchesSearch && matchesPosition && matchesCategory;
   });
   const bestPlayers = eligiblePlayers.filter((player) => {
-    const removed = player.localStatus === 'removed-local';
     if (draftedKeys.has(normalizeLookupKey(player.name))) return false;
-    return !removed || showRemovedPlayers;
+    const availability = getPlayerAvailability(player, availableKeys);
+    return routePlayerPanel({ ...player, availability }) === 'BestAvailable';
   });
   const sortKeys = {
     ADP: 'adp',
