@@ -3523,31 +3523,24 @@ async function hydrateDraftBoardProfiles(draftedPlayers) {
   if (!pending.length) return;
   pending.forEach((player) => state.draftGpAttempted.add(normalizeLookupKey(player.name)));
   state.draftGpLoading = true;
-  const teamRosterRequests = new Map();
   try {
-    for (let offset = 0; offset < pending.length; offset += 4) {
-      const batch = pending.slice(offset, offset + 4);
-      const results = await Promise.all(batch.map(async (player) => {
-        try {
-          const profile = await resolveLivePlayerProfile({
-            player: { name: player.name, nhlteam: player.team, playerKey: `draft:${normalizeLookupKey(player.name)}` },
-            cache: state.liveCache,
-            includeTeamContext: false,
-            teamRosterRequests,
-          });
-          state.liveProfiles[profile.playerKey] = profile;
-          return { fetched: Number.isInteger(profile.historical?.gamesPlayed), errors: profile.errors || [] };
-        } catch (error) {
-          console.error(`NHL GP lookup failed for ${player.name}`, error);
-          return { fetched: false, errors: [error instanceof Error ? error.message : String(error)] };
-        }
-      }));
-      if (results.every((result) => !result.fetched)
-        && results.some((result) => result.errors.some((error) => /failed to fetch|request failed \(429\)/i.test(error)))) {
-        console.warn('NHL career GP lookups are unavailable or rate-limited; remaining drafted players default to Veteran.');
-        break;
+    const results = await Promise.all(pending.map(async (player) => {
+      try {
+        const profile = await resolveLivePlayerProfile({
+          player: { name: player.name, nhlteam: player.team, playerKey: `draft:${normalizeLookupKey(player.name)}` },
+          cache: state.liveCache,
+          includeTeamContext: false,
+        });
+        state.liveProfiles[profile.playerKey] = profile;
+        return { fetched: Number.isInteger(profile.historical?.gamesPlayed), errors: profile.errors || [] };
+      } catch (error) {
+        console.error(`NHL GP lookup failed for ${player.name}`, error);
+        return { fetched: false, errors: [error instanceof Error ? error.message : String(error)] };
       }
-      if (state.activeDashboardTab === 'draft-board') renderOwnerView(state.importedData || loadState());
+    }));
+    if (results.every((result) => !result.fetched)
+      && results.some((result) => result.errors.some((error) => /snapshot load failed/i.test(error)))) {
+      console.warn('NHL snapshot is unavailable; drafted players default to Veteran.');
     }
   } finally {
     state.draftGpLoading = false;

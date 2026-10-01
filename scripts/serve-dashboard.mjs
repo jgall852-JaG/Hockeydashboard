@@ -16,12 +16,6 @@ const mimeTypes = {
   '.ico': 'image/x-icon',
 };
 const allowedDirectories = new Set(['data', 'icons', 'vendor']);
-const nhlPaths = [
-  /^roster\/[A-Z]{3}\/current$/,
-  /^player\/[0-9]+\/landing$/,
-  /^club-schedule-season\/[A-Z]{3}\/current$/,
-  /^standings\/now$/,
-];
 
 const server = createServer(async (request, response) => {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -34,33 +28,6 @@ const server = createServer(async (request, response) => {
     pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
   } catch {
     response.writeHead(400).end('Invalid URL');
-    return;
-  }
-  if (pathname.startsWith('/nhl-api/')) {
-    const apiPath = pathname.slice('/nhl-api/v1/'.length);
-    if (!pathname.startsWith('/nhl-api/v1/') || !nhlPaths.some((pattern) => pattern.test(apiPath))) {
-      response.writeHead(404).end('Not found');
-      return;
-    }
-    try {
-      const upstream = await fetch(`https://api-web.nhle.com/v1/${apiPath}`, {
-        signal: AbortSignal.timeout(12000),
-      });
-      if (!upstream.ok) {
-        console.warn(`NHL API ${apiPath}: HTTP ${upstream.status}`);
-        response.writeHead(upstream.status).end('NHL API request failed');
-        return;
-      }
-      const body = Buffer.from(await upstream.arrayBuffer());
-      response.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': body.length,
-      });
-      response.end(request.method === 'HEAD' ? undefined : body);
-    } catch (error) {
-      console.error(`NHL API ${apiPath} unavailable`, error);
-      response.writeHead(502).end('NHL API unavailable');
-    }
     return;
   }
   const segments = pathname.split('/').filter(Boolean);

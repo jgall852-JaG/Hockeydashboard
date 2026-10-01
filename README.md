@@ -23,7 +23,7 @@ Design notes
 ## What it is not
 - Not a backend app
 - Not a live-sync league manager
-- Not dependent on live NHL API access to function
+- Not dependent on live NHL API access to function (NHL career GP, positions, and roster data come from a preloaded static snapshot, `data/nhl-snapshot.json`, regenerated offline via `scripts/build-nhl-snapshot.mjs`)
 
 ## Core draft workflow
 Use the app to answer four questions:
@@ -59,7 +59,7 @@ To work reliably, the app expects current CSV snapshots for any of these dataset
 
 ## Draft Intelligence data
 - The dashboard exposes Draft Board, Best Available, Team Budgets, Personal Draft List, and Tools & Validation.
-- Draft Board lists players in the Draft 2026 grid and local winning bids. Owner and paid Auction Value come from the grid (which takes precedence over a conflicting local bid), or from the local winning bid when the player has not yet appeared in the grid; the model's estimated auction value is not shown as a paid price. Only Best Available offers the Add to Personal List action. Draft Board Experience Tier uses career GP already on the player, from a live NHL profile, or from the saved NHL profile cache: Farm 0–9, Rookie 10–82, Veteran 83+; only missing career GP displays Veteran by default with a warning, while invalid GP displays Unknown. The local port-3000 launcher relays NHL API requests to avoid browser CORS; live GP remains subject to roster matches and NHL API availability/rate limits. A static hosted site has no such relay.
+- Draft Board lists players in the Draft 2026 grid and local winning bids. Owner and paid Auction Value come from the grid (which takes precedence over a conflicting local bid), or from the local winning bid when the player has not yet appeared in the grid; the model's estimated auction value is not shown as a paid price. Only Best Available offers the Add to Personal List action. Draft Board Experience Tier uses career GP already on the player, or from the preloaded NHL snapshot (`data/nhl-snapshot.json`): Farm 0–9, Rookie 10–82, Veteran 83+; only missing career GP displays Veteran by default with a warning, while invalid GP displays Unknown. GP lookups read entirely from the static snapshot, so there are no live NHL API calls, no CORS issues, and no rate limits at runtime on either the local launcher or the hosted site. Regenerate the snapshot periodically with `node scripts/build-nhl-snapshot.mjs` to pick up trades/roster moves.
 - Team Budgets and roster validation use the AHL Draft sheet's team balances and open slots; local working assignments subtract their bid and consume one slot. Missing sheet balances remain unavailable and are never replaced with a fixed-cap estimate.
 - Budget values normalize currency strings such as `$71.50`; explicit skater values such as `6/23` normalize to `{ count: 6, max: 23 }`. The current Draft 2026 retained grid supplies TOTAL SPENT and BALANCE, with skater counts derived from its player rows.
 - Final Position is the Utility tab position when a player is listed there; otherwise it is the AHL Position tab position. NHL Position never supplies pool position or eligibility.

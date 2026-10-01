@@ -28,9 +28,16 @@ function getRosterPlayerIdentityAliases(name) {
   return [...new Set([normalized, `${parts[0][0]} ${parts.slice(1).join(' ')}`])];
 }
 
+const LEGACY_TEAM_ABBREV_MAP = {
+  FLO: 'FLA',
+  CBS: 'CBJ',
+  VEG: 'VGK',
+  WIN: 'WPG',
+};
+
 function normalizeTeamAbbrev(value) {
   const text = String(value || '').trim().toUpperCase();
-  if (text === 'FLO') return 'FLA';
+  if (LEGACY_TEAM_ABBREV_MAP[text]) return LEGACY_TEAM_ABBREV_MAP[text];
   return /^[A-Z]{3}$/.test(text) ? text : '';
 }
 
@@ -135,16 +142,55 @@ async function fetchJson(url, fetchImpl = globalThis.fetch) {
     throw new Error('fetch is not available');
   }
 
-  const localLauncher = typeof location !== 'undefined' && location.protocol === 'http:'
-    && location.port === '3000' && /^(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/.test(location.hostname);
-  const requestUrl = localLauncher && url.startsWith(`${NHL_API_BASE}/`)
-    ? `/nhl-api/v1/${url.slice(`${NHL_API_BASE}/`.length)}` : url;
-  const response = await fetchImpl(requestUrl);
+  const response = await fetchImpl(url);
   if (!response.ok) {
-    throw new Error(`Request failed (${response.status}) for ${requestUrl}`);
+    throw new Error(`Request failed (${response.status}) for ${url}`);
   }
 
   return response.json();
+}
+
+const NHL_SNAPSHOT_URL = './data/nhl-snapshot.json';
+
+// Preloaded bundle (all 32 NHL team rosters + player landing pages) generated
+// by scripts/build-nhl-snapshot.mjs. Loaded once and cached on the shared
+// live-cache object so there are no live NHL API calls (and no CORS/rate
+// limit concerns) at runtime.
+async function loadNhlSnapshot(cache, fetchImpl = globalThis.fetch) {
+  if (cache?.snapshot) {
+    return cache.snapshot;
+  }
+  if (cache?.snapshotRequest) {
+    return cache.snapshotRequest;
+  }
+
+  const request = fetchJson(NHL_SNAPSHOT_URL, fetchImpl).then((snapshot) => {
+    if (cache) {
+      cache.snapshot = snapshot;
+      delete cache.snapshotRequest;
+    }
+    return snapshot;
+  }).catch((error) => {
+    if (cache) delete cache.snapshotRequest;
+    throw error;
+  });
+  if (cache) {
+    cache.snapshotRequest = request;
+  }
+  return request;
+}
+
+function findSnapshotRosterMatch(teamSnapshot, playerName) {
+  const normalizedTarget = normalizeLookupKey(playerName);
+  if (!normalizedTarget || !teamSnapshot?.roster) return null;
+
+  const groups = [
+    ...(Array.isArray(teamSnapshot.roster.forwards) ? teamSnapshot.roster.forwards : []),
+    ...(Array.isArray(teamSnapshot.roster.defensemen) ? teamSnapshot.roster.defensemen : []),
+    ...(Array.isArray(teamSnapshot.roster.goalies) ? teamSnapshot.roster.goalies : []),
+  ];
+
+  return groups.find((player) => normalizeLookupKey(player.fullName) === normalizedTarget) || null;
 }
 
 function formatTeamName(teamNode) {
@@ -329,62 +375,9 @@ function summarizePlayerLanding(landingPayload) {
   };
 }
 
-async function fetchTeamContext(teamAbbrev, fetchImpl = globalThis.fetch) {
-  const abbrev = normalizeTeamAbbrev(teamAbbrev);
-  if (!abbrev) return null;
-
-  const [rosterPayload, schedulePayload, standingsPayload] = await Promise.all([
-    fetchJson(`${NHL_API_BASE}/roster/${abbrev}/current`, fetchImpl),
-    fetchJson(`${NHL_API_BASE}/club-schedule-season/${abbrev}/current`, fetchImpl),
-    fetchJson(`${NHL_API_BASE}/standings/now`, fetchImpl),
-  ]);
-
-  return {
-    teamAbbrev: abbrev,
-    roster: summarizeRoster(rosterPayload),
-    schedule: summarizeSchedule(abbrev, schedulePayload),
-    standings: summarizeStandings(abbrev, standingsPayload),
-  };
-}
-
-function findRosterMatch(teamRosterPayload, playerName) {
-  const normalizedTarget = normalizeLookupKey(playerName);
-  if (!normalizedTarget) return null;
-
-  const groups = [
-    ...(Array.isArray(teamRosterPayload?.forwards) ? teamRosterPayload.forwards : []),
-    ...(Array.isArray(teamRosterPayload?.defensemen) ? teamRosterPayload.defensemen : []),
-    ...(Array.isArray(teamRosterPayload?.goalies) ? teamRosterPayload.goalies : []),
-  ];
-
-  for (const player of groups) {
-    const fullName = `${player.firstName?.default || ''} ${player.lastName?.default || ''}`.trim();
-    if (normalizeLookupKey(fullName) === normalizedTarget) {
-      return {
-        playerId: player.id ?? null,
-        fullName,
-        sweaterNumber: player.sweaterNumber ?? null,
-        positionCode: player.positionCode || '',
-        shootsCatches: player.shootsCatches || '',
-      };
-    }
-  }
-
-  return null;
-}
-
-async function fetchPlayerLanding(playerId, fetchImpl = globalThis.fetch) {
-  const id = Number(playerId);
-  if (!Number.isFinite(id) || id <= 0) {
-    return null;
-  }
-
-  return fetchJson(`${NHL_API_BASE}/player/${id}/landing`, fetchImpl);
-}
-
 async function resolveLivePlayerProfile({
   player, rosterRecord = null, cache, fetchImpl = globalThis.fetch,
-  includeTeamContext = true, teamRosterRequests = null,
+  includeTeamContext = true,
 }) {
   const playerName = extractPlayerName(player) || extractPlayerName(rosterRecord);
   const playerKey = player?.playerKey || `player:${normalizeLookupKey(playerName)}`;
@@ -406,7 +399,7 @@ async function resolveLivePlayerProfile({
     status: 'partial',
     fetchedAt: new Date().toISOString(),
     sources: {
-      local: true,
+      local: false,
       live: false,
       rosterMatch: false,
       playerLanding: false,
@@ -434,87 +427,74 @@ async function resolveLivePlayerProfile({
   let livePlayerId = explicitPlayerId;
   let playerLanding = null;
   let teamContext = null;
+  let snapshot = null;
 
-  if (!livePlayerId && teamAbbrev && playerName) {
-    try {
-      const rosterUrl = `${NHL_API_BASE}/roster/${teamAbbrev}/current`;
-      if (teamRosterRequests && !teamRosterRequests.has(teamAbbrev)) {
-        teamRosterRequests.set(teamAbbrev, fetchJson(rosterUrl, fetchImpl));
-      }
-      const teamRosterPayload = teamRosterRequests
-        ? await teamRosterRequests.get(teamAbbrev) : await fetchJson(rosterUrl, fetchImpl);
-      profile.sources.live = true;
-      profile.sources.rosterMatch = true;
-      const rosterMatch = findRosterMatch(teamRosterPayload, playerName);
+  try {
+    snapshot = await loadNhlSnapshot(cacheStore, fetchImpl);
+    profile.sources.local = true;
+  } catch (err) {
+    profile.errors.push(`snapshot load failed: ${err.message}`);
+  }
+
+  let teamSnapshot = teamAbbrev ? snapshot?.teams?.[teamAbbrev] : null;
+
+  if (!livePlayerId && teamSnapshot && playerName) {
+    const rosterMatch = findSnapshotRosterMatch(teamSnapshot, playerName);
+    profile.sources.rosterMatch = Boolean(rosterMatch);
+    if (rosterMatch) {
+      livePlayerId = rosterMatch.playerId;
+      profile.identity.sweaterNumber = rosterMatch.sweaterNumber;
+      profile.identity.nhlPosition = formatNhlPosition(rosterMatch.positionCode);
+      profile.identity.shootsCatches = rosterMatch.shootsCatches;
+    }
+  }
+
+  // Fall back to searching every snapshot team when the source team
+  // abbreviation is missing/unrecognized or the player has since been traded.
+  if (!livePlayerId && playerName && snapshot?.teams) {
+    for (const abbrev of Object.keys(snapshot.teams)) {
+      const rosterMatch = findSnapshotRosterMatch(snapshot.teams[abbrev], playerName);
       if (rosterMatch) {
         livePlayerId = rosterMatch.playerId;
         profile.identity.sweaterNumber = rosterMatch.sweaterNumber;
         profile.identity.nhlPosition = formatNhlPosition(rosterMatch.positionCode);
         profile.identity.shootsCatches = rosterMatch.shootsCatches;
+        profile.sources.rosterMatch = true;
+        teamSnapshot = snapshot.teams[abbrev];
+        break;
       }
-    } catch (err) {
-      profile.errors.push(`team roster lookup failed: ${err.message}`);
     }
   }
 
-  if (livePlayerId) {
-    try {
-      const landingPayload = await fetchPlayerLanding(livePlayerId, fetchImpl);
-      if (landingPayload) {
-        playerLanding = summarizePlayerLanding(landingPayload);
-        profile.sources.live = true;
-        profile.sources.playerLanding = true;
-        profile.identity = {
-          playerId: playerLanding.playerId,
-          teamAbbrev: profile.identity.teamAbbrev,
-          teamName: profile.identity.teamName || '',
-          currentTeamAbbrev: playerLanding.currentTeamAbbrev || '',
-          currentTeamName: playerLanding.currentTeamName || '',
-          poolPosition: profile.identity.poolPosition,
-          nhlPosition: playerLanding.nhlPosition || profile.identity.nhlPosition,
-          rosterStatus: playerLanding.rosterStatus || '',
-          sweaterNumber: playerLanding.sweaterNumber ?? profile.identity.sweaterNumber,
-          shootsCatches: playerLanding.shootsCatches || profile.identity.shootsCatches,
-          headshot: playerLanding.headshot || '',
-        };
-        profile.featuredSeason = playerLanding.featuredSeason;
-        profile.currentSeason = playerLanding.currentSeason;
-        profile.historical = playerLanding.careerTotals;
-        const liveTeamAbbrev = profile.identity.currentTeamAbbrev || profile.identity.teamAbbrev;
-        if (includeTeamContext && liveTeamAbbrev && cacheStore.teams?.[liveTeamAbbrev]) {
-          teamContext = cacheStore.teams[liveTeamAbbrev];
-        } else if (includeTeamContext) {
-          teamContext = liveTeamAbbrev
-            ? await fetchTeamContext(liveTeamAbbrev, fetchImpl)
-            : null;
-          if (teamContext && liveTeamAbbrev) {
-            upsertCacheEntry(cacheStore, 'teams', liveTeamAbbrev, teamContext);
-          }
-        }
-      }
-    } catch (err) {
-      profile.errors.push(`player landing lookup failed: ${err.message}`);
+  if (livePlayerId && snapshot?.players?.[livePlayerId]) {
+    playerLanding = snapshot.players[livePlayerId];
+    profile.sources.playerLanding = true;
+    profile.identity = {
+      playerId: playerLanding.playerId,
+      teamAbbrev: profile.identity.teamAbbrev,
+      teamName: profile.identity.teamName || '',
+      currentTeamAbbrev: playerLanding.currentTeamAbbrev || '',
+      currentTeamName: playerLanding.currentTeamName || '',
+      poolPosition: profile.identity.poolPosition,
+      nhlPosition: playerLanding.nhlPosition || profile.identity.nhlPosition,
+      rosterStatus: playerLanding.rosterStatus || '',
+      sweaterNumber: playerLanding.sweaterNumber ?? profile.identity.sweaterNumber,
+      shootsCatches: playerLanding.shootsCatches || profile.identity.shootsCatches,
+      headshot: playerLanding.headshot || '',
+    };
+    profile.featuredSeason = playerLanding.featuredSeason;
+    profile.currentSeason = playerLanding.currentSeason;
+    profile.historical = playerLanding.careerTotals;
+    const liveTeamAbbrev = profile.identity.currentTeamAbbrev || profile.identity.teamAbbrev;
+    if (includeTeamContext && liveTeamAbbrev) {
+      teamContext = snapshot?.teams?.[liveTeamAbbrev] || teamSnapshot || null;
     }
   }
 
   const currentTeamAbbrev = profile.identity.currentTeamAbbrev || teamAbbrev;
 
   if (includeTeamContext && !teamContext && currentTeamAbbrev) {
-    try {
-      if (cacheStore.teams?.[currentTeamAbbrev]) {
-        teamContext = cacheStore.teams[currentTeamAbbrev];
-      } else {
-        teamContext = await fetchTeamContext(currentTeamAbbrev, fetchImpl);
-        if (teamContext) {
-          upsertCacheEntry(cacheStore, 'teams', currentTeamAbbrev, teamContext);
-        }
-      }
-      if (teamContext) {
-        profile.sources.live = true;
-      }
-    } catch (err) {
-      profile.errors.push(`team context lookup failed: ${err.message}`);
-    }
+    teamContext = snapshot?.teams?.[currentTeamAbbrev] || null;
   }
 
   if (teamContext) {
@@ -532,13 +512,14 @@ async function resolveLivePlayerProfile({
     }
   }
 
-  profile.status = profile.errors.length ? (profile.sources.live ? 'partial' : 'offline') : 'ok';
+  profile.status = profile.errors.length ? (profile.sources.local ? 'partial' : 'offline') : 'ok';
   upsertCacheEntry(cacheStore, 'players', playerKey, profile);
   return profile;
 }
 
 export {
   NHL_API_BASE,
+  NHL_SNAPSHOT_URL,
   LIVE_CACHE_KEY,
   loadLiveCache,
   persistLiveCache,
@@ -551,12 +532,10 @@ export {
   extractTeamAbbrev,
   getSeasonId,
   fetchJson,
+  loadNhlSnapshot,
   summarizePlayerLanding,
   summarizeSchedule,
   summarizeRoster,
   summarizeStandings,
-  fetchTeamContext,
-  findRosterMatch,
-  fetchPlayerLanding,
   resolveLivePlayerProfile,
 };

@@ -29,7 +29,7 @@
 - `manifest.json`, install icons, and `service-worker.js` provide installability and offline shell caching on secure origins. The first successful online visit is required before offline use.
 
 ## Live data limitation
-- Direct browser requests to the NHL API are limited by CORS.
+- Direct browser requests to the NHL API are limited by CORS, so NHL career GP, positions, and roster data are preloaded into a static snapshot (`data/nhl-snapshot.json`, generated offline by `scripts/build-nhl-snapshot.mjs`) and read locally at runtime — there is no live NHL API call from the browser or the local launcher.
 - The product must remain useful when live enrichment is unavailable.
 - Cached live data is a convenience layer, not a runtime dependency.
 - Google Sheets and OneDrive sources are network-only. Offline mode serves the last successful IndexedDB snapshot and cannot refresh authoritative league state.
