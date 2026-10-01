@@ -222,6 +222,21 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     ['Sleeper Tag', player.intelEdge?.sleeperTag],
     ['Bust Tag', player.intelEdge?.bustTag],
   ];
+  const prospect = player.prospectMetadata || null;
+  const prospectRows = prospect ? [
+    ['Position (Dobber)', prospect.position],
+    ['Current Rank', prospect.grade],
+    ['Prior Rank', prospect.priorGrade],
+    ['Tier', prospect.tier],
+    ['Fantasy Trajectory', prospect.fantasyTrajectory],
+    ['Upside %', prospect.upside],
+    ['Risk %', prospect.risk],
+    ['Readiness', prospect.readiness],
+    ['Comparable', prospect.comparable ? `${prospect.comparable.name}${prospect.comparable.statLine ? ` (${prospect.comparable.statLine})` : ''}` : null],
+    ['3-Year Projection', prospect.threeYearProjection],
+    ['Draft Pedigree', prospect.draftPedigree],
+    ['Organizational Depth', Array.isArray(prospect.organizationalDepth) ? prospect.organizationalDepth.join(', ') : null],
+  ] : [];
   const availability = player.localStatus === 'removed-local'
     ? 'removed-local'
     : player.status === 'not-in-ahl' ? 'not-in-ahl' : player.available ? 'available' : 'unavailable';
@@ -263,6 +278,9 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
           <p><strong>Strengths:</strong> ${(player.strengths || []).map(escapeHtml).join(', ') || 'NULL'}</p>
           <p><strong>Risks:</strong> ${(player.risks || []).map(escapeHtml).join(', ') || 'NULL'}</p>
         </article>
+        ${prospect ? `<article class="detail-card"><h3>Prospect Intelligence (Dobber Report)</h3><dl class="kv-list">${metricMarkup(prospectRows)}</dl>
+          ${prospect.writeUp ? `<p>${escapeHtml(prospect.writeUp)}</p>` : ''}
+        </article>` : ''}
         <article class="detail-card"><h3>Keeper / Contract</h3><dl class="kv-list">${metricMarkup([
           ['KVS', player.keeper?.KVS],
           ['Salary', player.salary],

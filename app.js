@@ -3156,6 +3156,30 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile, hist
     `
     : '';
 
+  const prospect = draftPlayer?.prospectMetadata || null;
+  const prospectIntelligenceHtml = prospect
+    ? `
+      <article class="detail-card">
+        <h3>Prospect Intelligence</h3>
+        ${renderKeyValueList([
+          ['Position (Dobber)', prospect.position ?? '—'],
+          ['Current Rank', prospect.grade ?? '—'],
+          ['Prior Rank', prospect.priorGrade ?? '—'],
+          ['Tier', prospect.tier ?? '—'],
+          ['Fantasy Trajectory', prospect.fantasyTrajectory ?? '—'],
+          ['Upside %', prospect.upside ?? '—'],
+          ['Risk %', prospect.risk ?? '—'],
+          ['Readiness', prospect.readiness ?? '—'],
+          ['Comparable', prospect.comparable ? `${prospect.comparable.name}${prospect.comparable.statLine ? ` (${prospect.comparable.statLine})` : ''}` : '—'],
+          ['3-Year Projection', prospect.threeYearProjection ?? '—'],
+          ['Draft Pedigree', prospect.draftPedigree ?? '—'],
+          ['Organizational Depth', Array.isArray(prospect.organizationalDepth) ? prospect.organizationalDepth.join(', ') : '—'],
+        ])}
+        ${prospect.writeUp ? `<p>${escapeHtml(prospect.writeUp)}</p>` : ''}
+      </article>
+    `
+    : '';
+
   return `
     <section class="panel player-intel">
       <div class="preview-header">
@@ -3193,6 +3217,7 @@ function renderPlayerIntelligenceSection(player, rosterRecord, liveProfile, hist
         ${historicalBidHtml}
         ${forecastHtml}
         ${draftIntelligenceHtml}
+        ${prospectIntelligenceHtml}
       </div>
     </section>
   `;
