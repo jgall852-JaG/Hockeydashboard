@@ -877,7 +877,10 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
         player.missingSources[`Dobber projection ${metric}`] = true;
       }
     });
-    return applyForecastedStats(player, dobber.forecastProjections || dobber.projections);
+    return applyForecastedStats(player, dobber.forecastProjections || dobber.projections, {
+      threeYearPoints: dobber.threeYearPoints,
+      upside: dobber.upside,
+    });
   });
 
   const stagedPlayers = beforePricing(ingestedPlayers);
