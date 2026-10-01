@@ -1,4 +1,4 @@
-const CACHE_NAME = 'hockey-dashboard-static-v15';
+const CACHE_NAME = 'hockey-dashboard-static-v16';
 const APP_SHELL = [
   './',
   './index.html',
@@ -31,6 +31,9 @@ const APP_SHELL = [
   './data/prospects.json',
   './data/nhl-snapshot.json',
   './data/ahl-historical-bids.json',
+  './data/dobberhockeydraftlist202627.xlsx',
+  './data/dobberhockey202627fantasyguide.pdf',
+  './data/dobberhockey202627fantasyprospectsreport.pdf',
 ];
 
 self.addEventListener('install', (event) => {

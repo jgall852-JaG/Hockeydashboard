@@ -2,6 +2,7 @@ import {
   applyDobberIntelligence,
   attachDobberIntel,
   extractDobberIntelFromText,
+  extractDobberProspectMetadata,
   extractPdfText,
   ingestDobberExcelFile,
   ingestDobberPdfFiles,
@@ -251,6 +252,91 @@ describe('Dobber ingestion', () => {
         sleeperTag: true,
         bustTag: false,
       },
+    });
+  });
+
+  test('extracts prospect metadata (upside, risk, readiness, grade) from the Prospects Report text', () => {
+    const text = [
+      'Bradly Nadeau , C/RW',
+      '(2026: 15 ) (2025: 44 )',
+      'Some scouting bio paragraph about the player.',
+      'Upside Comparable: Seth Jarvis (35 - 45 - 80+ , 40 PIM)',
+      '3YP: 25 - 25 - 50, 30 PIM',
+      'Fantasy Upside / NHL Certainty: 30%, 85%',
+      'Expected Arrival: This fall.',
+      'DH Draft Advice: Should be drafted in the first couple of rounds.',
+    ].join('\n');
+    expect(extractDobberProspectMetadata(text, ['Bradly Nadeau'])).toEqual({
+      'bradly nadeau': {
+        upside: 30,
+        risk: 15,
+        readiness: 'This fall.',
+        grade: 15,
+        upsideComparable: 'Seth Jarvis (35 - 45 - 80+ , 40 PIM)',
+      },
+    });
+  });
+
+  test('extractDobberProspectMetadata returns no entry when no recognized labels are present', () => {
+    expect(extractDobberProspectMetadata('Random Player\nUnrelated line with no labels.', ['Random Player']))
+      .toEqual({});
+  });
+
+  test('parseDobberWorkbook locates the header row past Dobber banner/quick-jump rows', () => {
+    const matrix = [
+      ['Everything (Skaters) - quick jump'],
+      ['Forwards', 'Defense', 'Goalies'],
+      [],
+      [],
+      [],
+      ['Rank', 'Player', 'Age', 'Pos', '3YP', 'Upside', 'Team', 'Games', 'Goals', 'Assists', 'Points', 'SOG', 'Rookie'],
+      [1, 'Player One', 24, 'C', '', '', 'EDM', 82, 30, 40, 70, 210, ''],
+    ];
+    const xlsx = {
+      read: () => ({ Sheets: { 'EVERYTHING (Skaters)': {} } }),
+      utils: { sheet_to_json: () => matrix },
+    };
+    const players = parseDobberWorkbook(Uint8Array.from([0x50, 0x4b]).buffer, xlsx);
+    expect(players['player one']).toMatchObject({
+      player: 'Player One',
+      team: 'EDM',
+      nhlPos: 'C',
+      forecastProjections: { ProjPts: 70, ProjGP: 82, ProjSOG: 210 },
+    });
+  });
+
+  test('ingestDobberPdfFiles routes Prospects Report files to prospect metadata and other PDFs to intel', async () => {
+    const pdfjs = {
+      getDocument: ({ data }) => ({
+        promise: Promise.resolve({
+          numPages: 1,
+          getPage: async () => ({
+            getTextContent: async () => ({
+              items: [{ str: new TextDecoder().decode(data), transform: [1, 0, 0, 1, 20, 700] }],
+            }),
+          }),
+        }),
+      }),
+    };
+    const guideFile = {
+      name: 'dobberhockey202627fantasyguide.pdf',
+      arrayBuffer: async () => new TextEncoder().encode('%PDF-1.7Player One\nPedigree: First-round scorer').buffer,
+    };
+    const prospectsFile = {
+      name: 'dobberhockey202627fantasyprospectsreport.pdf',
+      arrayBuffer: async () => new TextEncoder().encode([
+        '%PDF-1.7Player One',
+        'Fantasy Upside / NHL Certainty: 40%, 90%',
+        'Expected Arrival: Next season.',
+      ].join('\n')).buffer,
+    };
+    const result = await ingestDobberPdfFiles([guideFile, prospectsFile], ['Player One'], pdfjs);
+    expect(result.status).toBe('loaded-local');
+    expect(result.intelByPlayerKey['player one']).toMatchObject({ pedigree: 'First-round scorer' });
+    expect(result.prospectMetadataByPlayerKey['player one']).toMatchObject({
+      upside: 40,
+      risk: 10,
+      readiness: 'Next season.',
     });
   });
 

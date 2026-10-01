@@ -26,6 +26,9 @@ import {
 import {
   applyDobberIntelligence,
   attachDobberIntel,
+  DOBBER_EXCEL_URL,
+  DOBBER_GUIDE_PDF_URL,
+  DOBBER_PROSPECTS_PDF_URL,
   fetchDobberPdfIntel,
   fetchDobberWorkbook,
   ingestDobberExcelFile,
@@ -826,9 +829,10 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
   const existingPdfMetadata = next.metadata.dobberPdfs || {};
   const current = next.datasets.dobber && typeof next.datasets.dobber === 'object'
     ? next.datasets.dobber
-    : { players: {}, intelByPlayerKey: {} };
+    : { players: {}, intelByPlayerKey: {}, prospectMetadataByPlayerKey: {} };
   let players = current.players || {};
   let intelByPlayerKey = current.intelByPlayerKey || {};
+  let prospectMetadataByPlayerKey = current.prospectMetadataByPlayerKey || {};
   let excelError = '';
   let pdfError = '';
   const hasLocalExcel = hasLocalDobberImport(
@@ -842,62 +846,81 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
     Object.keys(intelByPlayerKey).length,
   );
   if (!hasLocalExcel) players = {};
-  if (!hasLocalPdfs) intelByPlayerKey = {};
+  if (!hasLocalPdfs) { intelByPlayerKey = {}; prospectMetadataByPlayerKey = {}; }
 
+  // Manually dropped local imports always win; the bundled /data files are only
+  // adopted as a fallback source when no local import has been made, but the
+  // bundled fetch is always attempted so refresh errors still surface.
+  let bundledPlayers = null;
   try {
-    await fetchDobberWorkbook(fetchImpl);
-    excelError = 'Remote Dobber Excel is not accepted; import the local workbook.';
+    bundledPlayers = await fetchDobberWorkbook(fetchImpl);
   } catch (error) {
     excelError = error instanceof Error ? error.message : 'Dobber Excel refresh failed.';
   }
+  const hasBundledExcel = !hasLocalExcel && Boolean(bundledPlayers);
+  if (hasBundledExcel) players = bundledPlayers;
+  const excelLoaded = hasLocalExcel || hasBundledExcel;
+  const excelImportedAt = hasLocalExcel ? current.excelImportedAt || null : (hasBundledExcel ? new Date().toISOString() : null);
   next.metadata.dobberExcel = {
-    status: hasLocalExcel ? 'loaded-local' : 'unavailable',
-    sourceType: hasLocalExcel ? 'local' : 'remote',
+    status: excelLoaded ? 'loaded-local' : 'unavailable',
+    sourceType: hasLocalExcel ? 'local' : (hasBundledExcel ? 'bundled' : 'remote'),
     sourceName: hasLocalExcel
       ? current.excelSourceName
-      : 'Dobber Excel OneDrive',
-    importedAt: hasLocalExcel ? current.excelImportedAt || null : null,
-    lastImport: hasLocalExcel
-      ? current.excelImportedAt || existingExcelMetadata.lastImport || null
-      : existingExcelMetadata.lastImport || null,
+      : (hasBundledExcel ? DOBBER_EXCEL_URL : 'Dobber Excel OneDrive'),
+    importedAt: excelImportedAt,
+    lastImport: excelLoaded ? excelImportedAt || existingExcelMetadata.lastImport || null : existingExcelMetadata.lastImport || null,
     lastAttempt: existingExcelMetadata.lastAttempt,
-    records: hasLocalExcel ? Object.keys(players).length : 0,
+    records: excelLoaded ? Object.keys(players).length : 0,
     error: excelError,
   };
 
+  let bundledPdfResult = null;
   try {
     const pdfjs = await loadPdfJs();
-    await fetchDobberPdfIntel(getDobberPlayerNames(next), fetchImpl, pdfjs);
-    pdfError = 'Remote Dobber PDFs are not accepted; import the local PDF files.';
+    bundledPdfResult = await fetchDobberPdfIntel(getDobberPlayerNames(next), fetchImpl, pdfjs);
   } catch (error) {
     pdfError = error instanceof Error ? error.message : 'Dobber PDF refresh failed.';
   }
+  const hasBundledPdfs = !hasLocalPdfs && Boolean(bundledPdfResult);
+  if (hasBundledPdfs) {
+    intelByPlayerKey = bundledPdfResult.intelByPlayerKey;
+    prospectMetadataByPlayerKey = bundledPdfResult.prospectMetadataByPlayerKey;
+  }
+  const pdfsLoaded = hasLocalPdfs || hasBundledPdfs;
+  const pdfImportedAt = hasLocalPdfs ? current.pdfImportedAt || null : (hasBundledPdfs ? new Date().toISOString() : null);
   next.metadata.dobberPdfs = {
-    status: hasLocalPdfs ? 'loaded-local' : 'unavailable',
-    sourceType: hasLocalPdfs ? 'local' : 'remote',
-    sourceName: hasLocalPdfs ? current.pdfSourceName : 'Dobber PDFs OneDrive',
-    importedAt: hasLocalPdfs ? current.pdfImportedAt || null : null,
-    lastImport: hasLocalPdfs
-      ? current.pdfImportedAt || existingPdfMetadata.lastImport || null
-      : existingPdfMetadata.lastImport || null,
+    status: pdfsLoaded ? 'loaded-local' : 'unavailable',
+    sourceType: hasLocalPdfs ? 'local' : (hasBundledPdfs ? 'bundled' : 'remote'),
+    sourceName: hasLocalPdfs
+      ? current.pdfSourceName
+      : (hasBundledPdfs ? `${DOBBER_GUIDE_PDF_URL}, ${DOBBER_PROSPECTS_PDF_URL}` : 'Dobber PDFs OneDrive'),
+    importedAt: pdfImportedAt,
+    lastImport: pdfsLoaded ? pdfImportedAt || existingPdfMetadata.lastImport || null : existingPdfMetadata.lastImport || null,
     lastAttempt: existingPdfMetadata.lastAttempt,
-    records: hasLocalPdfs ? Object.keys(intelByPlayerKey).length : 0,
+    records: pdfsLoaded ? Object.keys(intelByPlayerKey).length : 0,
     error: pdfError,
   };
-  next.metadata.dobberStatus = hasLocalExcel || hasLocalPdfs ? 'loaded-local' : 'unavailable';
+  next.metadata.dobberStatus = excelLoaded || pdfsLoaded ? 'loaded-local' : 'unavailable';
+  // "Fully loaded" means all three bundled files (the workbook and both PDFs)
+  // parsed successfully, satisfying objective #7.
+  next.metadata.dobberFullyLoaded = excelLoaded && pdfsLoaded;
 
   next.datasets.dobber = {
-    players: attachDobberIntel(players, intelByPlayerKey),
+    players: attachDobberIntel(players, intelByPlayerKey, prospectMetadataByPlayerKey),
     intelByPlayerKey,
+    prospectMetadataByPlayerKey,
     excelSourceName: next.metadata.dobberExcel.sourceName,
     excelImportedAt: next.metadata.dobberExcel.importedAt,
     pdfSourceName: next.metadata.dobberPdfs.sourceName,
     pdfImportedAt: next.metadata.dobberPdfs.importedAt,
   };
+  const statusLabel = next.metadata.dobberFullyLoaded
+    ? (hasBundledExcel || hasBundledPdfs ? 'Dobber fully loaded (bundled data files)' : 'Dobber loaded-local')
+    : (next.metadata.dobberStatus === 'loaded-local' ? 'Dobber partially loaded' : 'Dobber unavailable');
   return {
     state: next,
     message: [
-      next.metadata.dobberStatus === 'loaded-local' ? 'Dobber loaded-local; remote refresh unavailable' : 'Dobber unavailable',
+      statusLabel,
       [excelError && `Excel: ${excelError}`, pdfError && `PDFs: ${pdfError}`].filter(Boolean).join(' | '),
     ].filter(Boolean).join(': '),
   };
@@ -4484,7 +4507,7 @@ async function importDobberExcelFile(file) {
   const current = next.datasets.dobber || {};
   next.datasets.dobber = {
     ...current,
-    players: attachDobberIntel(result.players, current.intelByPlayerKey),
+    players: attachDobberIntel(result.players, current.intelByPlayerKey, current.prospectMetadataByPlayerKey),
     excelSourceName: result.fileName,
     excelImportedAt: result.lastImport,
   };
@@ -4519,8 +4542,9 @@ async function importDobberPdfFiles(files) {
   const current = next.datasets.dobber || {};
   next.datasets.dobber = {
     ...current,
-    players: attachDobberIntel(current.players, result.intelByPlayerKey),
+    players: attachDobberIntel(current.players, result.intelByPlayerKey, result.prospectMetadataByPlayerKey),
     intelByPlayerKey: result.intelByPlayerKey,
+    prospectMetadataByPlayerKey: result.prospectMetadataByPlayerKey,
     pdfSourceName: result.fileName,
     pdfImportedAt: result.lastImport,
   };

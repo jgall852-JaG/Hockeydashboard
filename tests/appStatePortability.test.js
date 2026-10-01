@@ -12,6 +12,7 @@ import {
   serializePortableStateBundle,
   STORAGE_KEY,
 } from '../app.js';
+import { DOBBER_EXCEL_URL } from '../dobberIngestion.js';
 
 describe('local draft edit persistence', () => {
   test('mirrors local edits and their timestamp into stored metadata', () => {
@@ -383,6 +384,34 @@ describe('Dobber source status', () => {
     });
     expect(next.state.datasets.dobber.players.player.player).toBe('Player');
     expect(next.message).toContain('HTTP 401');
+  });
+
+  test('adopts the bundled /data Excel workbook when no local import exists and the fetch succeeds', async () => {
+    const previousXlsx = globalThis.XLSX;
+    globalThis.XLSX = {
+      read: () => ({ Sheets: { 'EVERYTHING (Skaters)': {} } }),
+      utils: { sheet_to_json: () => [{ Player: 'Bundled Player', Team: 'EDM', POS: 'C' }] },
+    };
+    try {
+      const fetchMock = jest.fn(async (url) => {
+        if (url === DOBBER_EXCEL_URL) {
+          return { ok: true, arrayBuffer: async () => Uint8Array.from([0x50, 0x4b]).buffer };
+        }
+        return { ok: false, status: 404 };
+      });
+      const next = await refreshDobberState(null, fetchMock);
+
+      expect(next.state.metadata.dobberExcel).toMatchObject({
+        status: 'loaded-local',
+        sourceType: 'bundled',
+        records: 1,
+      });
+      expect(next.state.metadata.dobberPdfs).toMatchObject({ status: 'unavailable', sourceType: 'remote' });
+      expect(next.state.metadata.dobberFullyLoaded).toBe(false);
+      expect(next.state.datasets.dobber.players['bundled player']).toMatchObject({ player: 'Bundled Player' });
+    } finally {
+      globalThis.XLSX = previousXlsx;
+    }
   });
 });
 

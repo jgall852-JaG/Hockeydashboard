@@ -8,11 +8,13 @@ import {
   getTier,
 } from './draftIntelligence.js';
 
-export const DOBBER_EXCEL_URL = 'https://1drv.ms/x/c/d5c20aec41fd94c9/IQAIOux0Ws0PQ7uFczW2NrY5AdqEr4m82jcnO3Oi-4Eyqhc?e=FFjnys';
-export const DOBBER_PDF_URLS = Object.freeze([
-  'https://1drv.ms/b/c/d5c20aec41fd94c9/IQC073E-MAYFQISHT8WKxjzLAVV-9hbimmd0Su7D-QFpxQw?e=zBICDA',
-  'https://1drv.ms/b/c/d5c20aec41fd94c9/IQAoEX64NJBGR5HB4bx0eWlwASSfBLCuHPMREE2ey0_7beo?e=vp92Aj',
-]);
+// Dobber source files are bundled directly in the repo under /data so they load
+// via a same-origin relative fetch (no OneDrive CORS/auth issues) both locally
+// and when hosted on GitHub Pages.
+export const DOBBER_EXCEL_URL = './data/dobberhockeydraftlist202627.xlsx';
+export const DOBBER_GUIDE_PDF_URL = './data/dobberhockey202627fantasyguide.pdf';
+export const DOBBER_PROSPECTS_PDF_URL = './data/dobberhockey202627fantasyprospectsreport.pdf';
+export const DOBBER_PDF_URLS = Object.freeze([DOBBER_GUIDE_PDF_URL, DOBBER_PROSPECTS_PDF_URL]);
 export const DOBBER_SKATER_SHEET = 'EVERYTHING (Skaters)';
 
 function readField(row, field) {
@@ -63,9 +65,11 @@ function projectionScore(row, projections, field) {
 
 function forecastProjections(row, projections) {
   const directFields = {
-    ProjPts: ['ProjPts', 'Proj Pts', 'Projected Points', 'Forecasted Points'],
-    ProjGP: ['ProjGP', 'Proj Games', 'Projected Games'],
-    ProjSOG: ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots'],
+    // 'Games'/'Points'/'SOG' are the bare column names used by the real
+    // "EVERYTHING (Skaters)" tab in the bundled Dobber draft list workbook.
+    ProjPts: ['ProjPts', 'Proj Pts', 'Projected Points', 'Forecasted Points', 'Points'],
+    ProjGP: ['ProjGP', 'Proj Games', 'Projected Games', 'Games', 'GP'],
+    ProjSOG: ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots', 'SOG', 'Shots'],
   };
   const direct = Object.fromEntries(Object.entries(directFields).flatMap(([field, aliases]) => {
     const value = aliases.map((alias) => readField(row, alias))
@@ -107,6 +111,12 @@ export function normalizeDobberRows(rows) {
       projections,
       forecastProjections: normalizedForecastProjections,
       riskFlags: parseRiskFlags(readField(row, 'RiskFlags')),
+      // Role/Tier are read generically since Dobber's own column names vary by
+      // edition (e.g. "PP Unit" for role); left null when the sheet omits them
+      // rather than inferring a value.
+      role: String(readField(row, 'Role') || readField(row, 'PP Unit') || '').trim() || null,
+      tier: String(readField(row, 'Tier') || '').trim() || null,
+      rookie: Boolean(String(readField(row, 'Rookie') || '').trim()),
       intelEdge: null,
       sourceRow: index + 2,
     };
@@ -134,8 +144,16 @@ export function parseDobberWorkbook(arrayBuffer, xlsx = globalThis.XLSX) {
   let headers;
   let rows;
   if (Array.isArray(matrix?.[0])) {
-    headers = matrix[0].map((header) => String(header || '').trim());
-    rows = matrix.slice(1).map((values) => Object.fromEntries(
+    // Dobber's "EVERYTHING (Skaters)" tab leads with several banner/quick-jump
+    // rows before the real header row, so scan for the row containing the
+    // Player column instead of assuming it's row 0.
+    const headerRowIndex = matrix.findIndex((candidateRow) => (
+      Array.isArray(candidateRow)
+      && candidateRow.some((cell) => String(cell || '').replace(/[^a-z0-9]+/gi, '').toLowerCase() === 'player')
+    ));
+    const headerRow = headerRowIndex >= 0 ? matrix[headerRowIndex] : matrix[0];
+    headers = headerRow.map((header) => String(header || '').trim());
+    rows = matrix.slice((headerRowIndex >= 0 ? headerRowIndex : 0) + 1).map((values) => Object.fromEntries(
       headers.map((header, index) => [header, values[index] ?? '']),
     ));
   } else {
@@ -146,7 +164,7 @@ export function parseDobberWorkbook(arrayBuffer, xlsx = globalThis.XLSX) {
   if (!normalizedHeaders.has('player')) {
     throw new Error('Dobber workbook is missing the required Player column.');
   }
-  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags', 'projpts', 'projgp', 'projsog', 'projshots', 'projectedpoints', 'projectedgames', 'projectedshots'];
+  const dataColumns = ['team', 'pos', 'salary', 'aav', 'bps', 'kvs', 'pps', 'rss', 'rrs', 'projections', 'riskflags', 'projpts', 'projgp', 'projsog', 'projshots', 'projectedpoints', 'projectedgames', 'projectedshots', 'games', 'points', 'sog'];
   if (!dataColumns.some((column) => normalizedHeaders.has(column))) {
     throw new Error('Dobber workbook is missing expected skater data columns.');
   }
@@ -217,6 +235,36 @@ export function extractDobberIntelFromText(text, playerNames) {
   return intelByPlayerKey;
 }
 
+// Parses the Dobber Fantasy Prospects Report (a different document from the
+// Fantasy Guide): each prospect profile includes labeled "Upside Comparable",
+// "Fantasy Upside / NHL Certainty", "Expected Arrival", and a "(YYYY: rank)"
+// grade line near the player's name.
+export function extractDobberProspectMetadata(text, playerNames) {
+  const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const metadataByPlayerKey = {};
+  const locations = (playerNames || []).flatMap((player) => {
+    const key = normalizeLookupKey(player);
+    if (!key) return [];
+    const index = lines.findIndex((line) => normalizeLookupKey(line).includes(key));
+    return index < 0 ? [] : [{ player, key, index }];
+  }).sort((left, right) => left.index - right.index);
+  locations.forEach(({ key, index }, locationIndex) => {
+    const nextPlayerIndex = locations[locationIndex + 1]?.index ?? lines.length;
+    const context = lines.slice(index, Math.min(index + 22, nextPlayerIndex)).join('\n');
+    const upsideCertaintyMatch = context.match(/Fantasy Upside\s*\/\s*NHL Certainty\s*:\s*(\d+(?:\.\d+)?)\s*%\s*,\s*(\d+(?:\.\d+)?)\s*%/i);
+    const upside = upsideCertaintyMatch ? Number.parseFloat(upsideCertaintyMatch[1]) : null;
+    const certainty = upsideCertaintyMatch ? Number.parseFloat(upsideCertaintyMatch[2]) : null;
+    const risk = certainty !== null ? Math.round((100 - certainty) * 100) / 100 : null;
+    const readiness = explicitIntelValue(context, 'Expected Arrival');
+    const upsideComparable = explicitIntelValue(context, 'Upside Comparable') || explicitIntelValue(context, 'Upside');
+    const gradeMatch = context.match(/\(20\d{2}\s*:\s*(\d+)\s*\)/);
+    const grade = gradeMatch ? Number.parseInt(gradeMatch[1], 10) : null;
+    if (upside === null && risk === null && !readiness && !upsideComparable && grade === null) return;
+    metadataByPlayerKey[key] = { upside, risk, readiness, grade, upsideComparable };
+  });
+  return metadataByPlayerKey;
+}
+
 export async function extractPdfText(arrayBuffer, pdfjs) {
   if (!pdfjs?.getDocument) throw new Error('The bundled PDF parser is unavailable.');
   const bytes = new Uint8Array(arrayBuffer);
@@ -273,17 +321,26 @@ export async function ingestDobberPdfFiles(files, playerNames, pdfjs, now = () =
       warnings: ['Select at least one Dobber PDF file.'],
       playersParsed: 0,
       intelByPlayerKey: {},
+      prospectMetadataByPlayerKey: {},
     };
   }
 
   try {
     const loadedPdfjs = await pdfjs;
-    const texts = [];
+    const intelByPlayerKey = {};
+    const prospectMetadataByPlayerKey = {};
     for (const file of selectedFiles) {
-      texts.push(await extractPdfText(await file.arrayBuffer(), loadedPdfjs));
+      const text = await extractPdfText(await file.arrayBuffer(), loadedPdfjs);
+      // Route the Fantasy Prospects Report through its own parser (upside,
+      // risk, readiness, grade); everything else uses the Fantasy Guide's
+      // pedigree/projection-confidence/sleeper/bust extraction.
+      if (/prospect/i.test(String(file?.name || ''))) {
+        Object.assign(prospectMetadataByPlayerKey, extractDobberProspectMetadata(text, playerNames));
+      } else {
+        Object.assign(intelByPlayerKey, extractDobberIntelFromText(text, playerNames));
+      }
     }
-    const intelByPlayerKey = extractDobberIntelFromText(texts.join('\n'), playerNames);
-    const playersParsed = Object.keys(intelByPlayerKey).length;
+    const playersParsed = Object.keys(intelByPlayerKey).length + Object.keys(prospectMetadataByPlayerKey).length;
     return {
       status: 'loaded-local',
       fileName,
@@ -291,6 +348,7 @@ export async function ingestDobberPdfFiles(files, playerNames, pdfjs, now = () =
       warnings: playersParsed ? [] : ['PDFs parsed, but no explicit player intelligence matched the current roster.'],
       playersParsed,
       intelByPlayerKey,
+      prospectMetadataByPlayerKey,
     };
   } catch (error) {
     return {
@@ -300,6 +358,7 @@ export async function ingestDobberPdfFiles(files, playerNames, pdfjs, now = () =
       warnings: [importWarning(error, 'Dobber PDF import failed.')],
       playersParsed: 0,
       intelByPlayerKey: {},
+      prospectMetadataByPlayerKey: {},
     };
   }
 }
@@ -328,23 +387,30 @@ export function updateDobberImportMetadata(metadata, result, attemptedAt = new D
 
 export async function fetchDobberPdfIntel(playerNames, fetchImpl = globalThis.fetch, pdfjs) {
   if (typeof fetchImpl !== 'function') throw new Error('Fetch is unavailable for Dobber PDFs.');
-  const texts = [];
-  for (const url of DOBBER_PDF_URLS) {
-    const response = await fetchImpl(url, { cache: 'no-store', credentials: 'omit' });
-    if (!response?.ok) {
-      throw new Error(`Dobber PDF fetch failed (HTTP ${response?.status || 'unknown'}).`);
-    }
-    texts.push(await extractPdfText(await response.arrayBuffer(), pdfjs));
+  const guideResponse = await fetchImpl(DOBBER_GUIDE_PDF_URL, { cache: 'no-store', credentials: 'omit' });
+  if (!guideResponse?.ok) {
+    throw new Error(`Dobber Fantasy Guide PDF fetch failed (HTTP ${guideResponse?.status || 'unknown'}).`);
   }
-  return extractDobberIntelFromText(texts.join('\n'), playerNames);
+  const guideText = await extractPdfText(await guideResponse.arrayBuffer(), pdfjs);
+  const intelByPlayerKey = extractDobberIntelFromText(guideText, playerNames);
+
+  const prospectsResponse = await fetchImpl(DOBBER_PROSPECTS_PDF_URL, { cache: 'no-store', credentials: 'omit' });
+  if (!prospectsResponse?.ok) {
+    throw new Error(`Dobber Fantasy Prospects Report PDF fetch failed (HTTP ${prospectsResponse?.status || 'unknown'}).`);
+  }
+  const prospectsText = await extractPdfText(await prospectsResponse.arrayBuffer(), pdfjs);
+  const prospectMetadataByPlayerKey = extractDobberProspectMetadata(prospectsText, playerNames);
+
+  return { intelByPlayerKey, prospectMetadataByPlayerKey };
 }
 
-export function attachDobberIntel(players, intelByPlayerKey) {
+export function attachDobberIntel(players, intelByPlayerKey, prospectMetadataByPlayerKey = {}) {
   return Object.fromEntries(Object.entries(players || {}).map(([playerKey, player]) => [
     playerKey,
     {
       ...player,
       intelEdge: intelByPlayerKey?.[playerKey] || null,
+      prospectMetadata: prospectMetadataByPlayerKey?.[playerKey] || null,
     },
   ]));
 }
@@ -454,6 +520,10 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
       player.classification = 'UNPRICED';
       player.valuationStatus = 'unpriced';
       player.missingSources[hasExcel ? 'DobberExcel player match' : 'DobberExcel'] = true;
+      player.dobberRole = null;
+      player.dobberTier = null;
+      player.dobberRookie = null;
+      player.prospectMetadata = null;
       return applyForecastedStats(player, null);
     }
 
@@ -462,6 +532,10 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
     player.aav = dobber.aav;
     player.dobberProjections = dobber.projections;
     player.dobberRiskFlags = dobber.riskFlags;
+    player.dobberRole = dobber.role ?? null;
+    player.dobberTier = dobber.tier ?? null;
+    player.dobberRookie = typeof dobber.rookie === 'boolean' ? dobber.rookie : null;
+    player.prospectMetadata = dobber.prospectMetadata ?? null;
     player.intelEdge = intelEdge;
     player.production = { ...(player.production || {}), PPS: dobber.pps };
     player.deployment = { ...(player.deployment || {}), RSS: dobber.rss, RRS: dobber.rrs };
