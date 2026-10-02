@@ -170,7 +170,7 @@ describe('draft auction dashboard rendering', () => {
     expect(bestPanel).not.toContain('data-player-details="official-player"');
   });
 
-  test('shows undrafted unavailable players without treating them as draftable', () => {
+  test('excludes unavailable and removed players from Best Available regardless of removed-player display setting', () => {
     const player = {
       id: 'unavailable-player',
       name: 'Unavailable Player',
@@ -213,19 +213,17 @@ describe('draft auction dashboard rendering', () => {
     expect(toolsHtml).toContain('id="reset-local-edits"');
 
     const bestPanel = defaultHtml.slice(defaultHtml.indexOf('id="best-available-panel"'));
-    expect(bestPanel).toContain('Unavailable Player');
+    expect(bestPanel).not.toContain('Unavailable Player');
     expect(bestPanel).not.toContain('data-player-details="removed-player"');
-    expect(bestPanel).toMatch(/data-player-details="unavailable-player"[\s\S]*?<td>Unavailable<\/td>/);
     expect(bestPanel).toContain('data-show-removed-players');
     expect(renderDraftAuctionDashboard({ ...props, players: [] }))
-      .toContain('No undrafted AHL-eligible players match the current filters.');
+      .toContain('No available, undrafted AHL-eligible players match the current filters.');
     const commissionerHtml = renderDraftAuctionDashboard({
       ...props,
       showRemovedPlayers: true,
     });
     const commissionerPanel = commissionerHtml.slice(commissionerHtml.indexOf('id="best-available-panel"'));
-    expect(commissionerPanel).toContain('data-player-details="removed-player"');
-    expect(commissionerPanel).toMatch(/data-player-details="removed-player"[\s\S]*?<td>Unavailable<\/td>/);
+    expect(commissionerPanel).not.toContain('data-player-details="removed-player"');
   });
 
   test('Draft Board shows only drafted players, keeps local removal, and uses actual paid prices', () => {
@@ -502,7 +500,7 @@ describe('draft auction dashboard rendering', () => {
     expect(rowIds('Games Played')).toEqual(['high', 'low', 'missing']);
   });
 
-  test('Best Available limits to 25 after position and sort, never including drafted players', () => {
+  test('Best Available limits to the top 10 after position and sort, never including drafted players', () => {
     const players = Array.from({ length: 32 }, (_, index) => ({
       id: `player-${index}`,
       name: `Player ${String(index).padStart(2, '0')}`,
@@ -524,15 +522,45 @@ describe('draft auction dashboard rendering', () => {
       return [...panel.matchAll(/data-player-details="([^"]+)"/g)].map((match) => match[1]);
     };
     const all = rowIds({});
-    expect(all).toHaveLength(25);
+    expect(all).toHaveLength(10);
     expect(all[0]).toBe('player-30');
     expect(all).not.toContain('player-31');
     const wings = rowIds({ bestPositionFilter: 'LW' });
-    expect(wings).toHaveLength(15);
+    expect(wings).toHaveLength(10);
     expect(wings[0]).toBe('player-29');
     expect(wings).not.toContain('player-31');
     expect(rowIds({ bestPositionFilter: 'D' })).toEqual(wings);
     expect(rowIds({ bestPositionFilter: 'RW' })).toEqual([]);
+  });
+
+  test('Best Available strictly uses refreshed availability keys and excludes removed or non-AHL players', () => {
+    const players = [
+      { id: 'listed', name: 'Listed', status: 'in-ahl', availability: 'Unavailable', finalPosition: 'C' },
+      { id: 'stale', name: 'Stale', status: 'in-ahl', availability: 'Available', finalPosition: 'C' },
+      { id: 'removed', name: 'Removed', status: 'in-ahl', localStatus: 'removed-local', finalPosition: 'C' },
+      { id: 'outside-pool', name: 'Outside Pool', status: 'not-in-ahl', finalPosition: 'C' },
+    ];
+    const props = {
+      activeTab: 'best-available',
+      players,
+      draftedPlayers: [],
+      availableKeys: new Set(['listed', 'removed', 'outside pool']),
+      bestAvailableSort: 'ADP',
+      search: '',
+      teamBudgets: [],
+      teamNames: [],
+      selectedPlayer: null,
+      selectedTeam: '',
+      sourceAvailability: {},
+      toolsHtml: '',
+      workspaceHtml: '',
+    };
+    const panel = renderDraftAuctionDashboard(props).split('id="best-available-panel"')[1];
+    expect(panel).toContain('data-player-details="listed"');
+    expect(panel).not.toContain('data-player-details="stale"');
+    expect(panel).not.toContain('data-player-details="removed"');
+    expect(panel).not.toContain('data-player-details="outside-pool"');
+    expect(panel).toContain('<td>Available</td>');
   });
 
   test('routes players with availability "Unavailable" to Draft Board instead of Best Available', () => {
