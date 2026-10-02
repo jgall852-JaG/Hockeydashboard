@@ -256,21 +256,64 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
   });
   veterans.forEach((record) => markOwner(record, null, { protectedOwner: true }));
 
+  // Draft 2026 grid rows carry the costs already counted in the sheet's TOTAL SPENT/BALANCE.
+  const draftGridByPlayerKey = new Map();
   const draftGrid = stateObj?.datasets?.roster?.sources?.['retained-grid']?.players || {};
-  Object.values(draftGrid).forEach((record) => markOwner(record, draftedKeys));
+  Object.values(draftGrid).forEach((record) => {
+    markOwner(record, draftedKeys);
+    const playerKey = resolvePoolKey(record?.name);
+    const owner = String(record?.owner || '').trim();
+    if (!playerKey || !owner || draftGridByPlayerKey.has(playerKey)) return;
+    const cost = Number(record.cost);
+    draftGridByPlayerKey.set(playerKey, {
+      name: record.name,
+      owner,
+      cost: Number.isFinite(cost) ? cost : 0,
+      position: String(record.position || record.poolposition || '').trim(),
+    });
+  });
   Object.values(stateObj?.datasets?.draft?.players || {}).forEach((record) => markOwner(record, draftedKeys));
   Object.values(stateObj?.datasets?.roster?.sources?.['league-layout']?.players || {})
     .forEach((record) => markOwner(record, null, { protectedOwner: true }));
 
-  const assignments = [
-    ...Object.values(stateObj?.workingAssignments || {}),
-    ...Object.entries(stateObj?.localEdits?.manualAssignments || {}).map(([name, team]) => ({ name, team })),
-  ];
-  assignments.forEach((record) => markOwner(record, assignedKeys));
+  const workingAssignments = Object.values(stateObj?.workingAssignments || {});
+  const manualAssignments = Object.entries(stateObj?.localEdits?.manualAssignments || {})
+    .map(([name, team]) => ({ name, team }));
+  [...workingAssignments, ...manualAssignments].forEach((record) => markOwner(record, assignedKeys));
 
+  // Effective local assignment per pool player: a manual assignment overrides a recorded winning bid.
+  const assignmentsByPlayerKey = new Map();
+  const unresolvedAssignments = [];
+  const recordAssignment = (record, source) => {
+    const team = String(record?.team || '').trim();
+    if (!team) return;
+    const playerKey = resolvePoolKey(record?.name);
+    if (!playerKey) {
+      unresolvedAssignments.push({ name: record?.name || '', team, source });
+      return;
+    }
+    const bid = Number(record?.bid);
+    const previous = assignmentsByPlayerKey.get(playerKey);
+    const sameTeamBid = previous?.bid !== undefined && normalizeLookupKey(previous.team) === normalizeLookupKey(team)
+      ? previous.bid
+      : 0;
+    assignmentsByPlayerKey.set(playerKey, {
+      name: record?.name || '',
+      team,
+      source,
+      bid: source === 'working' && Number.isFinite(bid) ? bid : sameTeamBid,
+      position: String(record?.position || '').trim(),
+    });
+  };
+  workingAssignments.forEach((record) => recordAssignment(record, 'working'));
+  manualAssignments.forEach((record) => recordAssignment(record, 'manual'));
+
+  const unassignedKeys = new Set();
   (stateObj?.localEdits?.manualUnassign || []).forEach((name) => {
     const key = resolvePoolKey(name);
     if (!key) return;
+    unassignedKeys.add(key);
+    assignmentsByPlayerKey.delete(key);
     ownersByPlayerKey.set(key, new Set(protectedOwnersByPlayerKey.get(key)));
     draftedKeys.delete(key);
     assignedKeys.delete(key);
@@ -303,6 +346,11 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
     assignedKeys,
     rightsKeys,
     removedKeys,
+    draftGridByPlayerKey,
+    assignmentsByPlayerKey,
+    unassignedKeys,
+    unresolvedAssignments,
+    poolPositionsByPlayerKey: new Map(poolEntries.map(([playerKey, player]) => [playerKey, [...player.positions]])),
   };
 }
 

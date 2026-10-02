@@ -54,6 +54,7 @@ import {
   getHistoricalBidStats,
   loadAhlHistoricalBids,
 } from './ahlHistoricalBids.js';
+import { buildTeamMonies, findTeamMonies } from './teamMonies.js';
 
 const STORAGE_KEY = 'hockey-dashboard-owner-view';
 const APP_STATE_VERSION = 2;
@@ -1429,7 +1430,8 @@ function rebuildCanonicalAhlPoolState(stateObj) {
   if (isCanonicalPoolRefreshRequired(stateObj)) {
     stateObj.datasets.ahlPool = {};
     stateObj.datasets.availableKeys = [];
-    return { ownership: getOfficialPoolAliasOwners(stateObj), availableKeys: new Set() };
+    const ownership = getOfficialPoolAliasOwners(stateObj);
+    return { ownership, availableKeys: new Set(), monies: rebuildTeamBudgets(stateObj, ownership) };
   }
   const roster = stateObj?.datasets?.roster;
   const positionRows = Object.values(roster?.sources?.inventory?.players || {});
@@ -1458,7 +1460,27 @@ function rebuildCanonicalAhlPoolState(stateObj) {
     };
   });
   stateObj.datasets.availableKeys = [...availableKeys];
-  return { ownership, availableKeys };
+  const monies = rebuildTeamBudgets(stateObj, ownership);
+  return { ownership, availableKeys, monies };
+}
+
+// Monies always derive from the current ownership layers, so every caller of
+// rebuildCanonicalAhlPoolState (refresh, import, local edits, render) recomputes them.
+function rebuildTeamBudgets(stateObj, ownership = getOfficialPoolAliasOwners(stateObj)) {
+  const monies = buildTeamMonies(stateObj, ownership);
+  if (stateObj?.datasets) stateObj.datasets.monies = monies;
+  return monies;
+}
+
+function rebuildDraftValidationReport(stateObj, monies = null) {
+  return buildDraftValidationReport(stateObj, { monies });
+}
+
+// Single rebuild pipeline: canonical pool -> availability -> ownership -> Monies -> validation report.
+function rebuildDraftState(stateObj) {
+  const { ownership, availableKeys, monies } = rebuildCanonicalAhlPoolState(stateObj);
+  const report = rebuildDraftValidationReport(stateObj, monies);
+  return { ownership, availableKeys, monies, report };
 }
 
 function hasGoogleSheetSnapshot(stateObj) {
@@ -1545,6 +1567,7 @@ function downloadPortableState(stateObj) {
 
 function applyPortableStateBundle(bundle) {
   const parsed = parsePortableStateBundle(bundle);
+  rebuildCanonicalAhlPoolState(parsed.appState);
   persistState(parsed.appState);
   persistLiveCache(parsed.liveCache);
 
@@ -1906,6 +1929,7 @@ function upsertWorkingAssignment(stateObj, draft) {
     ...current,
     [entry.playerKey]: entry,
   };
+  rebuildCanonicalAhlPoolState(next);
   persistState(next);
   return { state: next, entry };
 }
@@ -1917,11 +1941,12 @@ function removeWorkingAssignment(stateObj, playerKey) {
   const current = { ...(next.workingAssignments || {}) };
   delete current[key];
   next.workingAssignments = current;
+  rebuildCanonicalAhlPoolState(next);
   persistState(next);
   return next;
 }
 
-function buildDraftValidationReport(stateObj) {
+function buildDraftValidationReport(stateObj, { monies: providedMonies = null } = {}) {
   const nextState = normalizeState(stateObj);
   const ownerData = buildOwnerViewData(nextState);
   const rosterPlayers = Object.values(nextState.datasets.roster?.players || {});
@@ -1936,25 +1961,19 @@ function buildDraftValidationReport(stateObj) {
       .filter(Boolean),
   );
   const snapshot = getSnapshotAgeInfo(nextState);
-  const sheetBudgets = nextState.datasets.roster?.teamBudgets || [];
+  const monies = providedMonies || buildTeamMonies(nextState, getOfficialPoolAliasOwners(nextState));
   const ownerDraftPlans = ownerData.owners.map((owner) => {
-    const sheetBudget = sheetBudgets.find(
-      (entry) => normalizeLookupKey(entry.team) === normalizeLookupKey(owner.name),
-    );
-    if (!sheetBudget) return buildOwnerDraftPlan(owner);
-    const teamAssignments = Object.values(workingAssignments)
-      .filter((entry) => normalizeLookupKey(entry?.team) === normalizeLookupKey(owner.name));
+    const teamMonies = findTeamMonies(monies, owner.name);
+    if (!teamMonies?.hasSheetBaseline) return buildOwnerDraftPlan(owner);
     return buildOwnerDraftPlan(owner, {
-      ...sheetBudget,
-      remainingBudget: Number.isFinite(sheetBudget.remainingBudget)
-        ? Number((sheetBudget.remainingBudget - teamAssignments.reduce((sum, entry) => sum + Number(entry.bid || 0), 0)).toFixed(2))
-        : null,
-      playersDrafted: Number.isInteger(sheetBudget.playersDrafted)
-        ? sheetBudget.playersDrafted + teamAssignments.length
-        : null,
-      openSlots: Number.isInteger(sheetBudget.openSlots)
-        ? Math.max(0, sheetBudget.openSlots - teamAssignments.length)
-        : null,
+      totalSpent: teamMonies.spend,
+      remainingBudget: teamMonies.remainingBudget,
+      playersDrafted: teamMonies.playersDrafted,
+      openSlots: teamMonies.openSlots,
+      keeperCosts: teamMonies.keeperCosts,
+      rookieFarmCosts: teamMonies.rookieFarmCosts,
+      penalties: teamMonies.penalties,
+      adjustments: teamMonies.adjustments,
     });
   });
   const inventoryByKey = new Map();
@@ -2185,8 +2204,17 @@ function buildDraftValidationReport(stateObj) {
       status: ownerDraftPlans.some((plan) => plan.remainingBudget === null) ? 'warning' : 'valid',
       message: ownerDraftPlans.some((plan) => plan.remainingBudget === null)
         ? `${ownerDraftPlans.filter((plan) => plan.remainingBudget === null).length} team${ownerDraftPlans.filter((plan) => plan.remainingBudget === null).length === 1 ? '' : 's'} missing a usable AHL Draft balance`
-        : 'Team balances match the AHL Draft sheet, less local working assignments',
+        : 'Team balances match the AHL Draft sheet, adjusted by local ownership changes',
       count: ownerDraftPlans.filter((plan) => plan.remainingBudget === null).length,
+    },
+    {
+      key: 'monies-unresolved-assignments',
+      label: 'Monies: Local Assignments',
+      status: monies.unresolvedAssignments.length ? 'warning' : 'valid',
+      message: monies.unresolvedAssignments.length
+        ? `${monies.unresolvedAssignments.length} local assignment${monies.unresolvedAssignments.length === 1 ? '' : 's'} not in the canonical AHL pool and excluded from Monies: ${monies.unresolvedAssignments.map((entry) => `${entry.name} (${entry.team})`).join(', ')}`
+        : `Local ownership changes applied to Monies: ${monies.teams.reduce((sum, team) => sum + team.changes.length, 0)}`,
+      count: monies.unresolvedAssignments.length,
     },
     {
       key: 'draft-roster-rules',
@@ -2240,6 +2268,7 @@ function buildDraftValidationReport(stateObj) {
     workingAssignments,
     manualOverrides,
     ownerDraftPlans,
+    monies,
     draftRosterRules: DRAFT_ROSTER_RULES,
   };
 }
@@ -2619,7 +2648,7 @@ function renderDraftValidationCenter(report) {
           <thead>
             <tr>
               <th>Owner</th>
-              <th>Retained</th>
+              <th>Spent</th>
               <th>Remaining</th>
               <th>Skaters</th>
               <th>Goalie Teams</th>
@@ -3542,7 +3571,8 @@ function renderOwnerDetails(ownerData, report) {
 }
 
 function renderOwnerView(unifiedState) {
-  rebuildCanonicalAhlPoolState(unifiedState);
+  // Recompute pool, availability, ownership, and Monies before any panel renders.
+  const { report: draftValidationReport } = rebuildDraftState(unifiedState);
   const ownerData = buildOwnerViewData(unifiedState);
 
   if (!ownerData.owners.length && !state.draftIntelligence) {
@@ -3565,7 +3595,6 @@ function renderOwnerView(unifiedState) {
     </section>
   `;
 
-  const draftValidationReport = buildDraftValidationReport(unifiedState);
   if (state.draftIntelligence) {
     renderAuctionDashboard(unifiedState, ownerData, draftValidationReport);
     return;
@@ -3800,6 +3829,7 @@ async function persistLocalDraftEdits(localEdits) {
   const next = normalizeState(state.importedData || loadState());
   next.localEdits = markLocalEditsUpdated(localEdits, next.localEdits.lastUpdated);
   next.metadata.localDraftEdits = next.localEdits;
+  rebuildCanonicalAhlPoolState(next);
   persistState(next);
   state.importedData = next;
   if (state.draftIntelligence && next.metadata.ahlSheets?.status === 'ok') {
@@ -3903,36 +3933,22 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   const focusState = ['draftBoardSearch'].includes(activeSearch?.id)
     ? { id: activeSearch.id, selectionStart: activeSearch.selectionStart, selectionEnd: activeSearch.selectionEnd }
     : null;
-  const assignments = Object.values(draftValidationReport.workingAssignments || {});
-  const teamBudgets = (unifiedState.datasets.roster?.teamBudgets || []).map((budget) => {
-    const ownerName = ownerData.owners.find((owner) => normalizeLookupKey(owner.name) === normalizeLookupKey(budget.team))?.name
-      || budget.team;
-    const teamAssignments = assignments.filter((entry) => normalizeLookupKey(entry?.team) === normalizeLookupKey(ownerName));
-    const remainingBudget = Number.isFinite(budget.remainingBudget)
-      ? Number((budget.remainingBudget - teamAssignments.reduce((sum, entry) => sum + Number(entry.bid || 0), 0)).toFixed(2))
-      : null;
-    const playersDrafted = (budget.playersDrafted || 0) + teamAssignments.length;
-    const openSlots = Math.max(0, DRAFT_ROSTER_RULES.targetSkaters + DRAFT_ROSTER_RULES.targetGoalieTeams - playersDrafted);
-    const maxPossibleBid = remainingBudget !== null && openSlots > 0
-      ? Number((remainingBudget - ((openSlots - 1) * DRAFT_ROSTER_RULES.minSlotCost)).toFixed(2))
-      : null;
-    return {
-      team: ownerName,
-      retained: budget.retained ?? budget.totalSpent ?? null,
-      remainingBudget,
-      playersDrafted,
-      skaters: budget.skaters || null,
-      openSlots,
-      averageSpendRemaining: remainingBudget !== null && openSlots > 0 ? remainingBudget / openSlots : null,
-      maxPossibleBid: maxPossibleBid !== null && maxPossibleBid >= DRAFT_ROSTER_RULES.minSlotCost
-        ? maxPossibleBid
-        : null,
-      keeperCosts: budget.keeperCosts,
-      rookieFarmCosts: budget.rookieFarmCosts,
-      penalties: budget.penalties,
-      adjustments: budget.adjustments,
-    };
-  });
+  const monies = draftValidationReport.monies || unifiedState.datasets.monies || rebuildTeamBudgets(unifiedState);
+  const teamBudgets = (monies.teams || []).map((teamMonies) => ({
+    team: ownerData.owners.find((owner) => normalizeLookupKey(owner.name) === normalizeLookupKey(teamMonies.team))?.name
+      || teamMonies.team,
+    spend: teamMonies.spend,
+    remainingBudget: teamMonies.remainingBudget,
+    playersDrafted: teamMonies.playersDrafted,
+    skaters: teamMonies.skaters,
+    openSlots: teamMonies.openSlots,
+    averageSpendRemaining: teamMonies.averageSpendRemaining,
+    maxPossibleBid: teamMonies.maxBid,
+    keeperCosts: teamMonies.keeperCosts,
+    rookieFarmCosts: teamMonies.rookieFarmCosts,
+    penalties: teamMonies.penalties,
+    adjustments: teamMonies.adjustments,
+  }));
   const sourceAvailableKeys = new Set(unifiedState.datasets.availableKeys || []);
   const localDraftView = applyLocalDraftEdits(
     state.draftIntelligence.players?.players || [],
@@ -4992,4 +5008,10 @@ export {
   serializePortableStateBundle,
   parsePortableStateBundle,
   rebuildCanonicalAhlPoolState,
+  rebuildTeamBudgets,
+  rebuildDraftValidationReport,
+  rebuildDraftState,
+  upsertWorkingAssignment,
+  removeWorkingAssignment,
+  applyPortableStateBundle,
 };
