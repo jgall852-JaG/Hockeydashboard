@@ -41,7 +41,7 @@
 - Are player-level score inputs available? If not, DraftIQ and auction values must remain UNPRICED.
 - Is Final Position sourced from Utility when listed, and from AHL Position otherwise?
 - Are manual removals, assignments, and unassignments intentional? They are browser-local overlays, remain offline, and clear only after a successful AHL refresh. Local Dobber imports preserve them.
-- Best Available lists only currently available players from the canonical AHL pool (top 10 per position, sorted by ADP or Forecasted Points); use its Search box to find any available player by name. **Show Removed Players** controls visibility of commissioner removals.
+- Best Available lists only currently available players from the canonical AHL pool (top 25 per position, sorted by ADP or Forecasted Points); use its Search box to find any available player by name. **Show Removed Players** controls visibility of commissioner removals.
 - Draft Board shows Draft 2026 owners and prices plus local winning bids; Best Available shows the remaining eligible players. Show Removed Players reveals locally hidden rows so they can be restored. NHL career GP may be unavailable, in which case the displayed Draft Board Experience Tier defaults to Veteran with a warning.
 - **Reset Local Edits** is in Tools & Validation and runs the normal authoritative AHL refresh. Edits clear only when that refresh succeeds; local Dobber files are retained and reapplied.
 - Have you exported your Personal Draft List JSON if using another device? LocalStorage and IndexedDB do not sync between devices.

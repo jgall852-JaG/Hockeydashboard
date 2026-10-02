@@ -526,19 +526,19 @@ describe('draft auction dashboard rendering', () => {
     expect(rowIds('Composite Score')).toEqual(['no-adp', 'low', 'high', 'missing']);
   });
 
-  test('Best Available limits to the top 10 after position and sort, never including drafted players', () => {
-    const players = Array.from({ length: 32 }, (_, index) => ({
+  test('Best Available limits to the top 25 after position and sort, never including drafted players', () => {
+    const players = Array.from({ length: 62 }, (_, index) => ({
       id: `player-${index}`,
       name: `Player ${String(index).padStart(2, '0')}`,
       status: 'in-ahl',
       finalPosition: index % 2 ? 'LW/D' : 'C',
       forecast: { projectedPoints: index },
     }));
-    const draftedPlayers = [{ ...players[31], draftOwner: 'TEAM A', draftPrice: 3 }];
+    const draftedPlayers = [{ ...players[61], draftOwner: 'TEAM A', draftPrice: 3 }];
     const props = {
       activeTab: 'best-available', players, draftedPlayers,
       ahlPool: createAhlPool(players),
-      availableKeys: new Set(players.filter((player) => player.id !== 'player-31').map((player) => player.name.toLowerCase())),
+      availableKeys: new Set(players.filter((player) => player.id !== 'player-61').map((player) => player.name.toLowerCase())),
       bestAvailableSort: 'Forecasted Points', search: '', positionFilter: '',
       categoryFilter: '', teamBudgets: [], teamNames: [], selectedPlayer: null,
       selectedTeam: '', sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
@@ -549,13 +549,13 @@ describe('draft auction dashboard rendering', () => {
       return [...panel.matchAll(/data-player-details="([^"]+)"/g)].map((match) => match[1]);
     };
     const all = rowIds({});
-    expect(all).toHaveLength(10);
-    expect(all[0]).toBe('player-30');
-    expect(all).not.toContain('player-31');
+    expect(all).toHaveLength(25);
+    expect(all[0]).toBe('player-60');
+    expect(all).not.toContain('player-61');
     const wings = rowIds({ bestPositionFilter: 'LW' });
-    expect(wings).toHaveLength(10);
-    expect(wings[0]).toBe('player-29');
-    expect(wings).not.toContain('player-31');
+    expect(wings).toHaveLength(25);
+    expect(wings[0]).toBe('player-59');
+    expect(wings).not.toContain('player-61');
     expect(rowIds({ bestPositionFilter: 'D' })).toEqual(wings);
     expect(rowIds({ bestPositionFilter: 'RW' })).toEqual([]);
   });
@@ -590,8 +590,8 @@ describe('draft auction dashboard rendering', () => {
     expect(panel).not.toContain('data-player-details="outside-pool"');
   });
 
-  test('Best Available search matches every available canonical pool player by name, overriding position and top 10', () => {
-    const players = Array.from({ length: 14 }, (_, index) => ({
+  test('Best Available search matches every available canonical pool player by name, overriding position and top 25', () => {
+    const players = Array.from({ length: 30 }, (_, index) => ({
       id: `smith-${index}`,
       name: `Smith ${String(index).padStart(2, '0')}`,
       status: 'in-ahl',
@@ -617,10 +617,10 @@ describe('draft auction dashboard rendering', () => {
       return html.slice(html.indexOf('id="best-available-panel"'), html.indexOf('id="team-budgets-panel"'));
     };
     const ids = (panel) => [...panel.matchAll(/data-player-details="([^"]+)"/g)].map((match) => match[1]);
-    expect(ids(panelFor({}))).toHaveLength(7);
+    expect(ids(panelFor({}))).toHaveLength(15);
     const searched = panelFor({ bestAvailableSearch: 'smith' });
-    expect(ids(searched)).toHaveLength(14);
-    expect(ids(searched)[0]).toBe('smith-13');
+    expect(ids(searched)).toHaveLength(30);
+    expect(ids(searched)[0]).toBe('smith-29');
     expect(ids(searched)).not.toContain('smith-drafted');
     expect(ids(searched)).not.toContain('jones');
     expect(searched).toContain('data-pool-player="pool:smith pool only">Smith Pool Only</span>');

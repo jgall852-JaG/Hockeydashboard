@@ -409,7 +409,7 @@ export function renderDraftAuctionDashboard({
     ? bestPlayers.filter((player) => normalizeLookupKey(player.name).includes(bestSearchKey))
     : bestPlayers
       .filter((player) => !bestPositionFilter || player.poolPositions.includes(bestPositionFilter))
-      .slice(0, 10);
+      .slice(0, 25);
   const tab = (id, label) => `<button type="button" role="tab" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
   const selected = (value, current) => value === current ? 'selected' : '';
   const localPlayerFilters = `<div class="draft-board-filters draft-local-edit-toggles">
@@ -450,7 +450,7 @@ export function renderDraftAuctionDashboard({
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
     <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">${bestSearchKey
     ? `${rankedBestPlayers.length} currently available player${rankedBestPlayers.length === 1 ? '' : 's'} matching &ldquo;${escapeHtml(bestAvailableSearch.trim())}&rdquo; across the canonical AHL pool (position filter ignored while searching).`
-    : 'Top 10 currently available, undrafted players matching the selected position.'} Sorted by ${bestSort === 'ADP' ? 'ADP (lowest first)' : 'Forecasted Points (highest first)'}; forecast fields are NULL when Dobber has no projection.</p></div>
+    : 'Top 25 currently available, undrafted players matching the selected position.'} Sorted by ${bestSort === 'ADP' ? 'ADP (lowest first)' : 'Forecasted Points (highest first)'}; forecast fields are NULL when Dobber has no projection.</p></div>
       <div class="best-available-toolbar"><label>Search <input id="bestAvailableSearch" type="search" value="${escapeHtml(bestAvailableSearch)}" placeholder="Player name" /></label><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${bestSortOptions.map((key) => `<option ${selected(key, bestSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
       ${localPlayerFilters}
       ${renderPlayerTable(rankedBestPlayers, availableKeySet, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
