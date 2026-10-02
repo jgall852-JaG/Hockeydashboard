@@ -529,8 +529,9 @@ describe('draft auction dashboard rendering', () => {
       selectedTeam: '', sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
       fairPriceV2: {
         'pool player': {
-          fairPriceV2: 23.76, basePrice: 18, baseSource: 'Post Draft 2025 (P Player)',
+          fairPriceV2: 23.76, marketPrice: 24, basePrice: 18, baseSource: 'Post Draft 2025 (P Player)',
           scarcityFactor: 1.1, productionFactor: 1.2, poolGamesFactor: 1, powerPlayFactor: 1.15,
+          budgetFactor: 0.95, lastPlayerPremium: 1.1,
         },
       },
     };
@@ -544,20 +545,24 @@ describe('draft auction dashboard rendering', () => {
     expect(modal).toContain('Pool Games (FH)</dt><dd>31</dd>');
     expect(modal).toContain('Pool Games (SH)</dt><dd>27</dd>');
     expect(modal).toContain('Total Pool Games</dt><dd>58</dd>');
-    // fairPriceV2, not the estimated auction value ($20), drives the deal rating.
-    expect(modal).toContain('data-deal-rating data-fair-price="23.76"');
-    expect(modal).toContain('Fair Price: <strong>$23.76</strong>');
+    // Market price, not raw fairPriceV2 or estimated auction value, drives the deal rating.
+    expect(modal).toContain('data-deal-rating data-market-price="24"');
+    expect(modal).toContain('Market Price: <strong>$24.00</strong>');
     expect(modal).toContain('Your Bid: <strong>—</strong>');
     expect(modal).toContain('Deal Rating: enter a bid');
     expect(modal).toContain('Base Source</dt><dd>Post Draft 2025 (P Player)</dd>');
     expect(modal).toContain('Scarcity Factor</dt><dd>1.1</dd>');
     expect(modal).toContain('PP Unit</dt><dd>1</dd>');
     expect(modal).toContain('Power Play Factor</dt><dd>1.15</dd>');
+    expect(modal).toContain('Fair Price v2 (raw)</dt><dd>$23.76</dd>');
+    expect(modal).toContain('Market Price (final)</dt><dd>$24.00</dd>');
+    expect(modal).toContain('Budget Factor</dt><dd>0.95</dd>');
+    expect(modal).toContain('Last Decent Player Premium</dt><dd>1.1</dd>');
 
     const missing = { ...player, poolGames: undefined, auctionValue: null, valuationStatus: 'unpriced' };
     const unpricedModal = renderDraftAuctionDashboard({ ...baseProps, fairPriceV2: {}, players: [missing], selectedPlayer: missing });
     expect(unpricedModal).toContain('Total Pool Games</dt><dd>NULL</dd>');
-    expect(unpricedModal).toContain('data-fair-price=""');
+    expect(unpricedModal).toContain('data-market-price=""');
     expect(unpricedModal).toContain('Deal Rating: UNPRICED');
   });
 
@@ -566,9 +571,9 @@ describe('draft auction dashboard rendering', () => {
     expect(renderDealRatingContent('22', 20)).toContain('<span class="deal-badge deal-yellow">FAIR</span>');
     expect(renderDealRatingContent('22.5', 20)).toContain('<span class="deal-badge deal-red">OVERPAY</span>');
     expect(renderDealRatingContent('22.5', 20)).toContain('Your Bid: <strong>$22.50</strong>');
-    expect(renderDealRatingContent('', 20.456)).toContain('Fair Price: <strong>$20.46</strong>');
+    expect(renderDealRatingContent('', 20.456)).toContain('Market Price: <strong>$20.46</strong>');
     expect(renderDealRatingContent('', 20)).toContain('Deal Rating: enter a bid');
-    expect(renderDealRatingContent('10', null)).toContain('Fair Price: <strong>UNPRICED</strong>');
+    expect(renderDealRatingContent('10', null)).toContain('Market Price: <strong>UNPRICED</strong>');
   });
 
   test('Best Available sorts ADP ascending, otherwise Forecasted Points descending, with missing values last', () => {

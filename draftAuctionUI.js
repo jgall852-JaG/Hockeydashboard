@@ -12,15 +12,15 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 
 const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL';
 
-// Fair price is fairPriceV2 in draft dollars; NHL salary and keeper salary are never used.
-export function renderDealRatingContent(bid, fairPrice) {
-  const hasFairPrice = Number.isFinite(fairPrice) && fairPrice > 0;
+// Market price is the live, budget- and scarcity-adjusted fairPriceV2 estimate.
+export function renderDealRatingContent(bid, marketPrice) {
+  const hasFairPrice = Number.isFinite(marketPrice) && marketPrice > 0;
   const bidText = String(bid ?? '').trim();
   const bidValue = bidText === '' ? NaN : Number(bidText);
-  const fairText = `<span class="deal-field">Fair Price: <strong>${hasFairPrice ? money(fairPrice) : 'UNPRICED'}</strong></span>`;
+  const fairText = `<span class="deal-field">Market Price: <strong>${hasFairPrice ? money(marketPrice) : 'UNPRICED'}</strong></span>`;
   const bidMarkup = `<span class="deal-field">Your Bid: <strong>${Number.isFinite(bidValue) ? money(bidValue) : '—'}</strong></span>`;
-  if (!hasFairPrice) return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: UNPRICED (no fair price)</span>`;
-  const deal = getDealRating(bid, fairPrice);
+  if (!hasFairPrice) return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: UNPRICED (no market price)</span>`;
+  const deal = getDealRating(bid, marketPrice);
   if (!deal) return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: enter a bid</span>`;
   return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: <span class="deal-badge deal-${deal.tone}">${deal.rating}</span></span>`;
 }
@@ -207,6 +207,7 @@ function renderPersonalDraftList(players, entries, availableKeys, {
 function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null) {
   if (!player) return '';
   const fairPriceV2 = Number.isFinite(fairPrice?.fairPriceV2) ? fairPrice.fairPriceV2 : null;
+  const marketPrice = Number.isFinite(fairPrice?.marketPrice) ? fairPrice.marketPrice : fairPriceV2;
   const budget = teamBudgets.find((entry) => entry.team === selectedTeam);
   const recommendation = budget
     ? calculateRecommendedMaxBid(player.auctionValue, player.tier, budget.remainingBudget, budget.openSlots)
@@ -327,13 +328,16 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['Not-in-ahl', player.status === 'not-in-ahl'],
         ])}</dl></article>
         <article class="detail-card"><h3>Fair Price v2 (draft dollars)</h3><dl class="kv-list">${metricMarkup([
-          ['Fair Price', fairPriceV2 === null ? 'UNPRICED' : money(fairPriceV2)],
+          ['Fair Price v2 (raw)', fairPriceV2 === null ? 'UNPRICED' : money(fairPriceV2)],
+          ['Market Price (final)', marketPrice === null ? 'UNPRICED' : money(marketPrice)],
           ['Base Price', Number.isFinite(fairPrice?.basePrice) ? money(fairPrice.basePrice) : null],
           ['Base Source', fairPrice?.baseSource],
           ['Scarcity Factor', fairPrice?.scarcityFactor],
           ['Production Factor', fairPrice?.productionFactor],
           ['Pool Games Factor', fairPrice?.poolGamesFactor],
           ['Power Play Factor', fairPrice?.powerPlayFactor],
+          ['Budget Factor', fairPrice?.budgetFactor],
+          ['Last Decent Player Premium', fairPrice?.lastPlayerPremium],
         ])}</dl></article>
       </div>
       <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
@@ -348,7 +352,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
         <label>Winning bid
           <input name="bid" type="number" min="0.50" step="0.50" placeholder="0.50" required data-deal-bid />
         </label>
-        <output class="deal-rating" data-deal-rating data-fair-price="${fairPriceV2 ?? ''}" aria-live="polite">${renderDealRatingContent('', fairPriceV2)}</output>
+        <output class="deal-rating" data-deal-rating data-market-price="${marketPrice ?? ''}" aria-live="polite">${renderDealRatingContent('', marketPrice)}</output>
         <label>Roster category
           <select name="classification" required>
             <option value="">Select category</option>

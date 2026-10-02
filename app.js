@@ -1771,16 +1771,18 @@ function rebuildDraftState(stateObj) {
   const report = rebuildDraftValidationReport(stateObj, monies);
   const draftIQ = rebuildDraftIQ(stateObj, { ownership, availableKeys, monies });
   const draftIQv3 = rebuildDraftIQv3(stateObj, { ownership, availableKeys, monies });
-  const fairPriceV2 = rebuildFairPriceV2(stateObj, { availableKeys });
+  const fairPriceV2 = rebuildFairPriceV2(stateObj, { availableKeys, monies, draftIQv3 });
   return { ownership, availableKeys, monies, report, draftIQ, draftIQv3, fairPriceV2 };
 }
 
-function rebuildFairPriceV2(stateObj, { availableKeys }) {
+function rebuildFairPriceV2(stateObj, { availableKeys, monies, draftIQv3 }) {
   const fairPriceV2 = computeFairPriceV2({
     ahlPool: stateObj?.datasets?.ahlPool,
     availableKeys,
     players: state.draftIntelligence?.players?.players || [],
     pastAuctions: stateObj?.datasets?.pastAuctions,
+    monies,
+    draftIQv3,
     getPoolGamesForTeam: (team) => getPoolGames(stateObj, team),
   });
   if (stateObj?.datasets) stateObj.datasets.fairPriceV2 = fairPriceV2;
@@ -4784,8 +4786,8 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   document.querySelector('[data-winning-bid-form] [data-deal-bid]')?.addEventListener('input', (event) => {
     const output = event.target.form?.querySelector('[data-deal-rating]');
     if (!output) return;
-    const fairPrice = output.dataset.fairPrice === '' ? null : Number(output.dataset.fairPrice);
-    output.innerHTML = renderDealRatingContent(event.target.value, fairPrice);
+    const marketPrice = output.dataset.marketPrice === '' ? null : Number(output.dataset.marketPrice);
+    output.innerHTML = renderDealRatingContent(event.target.value, marketPrice);
   });
   document.querySelectorAll('[data-close-player-details]').forEach((element) => {
     element.addEventListener('click', (event) => {
