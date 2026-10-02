@@ -399,7 +399,12 @@ export function renderDraftAuctionDashboard({
     }];
   });
   const bestSortOptions = ['ADP', 'Forecasted Points', 'DraftIQ'];
-  const bestSort = bestSortOptions.includes(bestAvailableSort) ? bestAvailableSort : 'Forecasted Points';
+  // No bundled source supplies ADP today; sorting by an all-NULL column would silently fall
+  // through to the points tie-breaker while still claiming "ADP", so it is disabled instead.
+  const hasAdpData = bestPlayers.some((player) => player.adp !== null);
+  const bestSort = bestSortOptions.includes(bestAvailableSort) && (bestAvailableSort !== 'ADP' || hasAdpData)
+    ? bestAvailableSort
+    : 'Forecasted Points';
   const compareNullable = (left, right, direction) => {
     if (left === null) return right === null ? 0 : 1;
     if (right === null) return -1;
@@ -465,7 +470,9 @@ export function renderDraftAuctionDashboard({
     <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">${bestSearchKey
     ? `${rankedBestPlayers.length} currently available player${rankedBestPlayers.length === 1 ? '' : 's'} matching &ldquo;${escapeHtml(bestAvailableSearch.trim())}&rdquo; across the canonical AHL pool (position filter ignored while searching).`
     : 'Top 25 currently available, undrafted players matching the selected position.'} Sorted by ${{ ADP: 'ADP (lowest first)', 'Forecasted Points': 'Forecasted Points (highest first)', DraftIQ: 'DraftIQ (highest first)' }[bestSort]}; forecast fields are NULL when Dobber has no projection.</p></div>
-      <div class="best-available-toolbar"><label>Search <input id="bestAvailableSearch" type="search" value="${escapeHtml(bestAvailableSearch)}" placeholder="Player name" /></label><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${bestSortOptions.map((key) => `<option ${selected(key, bestSort)}>${key}</option>`).join('')}</select></label><label>Team needs <select id="bestAvailableNeedsTeam"><option value="">None</option>${(teamNames || []).map((team) => `<option value="${escapeHtml(team)}" ${selected(team, bestAvailableNeedsTeam)}>${escapeHtml(team)}</option>`).join('')}</select></label>${legend}</div></div>
+      <div class="best-available-toolbar"><label>Search <input id="bestAvailableSearch" type="search" value="${escapeHtml(bestAvailableSearch)}" placeholder="Player name" /></label><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${bestSortOptions.map((key) => (key === 'ADP' && !hasAdpData
+    ? '<option value="ADP" disabled>ADP (no data)</option>'
+    : `<option ${selected(key, bestSort)}>${key}</option>`)).join('')}</select></label><label>Team needs <select id="bestAvailableNeedsTeam"><option value="">None</option>${(teamNames || []).map((team) => `<option value="${escapeHtml(team)}" ${selected(team, bestAvailableNeedsTeam)}>${escapeHtml(team)}</option>`).join('')}</select></label>${legend}</div></div>
       ${localPlayerFilters}
       ${renderPlayerTable(rankedBestPlayers, availableKeySet, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>

@@ -477,8 +477,8 @@ describe('draft auction dashboard rendering', () => {
     expect(panel).not.toContain('<td>Available</td>');
     const sortOptions = panel.match(/<select id="bestAvailableSort">([\s\S]*?)<\/select>/)[1];
     expect(sortOptions.match(/<option [^>]*>[^<]+<\/option>/g)).toEqual([
-      '<option selected>ADP</option>',
-      '<option >Forecasted Points</option>',
+      '<option value="ADP" disabled>ADP (no data)</option>',
+      '<option selected>Forecasted Points</option>',
       '<option >DraftIQ</option>',
     ]);
     expect(panel).toContain('<input id="bestAvailableSearch" type="search" value=""');
@@ -527,6 +527,28 @@ describe('draft auction dashboard rendering', () => {
     expect(rowIds('Forecasted Points')).toEqual(['no-adp', 'low', 'high', 'missing']);
     // Legacy persisted sorts (Composite Score, FHPPG, ...) fall back to Forecasted Points.
     expect(rowIds('Composite Score')).toEqual(['no-adp', 'low', 'high', 'missing']);
+  });
+
+  test('Best Available disables ADP and falls back to Forecasted Points when no player has ADP data', () => {
+    const players = [
+      { id: 'kucherov', name: 'Kucherov', status: 'in-ahl', finalPosition: 'RW', forecast: { projectedPoints: 128 } },
+      { id: 'mackinnon', name: 'MacKinnon', status: 'in-ahl', finalPosition: 'C', forecast: { projectedPoints: 126 } },
+      { id: 'mcdavid', name: 'McDavid', status: 'in-ahl', finalPosition: 'C', forecast: { projectedPoints: 131 } },
+    ];
+    const html = renderDraftAuctionDashboard({
+      activeTab: 'best-available', players, ahlPool: createAhlPool(players),
+      availableKeys: new Set(['kucherov', 'mackinnon', 'mcdavid']), bestAvailableSort: 'ADP',
+      search: '', teamBudgets: [], teamNames: [], selectedPlayer: null, selectedTeam: '',
+      sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+    });
+    const panel = html.slice(html.indexOf('id="best-available-panel"'), html.indexOf('id="team-budgets-panel"'));
+    const sortOptions = panel.match(/<select id="bestAvailableSort">([\s\S]*?)<\/select>/)[1];
+    expect(sortOptions).toContain('<option value="ADP" disabled>ADP (no data)</option>');
+    expect(sortOptions).toContain('<option selected>Forecasted Points</option>');
+    expect(panel).toContain('Sorted by Forecasted Points (highest first)');
+    expect(panel).not.toContain('Sorted by ADP');
+    expect([...panel.matchAll(/data-player-details="([^"]+)"/g)].map((match) => match[1]))
+      .toEqual(['mcdavid', 'kucherov', 'mackinnon']);
   });
 
   test('Best Available sorts by DraftIQ descending with NULLs last and points/goals/assists/ADP tie-breakers', () => {

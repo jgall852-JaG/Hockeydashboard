@@ -513,6 +513,66 @@ describe('Dobber source status', () => {
       globalThis.XLSX = previousXlsx;
     }
   });
+
+  const staleLocalDobberState = (extra = {}) => ({
+    datasets: {
+      dobber: {
+        players: {
+          'connor mcdavid': {
+            player: 'Connor McDavid',
+            forecastProjections: { ProjPts: '131', ProjGP: '77', ProjSOG: '277' },
+          },
+        },
+        excelSourceName: 'old-dobber.xlsx',
+        excelImportedAt: '2026-09-01T12:00:00.000Z',
+        ...extra,
+      },
+    },
+    metadata: { dobberExcel: { status: 'loaded-local', sourceType: 'local', sourceName: 'old-dobber.xlsx' } },
+  });
+
+  test('replaces a stale local Excel import (no Goals/Assists) with the bundled workbook and warns', async () => {
+    const previousXlsx = globalThis.XLSX;
+    globalThis.XLSX = {
+      read: () => ({ Sheets: { 'EVERYTHING (Skaters)': {} } }),
+      utils: {
+        sheet_to_json: () => [{ Player: 'Connor McDavid', Team: 'EDM', POS: 'C', Points: 131, Goals: 36, Assists: 95, Games: 77, SOG: 277 }],
+      },
+    };
+    try {
+      const fetchMock = jest.fn(async (url) => (url === DOBBER_EXCEL_URL
+        ? { ok: true, arrayBuffer: async () => Uint8Array.from([0x50, 0x4b]).buffer }
+        : { ok: false, status: 404 }));
+      const next = await refreshDobberState(staleLocalDobberState(), fetchMock);
+
+      expect(next.state.metadata.dobberExcel).toMatchObject({ status: 'loaded-local', sourceType: 'bundled' });
+      expect(next.state.metadata.dobberExcel.warning).toMatch(/predates forecast Goals\/Assists/);
+      expect(next.message).toMatch(/predates forecast Goals\/Assists/);
+      expect(next.state.datasets.dobber.excelSchemaVersion).toBe(2);
+      expect(next.state.datasets.dobber.players['connor mcdavid'].forecastProjections)
+        .toMatchObject({ ProjG: 36, ProjA: 95 });
+    } finally {
+      globalThis.XLSX = previousXlsx;
+    }
+  });
+
+  test('keeps a stale local Excel import when the bundled workbook is unavailable, and asks for a re-import', async () => {
+    const fetchMock = jest.fn(async () => ({ ok: false, status: 404 }));
+    const next = await refreshDobberState(staleLocalDobberState(), fetchMock);
+
+    expect(next.state.metadata.dobberExcel).toMatchObject({ status: 'loaded-local', sourceType: 'local', sourceName: 'old-dobber.xlsx' });
+    expect(next.state.metadata.dobberExcel.warning).toMatch(/re-import Dobber Excel/);
+    expect(next.state.datasets.dobber.players['connor mcdavid'].player).toBe('Connor McDavid');
+    expect(next.state.datasets.dobber.excelSchemaVersion ?? null).toBeNull();
+  });
+
+  test('trusts a current-schema local Excel import even when its workbook lacks Goals/Assists columns', async () => {
+    const fetchMock = jest.fn(async () => ({ ok: false, status: 404 }));
+    const next = await refreshDobberState(staleLocalDobberState({ excelSchemaVersion: 2 }), fetchMock);
+
+    expect(next.state.metadata.dobberExcel).toMatchObject({ sourceType: 'local', warning: '' });
+    expect(next.state.datasets.dobber.excelSchemaVersion).toBe(2);
+  });
 });
 
 describe('import control wiring', () => {
