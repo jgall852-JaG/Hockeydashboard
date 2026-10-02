@@ -1,5 +1,11 @@
 # Hockeydashboard access
 
+## Hosted dashboard (no local server)
+
+Open **https://jgall852-jag.github.io/Hockeydashboard/** in Edge or another modern browser. Click **Refresh AHL Sheets** after loading to get current league data. The hosted site is separate from the local URL: `127.0.0.1` only works while the local launcher is running. If Edge reports `127.0.0.1 refused to connect`, open the hosted URL directly or follow the local setup below; disabling an offline service worker does not start the launcher. Do not clear site data as a troubleshooting step without first exporting your saved state.
+
+To move your local dashboard state to the hosted site, start the local launcher, open the local dashboard, click **Export State**, then open the hosted URL and choose **Import Saved State**. Click **Refresh AHL Sheets** afterward. Export/import the **Personal Draft List** separately if you use it. Local and hosted storage (including Dobber uploads) do not sync.
+
 ## Setup
 
 1. Install [Node.js](https://nodejs.org/) on the computer hosting the dashboard. Run `Launch-Hockey-Dashboard.bat` from this repository's `app` folder (the older `Start-Hockeydashboard.cmd` launches the same server). The launcher prints the local and LAN URLs; keep its window open while using the dashboard.
