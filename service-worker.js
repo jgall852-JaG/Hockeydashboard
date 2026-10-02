@@ -1,5 +1,5 @@
 // Bump CACHE_VERSION on every deploy that changes cached assets.
-const CACHE_VERSION = 'v17';
+const CACHE_VERSION = 'v18';
 const CACHE_PREFIX = 'hockeydashboard-';
 const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}`;
 // Caches created by earlier releases of this dashboard before the prefix change.
@@ -14,6 +14,7 @@ const APP_SHELL = [
   './draftAuctionUI.js',
   './draftIntelligence.js',
   './ahlSheetIngestion.js',
+  './teamMonies.js',
   './ahlHistoricalBids.js',
   './personalDraftList.js',
   './offlineSnapshotStore.js',

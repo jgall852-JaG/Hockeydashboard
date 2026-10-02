@@ -959,7 +959,8 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
     else delete player.missingSources['Position scarcity rules'];
   });
 
-  const budgets = stateObj?.datasets?.budget?.teamBudgets
+  const budgets = stateObj?.datasets?.monies?.teams
+    || stateObj?.datasets?.budget?.teamBudgets
     || stateObj?.datasets?.roster?.teamBudgets
     || [];
   players.forEach((player) => {

@@ -92,7 +92,7 @@ function renderPlayerTable(players, availableKeys, personalDraftList, options = 
 function renderTeamBudgets(teamBudgets) {
   const rows = teamBudgets.map((team) => `<tr>
     <td>${escapeHtml(team.team)}</td>
-    <td>${money(team.retained)}</td>
+    <td>${money(team.spend ?? team.retained)}</td>
     <td>${money(team.remainingBudget)}</td>
     <td>${team.skaters ? `${team.skaters.count}/${team.skaters.max}` : 'NULL'}</td>
     <td>${team.playersDrafted}</td>
@@ -105,7 +105,7 @@ function renderTeamBudgets(teamBudgets) {
     <td>${money(team.adjustments)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table class="validation-table">
-    <thead><tr><th>Team</th><th>Retained</th><th>Budget Remaining</th><th>Skaters</th><th>Players Drafted</th><th>Open Slots</th><th>Avg Spend Remaining</th><th>Max Possible Bid</th><th>Keeper Costs</th><th>Rookie/Farm Costs</th><th>Penalties</th><th>Adjustments</th></tr></thead>
+    <thead><tr><th>Team</th><th>Spent</th><th>Budget Remaining</th><th>Skaters</th><th>Players Drafted</th><th>Open Slots</th><th>Avg Spend Remaining</th><th>Max Possible Bid</th><th>Keeper Costs</th><th>Rookie/Farm Costs</th><th>Penalties</th><th>Adjustments</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="12" class="empty-state">No AHL Draft budget data is available.</td></tr>'}</tbody>
   </table></div>`;
 }
@@ -451,7 +451,7 @@ export function renderDraftAuctionDashboard({
     </div>
   </section>`;
   const budgetsPanel = `<section id="team-budgets-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'team-budgets' ? '' : 'hidden'}>
-    <div class="panel"><h2>Team Budgets</h2><p class="panel-subtitle">Working assignments are included in remaining budget and slots.</p>${renderTeamBudgets(teamBudgets)}</div>
+    <div class="panel"><h2>Team Budgets</h2><p class="panel-subtitle">AHL Draft balances adjusted by local ownership changes (winning bids, manual assign/unassign); recomputed on every change.</p>${renderTeamBudgets(teamBudgets)}</div>
     ${workspaceHtml}
   </section>`;
   const personalPanel = renderPersonalDraftList(players, personalDraftList, availableKeys, {
