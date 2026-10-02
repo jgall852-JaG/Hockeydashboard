@@ -103,7 +103,7 @@ function renderPlayerTable(players, availableKeys, personalDraftList, options = 
     ? ['Player', 'Final Position', 'Forecasted Goals', 'Forecasted Assists', 'Forecasted Points', 'DraftIQ', 'DraftIQ v3']
     : ['Player', 'Final Position', 'Experience Tier', 'Owner', 'Auction Value', 'Remove Locally'];
   return `<div class="table-wrap"><table class="validation-table">
-    <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
+    <thead><tr>${headers.map((header) => `<th scope="col">${header}</th>`).join('')}</tr></thead>
     <tbody>${renderPlayerRows(players, availableKeys, personalDraftList, normalizedOptions)}</tbody>
   </table></div>`;
 }
@@ -126,12 +126,14 @@ function renderTeamBudgets(teamBudgets) {
     <td>${money(team.adjustments)}</td>
   </tr>`).join('');
   return `<div class="table-wrap"><table class="validation-table">
-    <thead><tr><th>Team</th><th>Total Spent</th><th>Budget Remaining</th><th>Skaters</th><th>Players Drafted</th><th>Open Slots</th><th>Avg Spend Remaining</th><th>Max Possible Bid</th><th>Keeper Costs</th><th>Rookie Costs</th><th>Farm Costs</th><th>Auction Costs</th><th>Penalties</th><th>Adjustments</th></tr></thead>
+    <thead><tr><th scope="col">Team</th><th scope="col">Total Spent</th><th scope="col">Budget Remaining</th><th scope="col">Skaters</th><th scope="col">Players Drafted</th><th scope="col">Open Slots</th><th scope="col">Avg Spend Remaining</th><th scope="col">Max Possible Bid</th><th scope="col">Keeper Costs</th><th scope="col">Rookie Costs</th><th scope="col">Farm Costs</th><th scope="col">Auction Costs</th><th scope="col">Penalties</th><th scope="col">Adjustments</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="14" class="empty-state">No AHL Draft budget data is available.</td></tr>'}</tbody>
   </table></div>`;
 }
 
-function renderPersonalDraftList(players, entries, availableKeys, { sort, positionFilter, categoryFilter, availabilityFilter }) {
+function renderPersonalDraftList(players, entries, availableKeys, {
+  sort, positionFilter, categoryFilter, availabilityFilter, activeTab,
+}) {
   const playersById = new Map(players.map((player) => [player.id, player]));
   const allPositions = [...new Set(players.flatMap(getAhlPlayerPositions))].sort();
   const selected = (value, current) => value === current ? 'selected' : '';
@@ -169,7 +171,7 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
     </tr>`;
   }).join('');
 
-  return `<section class="dashboard-panel" role="tabpanel" id="personal-draft-list-panel">
+  return `<section class="dashboard-panel" role="tabpanel" id="personal-draft-list-panel" aria-labelledby="personal-draft-list-tab" ${activeTab === 'personal-draft-list' ? '' : 'hidden'}>
     <div class="panel">
       <div class="preview-header"><div><h2>Personal Draft List</h2><p class="panel-subtitle">Private to this browser; rankings and notes do not update AHL Sheets.</p></div>
         <div class="personal-list-file-actions">
@@ -195,7 +197,7 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
         </select></label>
       </div>
       <div class="table-wrap"><table class="validation-table">
-        <thead><tr><th>Rank</th><th>Name</th><th>Final Position</th><th>Experience Tier</th><th>Team</th><th>Availability</th><th>Target</th><th>Avoid</th><th>Keeper Target</th><th>Breakout Target</th><th>Max Bid Note</th><th>Notes</th><th>Actions</th></tr></thead>
+        <thead><tr><th scope="col">Rank</th><th scope="col">Name</th><th scope="col">Final Position</th><th scope="col">Experience Tier</th><th scope="col">Team</th><th scope="col">Availability</th><th scope="col">Target</th><th scope="col">Avoid</th><th scope="col">Keeper Target</th><th scope="col">Breakout Target</th><th scope="col">Max Bid Note</th><th scope="col">Notes</th><th scope="col">Actions</th></tr></thead>
         <tbody>${rowMarkup || `<tr><td colspan="13" class="empty-state">${entries.length ? 'No list entries match these filters.' : 'Add players from Draft Board or Best Available.'}</td></tr>`}</tbody>
       </table></div>
     </div>
@@ -273,7 +275,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
     ? 'removed-local'
     : player.status === 'not-in-ahl' ? 'not-in-ahl' : player.available ? 'available' : 'unavailable';
   return `<div class="draft-modal-backdrop" data-close-player-details>
-    <section class="draft-modal panel" role="dialog" aria-modal="true" aria-labelledby="draftModalTitle">
+    <section class="draft-modal panel" role="dialog" aria-modal="true" aria-labelledby="draftModalTitle" tabindex="-1">
       <button type="button" class="modal-close secondary" aria-label="Close player profile" data-close-player-details>Close</button>
       <h2 id="draftModalTitle">${escapeHtml(player.name)}</h2>
       <p>Final Position ${escapeHtml(player.finalPosition || player.finalPositionOverride || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | Experience Tier ${escapeHtml(player.draftOwner ? getExperienceTierFromGames(player.nhlCareerGamesPlayed) : player.experienceTier || player.category || 'NULL')}</p>
@@ -463,7 +465,7 @@ export function renderDraftAuctionDashboard({
     : bestPlayers
       .filter((player) => !bestPositionFilter || player.poolPositions.includes(bestPositionFilter))
       .slice(0, 25);
-  const tab = (id, label) => `<button type="button" role="tab" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
+  const tab = (id, label) => `<button type="button" id="${id}-tab" role="tab" aria-controls="${id}-panel" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
   const selected = (value, current) => value === current ? 'selected' : '';
   const localPlayerFilters = `<div class="draft-board-filters draft-local-edit-toggles">
     <label><input type="checkbox" data-show-removed-players ${showRemovedPlayers ? 'checked' : ''} /> Show Removed Players</label>
@@ -486,7 +488,7 @@ export function renderDraftAuctionDashboard({
       ['RSS', 'Risk Stability Score'],
     ].map(([acronym, description]) => `<div><dt>${acronym}</dt><dd>${description}</dd></div>`).join('')}</dl>
   </details>`;
-  const boardPanel = `<section id="draft-board-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'draft-board' ? '' : 'hidden'}>
+  const boardPanel = `<section id="draft-board-panel" class="dashboard-panel" role="tabpanel" aria-labelledby="draft-board-tab" ${activeTab === 'draft-board' ? '' : 'hidden'}>
     <div class="panel draft-board-panel">
       <div class="preview-header"><div><h2>Draft Board</h2><p class="panel-subtitle">Draft 2026 owners and paid prices, plus local winning bids; estimated auction values are not shown here.</p></div>
         <span class="meta-pill">${draftedPlayers.length} drafted</span></div>
@@ -502,7 +504,7 @@ export function renderDraftAuctionDashboard({
       ${renderPlayerTable(filtered, availableKeys, personalDraftList, { emptyMessage: draftBoardEmptyMessage })}
     </div>
   </section>`;
-  const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
+  const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" aria-labelledby="best-available-tab" ${activeTab === 'best-available' ? '' : 'hidden'}>
     <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">${bestSearchKey
     ? `${rankedBestPlayers.length} currently available player${rankedBestPlayers.length === 1 ? '' : 's'} matching &ldquo;${escapeHtml(bestAvailableSearch.trim())}&rdquo; across the canonical AHL pool (position filter ignored while searching).`
     : 'Top 25 currently available, undrafted players matching the selected position.'} Sorted by ${{ ADP: 'ADP (lowest first)', 'Forecasted Points': 'Forecasted Points (highest first)', DraftIQ: 'DraftIQ (highest first)', 'DraftIQ v3': 'DraftIQ v3 (highest first)' }[bestSort]}; forecast fields are NULL when Dobber has no projection.</p></div>
@@ -513,7 +515,7 @@ export function renderDraftAuctionDashboard({
       ${renderPlayerTable(rankedBestPlayers, availableKeySet, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>
   </section>`;
-  const budgetsPanel = `<section id="team-budgets-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'team-budgets' ? '' : 'hidden'}>
+  const budgetsPanel = `<section id="team-budgets-panel" class="dashboard-panel" role="tabpanel" aria-labelledby="team-budgets-tab" ${activeTab === 'team-budgets' ? '' : 'hidden'}>
     <div class="panel"><h2>Team Budgets</h2><p class="panel-subtitle">AHL Draft balances adjusted by local ownership changes (winning bids, manual assign/unassign); recomputed on every change.</p>${renderTeamBudgets(teamBudgets)}</div>
     ${workspaceHtml}
   </section>`;
@@ -522,13 +524,14 @@ export function renderDraftAuctionDashboard({
   positionFilter: personalDraftPositionFilter,
   categoryFilter: personalDraftCategoryFilter,
   availabilityFilter: personalDraftAvailabilityFilter,
+  activeTab,
   });
-  const toolsPanel = `<section id="tools-validation-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'tools-validation' ? '' : 'hidden'}>
+  const toolsPanel = `<section id="tools-validation-panel" class="dashboard-panel" role="tabpanel" aria-labelledby="tools-validation-tab" ${activeTab === 'tools-validation' ? '' : 'hidden'}>
     <div class="panel"><h2>Tools &amp; Validation</h2>
       <button type="button" class="secondary" data-export-draft-json>Export generated Draft Intelligence JSON</button>
       <button type="button" class="secondary" id="reset-local-edits">Reset Local Edits</button>
       <p class="panel-subtitle">Reset clears local draft overlays after a successful authoritative AHL refresh; locally imported Dobber data is retained.</p>
-      <div class="table-wrap"><table class="validation-table"><thead><tr><th>Source</th><th>Status</th></tr></thead><tbody>${sourceRows}</tbody></table></div>
+      <div class="table-wrap"><table class="validation-table"><thead><tr><th scope="col">Source</th><th scope="col">Status</th></tr></thead><tbody>${sourceRows}</tbody></table></div>
       <p class="warning-banner">Pricing remains UNPRICED when required source data, scarcity rules, or team budget inputs are absent. Historical statistics are not projections.</p>
     </div>
     ${toolsHtml}
@@ -539,6 +542,6 @@ export function renderDraftAuctionDashboard({
       ${tab('draft-board', 'Draft Board')}${tab('best-available', 'Best Available')}
       ${tab('team-budgets', 'Team Budgets')}${tab('personal-draft-list', 'Personal Draft List')}${tab('tools-validation', 'Tools & Validation')}
     </div>
-    ${panels[activeTab] || boardPanel}
+    ${Object.values(panels).join('')}
     ${renderModal(selectedPlayer, teamNames, teamBudgets, selectedTeam, fairPriceV2?.[normalizeLookupKey(selectedPlayer?.name)] || null)}`;
 }

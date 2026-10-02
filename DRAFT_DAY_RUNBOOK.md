@@ -10,6 +10,7 @@
 7. Confirm successful local imports show `loaded-local`, a parsed player count, and the last-import time. Invalid workbook/PDF warnings remain visible; remote failures stay `unavailable`. If the status says a saved Dobber Excel import "predates forecast Goals/Assists", click **Import Dobber Excel** again.
 8. Confirm the offline snapshot timestamp and install the dashboard from the browser or use **Install Dashboard**.
 9. Use your laptop for drafting. Use your phone only for quick lookup or emergency access.
+10. If using a keyboard, confirm tab navigation with Left/Right Arrow, Home, and End; open a player profile and verify Escape closes it and returns focus to that player.
 
 ## Best working setup
 - **Primary:** laptop

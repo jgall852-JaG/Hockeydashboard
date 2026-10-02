@@ -35,6 +35,11 @@ button, input {
   font: inherit;
 }
 
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
 .app-shell {
   max-width: 1400px;
   margin: 0 auto;
@@ -146,6 +151,15 @@ button {
   border-radius: 10px;
   cursor: pointer;
   transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 button:hover {
