@@ -450,8 +450,12 @@ export function buildOwnerViewData(rawState) {
   const veteransArrRaw = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
   const rosterArrRaw = Object.values(stateObj.datasets.roster?.players || {}).map((player) => decoratePlayer(player, 'roster'));
   const retainedGridPlayers = stateObj.datasets.roster?.sources?.['retained-grid']?.players;
+  const isAhlPoolPlayer = createAhlPoolNameMatcher(stateObj);
   const draftRosterArr = Object.values(retainedGridPlayers || stateObj.datasets.roster?.players || {})
-    .map((player) => decoratePlayer(player, 'roster'));
+    .map((player) => ({
+      ...decoratePlayer(player, 'roster'),
+      notInAhlPool: isAhlPoolPlayer ? !isAhlPoolPlayer(player.name) : false,
+    }));
 
   // Merge in local draft edits (manual assignments) and recorded winning bids
   // (workingAssignments) so Tools & Validation reflects drafted players
@@ -598,6 +602,29 @@ function decoratePlayer(player, sourceType) {
     ...player,
     sourceType,
     playerKey: buildPlayerKey(player, sourceType),
+  };
+}
+
+function createAhlPoolNameMatcher(stateObj) {
+  const entries = Object.entries(stateObj?.datasets?.ahlPool || {});
+  if (!hasCanonicalAhlPool(stateObj?.datasets?.ahlPool)) return null;
+
+  const exactNames = new Set();
+  const aliases = new Map();
+  entries.forEach(([key, player]) => {
+    const canonicalKey = normalizeLookupKey(player?.name || key);
+    exactNames.add(canonicalKey);
+    getRosterPlayerIdentityAliases(player?.name || key).forEach((alias) => {
+      const current = aliases.get(alias);
+      aliases.set(alias, current === undefined || current === canonicalKey ? canonicalKey : null);
+    });
+  });
+
+  return (name) => {
+    const normalizedName = normalizeLookupKey(name);
+    if (exactNames.has(normalizedName)) return true;
+    return getRosterPlayerIdentityAliases(name)
+      .some((alias) => alias !== normalizedName && aliases.get(alias));
   };
 }
 
@@ -2131,8 +2158,9 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
   const monies = providedMonies || buildTeamMonies(nextState, getOfficialPoolAliasOwners(nextState));
   const ownerDraftPlans = ownerData.owners.map((owner) => {
     const teamMonies = findTeamMonies(monies, owner.name);
-    if (!teamMonies?.hasSheetBaseline) return buildOwnerDraftPlan(owner);
-    return buildOwnerDraftPlan(owner, {
+    const plan = !teamMonies?.hasSheetBaseline
+      ? buildOwnerDraftPlan(owner)
+      : buildOwnerDraftPlan(owner, {
       totalSpent: teamMonies.totalSpent,
       remainingBudget: teamMonies.remainingBudget,
       playersDrafted: teamMonies.playersDrafted,
@@ -2144,7 +2172,20 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
       penalties: teamMonies.penalties,
       adjustments: teamMonies.adjustments,
     });
+    plan.unmatchedDraftPlayers = (owner.rosterPlayers || [])
+      .filter((player) => player.notInAhlPool)
+      .map((player) => ({
+        name: player.name,
+        position: getDraftSlotPosition(player),
+        cost: getPlayerRetainedCost(player),
+      }));
+    return plan;
   });
+  const unmatchedDraftGridPlayers = ownerData.owners.flatMap((owner) => (
+    (owner.rosterPlayers || [])
+      .filter((player) => player.notInAhlPool)
+      .map((player) => ({ name: player.name, owner: owner.name, position: getDraftSlotPosition(player) }))
+  ));
   const inventoryByKey = new Map();
   [
     ...Object.values(nextState.datasets.positions?.players || {}),
@@ -2321,6 +2362,15 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
 
   const validationRows = [
     {
+      key: 'draft-grid-pool-membership',
+      label: 'Draft Grid Pool Membership',
+      status: unmatchedDraftGridPlayers.length ? 'warning' : 'valid',
+      message: unmatchedDraftGridPlayers.length
+        ? `Not found in AHL Position/Utility: ${unmatchedDraftGridPlayers.map((player) => `${player.name} (${player.owner})`).join(', ')}`
+        : 'All Draft 2026 grid players are found in the canonical AHL pool',
+      count: unmatchedDraftGridPlayers.length,
+    },
+    {
       key: 'ownership-integrity',
       label: 'Ownership Integrity',
       status: ownershipMismatches.length ? 'error' : missingOwnershipIssues.length ? 'warning' : 'valid',
@@ -2442,6 +2492,7 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
       missingClassificationIssues,
       retentionIssues,
       availableIntegrityIssues,
+      unmatchedDraftGridPlayers,
     },
     availablePlayers,
     assignedPlayers,
@@ -2766,7 +2817,9 @@ function renderValidationStatusText(status) {
 function renderDraftValidationCenter(report) {
   const ownerPlanRows = (report.ownerDraftPlans || []).map((plan) => {
     let status = 'Ready';
-    if (plan.remainingBudget === null) {
+    if (plan.unmatchedDraftPlayers?.length) {
+      status = 'Not found in AHL pool';
+    } else if (plan.remainingBudget === null) {
       status = 'Budget unavailable';
     } else if (plan.budgetShortfall > 0 || plan.remainingBudget < 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams) {
       status = 'Shortfall';
@@ -2784,6 +2837,9 @@ function renderDraftValidationCenter(report) {
         <td>${plan.slotsNeeded}</td>
         <td>$${formatValue(plan.minimumRequired)}</td>
         <td>${plan.budgetShortfall > 0 ? `$${formatValue(plan.budgetShortfall)}` : '—'}</td>
+        <td>${plan.unmatchedDraftPlayers?.length
+    ? `<span class="validation-pill validation-warning">Not found</span> ${plan.unmatchedDraftPlayers.map((player) => escapeHtml(player.name)).join(', ')}`
+    : '—'}</td>
         <td>${escapeHtml(status)}</td>
       </tr>
     `;
@@ -2828,19 +2884,20 @@ function renderDraftValidationCenter(report) {
         <table class="validation-table">
           <thead>
             <tr>
-              <th>Owner</th>
-              <th>Spent</th>
-              <th>Remaining</th>
-              <th>Skaters</th>
-              <th>Goalie Teams</th>
-              <th>Open Slots</th>
-              <th>Min Needed</th>
-              <th>Shortfall</th>
-              <th>Status</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Spent</th>
+              <th scope="col">Remaining</th>
+              <th scope="col">Skaters</th>
+              <th scope="col">Goalie Teams</th>
+              <th scope="col">Open Slots</th>
+              <th scope="col">Min Needed</th>
+              <th scope="col">Shortfall</th>
+              <th scope="col">AHL Pool Match</th>
+              <th scope="col">Status</th>
             </tr>
           </thead>
           <tbody>
-            ${ownerPlanRows || '<tr><td colspan="9" class="empty-state">No owner roster data available.</td></tr>'}
+            ${ownerPlanRows || '<tr><td colspan="10" class="empty-state">No owner roster data available.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -3265,6 +3322,7 @@ function renderPlayerBadges(player, historicalBidsBundle) {
     const position = player.position || player.poolposition;
     if (position) badges.push(`Pool ${position}`);
     if (player.cost !== undefined && player.cost !== null) badges.push(`$${formatValue(player.cost)}`);
+    if (player.notInAhlPool) badges.push('Not found in AHL pool');
   } else if (player.sourceType) {
     badges.push(player.sourceType);
   }
@@ -3274,7 +3332,7 @@ function renderPlayerBadges(player, historicalBidsBundle) {
   badges.push(unified.experienceTier);
   if (unified.avgCost !== 'NA') badges.push(`Avg $${formatValue(unified.avgCost)}`);
 
-  return badges.map((badge) => `<span class="player-chip">${escapeHtml(badge)}</span>`).join('');
+  return badges.map((badge) => `<span class="player-chip ${badge === 'Not found in AHL pool' ? 'warning-chip' : ''}">${escapeHtml(badge)}</span>`).join('');
 }
 
 function renderPlayerList(players, filter, historicalBidsBundle) {
@@ -3608,6 +3666,7 @@ function renderOwnerList(ownerData, report) {
         <div class="owner-badges">
           <span class="owner-badge">Pros ${owner.prospects.length}</span>
           <span class="owner-badge">Vet ${owner.veterans.length}</span>
+          <span class="owner-badge">Draft ${owner.rosterPlayers.length}</span>
           <span class="owner-badge">Farm ${owner.farmPlayers.length}</span>
           <span class="owner-badge">MR ${owner.matchingRights.length}</span>
           <span class="owner-badge">WS ${localAssignedCount}</span>

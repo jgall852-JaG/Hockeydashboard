@@ -105,6 +105,76 @@ describe('draft validation report', () => {
       });
   });
 
+  test('shows draft-grid players missing from the canonical AHL pool with a warning', () => {
+    const gridPlayer = {
+      name: 'Crack and hookers',
+      owner: 'YEASTIE BEASTIES',
+      position: 'C/L',
+      cost: 200,
+      source: 'retained-grid',
+    };
+    const state = {
+      version: 2,
+      datasets: {
+        ahlPool: {
+          'known player': { name: 'Known Player', positions: ['C'], flags: {} },
+        },
+        roster: {
+          players: { 'crack-and-hookers': gridPlayer },
+          sources: {
+            'retained-grid': {
+              layout: 'retained-grid',
+              players: { 'crack-and-hookers': gridPlayer },
+              teamBudgets: [{
+                team: 'YEASTIE BEASTIES',
+                totalSpent: 200,
+                remainingBudget: 50,
+                playersDrafted: 1,
+                openSlots: 24,
+              }],
+            },
+          },
+          teamBudgets: [{
+            team: 'YEASTIE BEASTIES',
+            totalSpent: 200,
+            remainingBudget: 50,
+            playersDrafted: 1,
+            openSlots: 24,
+          }],
+        },
+        prospects: { prospects: {} },
+        veterans: { veterans: {} },
+      },
+      metadata: {},
+      workingAssignments: {},
+    };
+
+    const owner = buildOwnerViewData(state).owners.find((entry) => entry.name === 'YEASTIE BEASTIES');
+    const report = buildDraftValidationReport(state);
+
+    expect(owner.rosterPlayers).toEqual([
+      expect.objectContaining({ name: 'Crack and hookers', notInAhlPool: true }),
+    ]);
+    expect(report.details.unmatchedDraftGridPlayers).toEqual([
+      expect.objectContaining({
+        name: 'Crack and hookers',
+        owner: 'YEASTIE BEASTIES',
+        position: 'C/L',
+      }),
+    ]);
+    expect(report.validationRows).toContainEqual(expect.objectContaining({
+      key: 'draft-grid-pool-membership',
+      status: 'warning',
+      message: 'Not found in AHL Position/Utility: Crack and hookers (YEASTIE BEASTIES)',
+    }));
+    expect(report.ownerDraftPlans[0]).toMatchObject({
+      owner: 'YEASTIE BEASTIES',
+      retainedSpend: 200,
+      skaters: 1,
+      unmatchedDraftPlayers: [{ name: 'Crack and hookers', position: 'C/L', cost: 200 }],
+    });
+  });
+
   test('accepts only valid $0.50 working assignment bid increments', () => {
     const draft = { playerKey: 'one', name: 'Player One', team: 'TEAM A', bid: '1.50' };
     expect(createWorkingAssignmentDraft(draft)?.bid).toBe(1.5);

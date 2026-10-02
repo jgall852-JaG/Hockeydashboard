@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import {
   getLiveCacheStatus,
   getDataQualitySources,
+  buildOwnerViewData,
+  buildDraftValidationReport,
   isRetentionListLoaded,
   persistState,
   parsePortableStateBundle,
@@ -420,6 +422,43 @@ describe('google sheet refresh integration', () => {
     });
     expect(next.localEdits.lastUpdated).toEqual(expect.any(Number));
     expect(next.metadata.localDraftEdits).toEqual(next.localEdits);
+  });
+
+  test('refreshes owner roster snapshots and flags new draft-grid names outside the AHL pool', async () => {
+    const responses = buildMockSheetResponses();
+    const updatedDraftGrid = [
+      'YEASTIE BEASTIES,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Crack and hookers,C/L,$200.00,1,Matthew Knies,LW,$3.00',
+      ',TOTAL SPENT,,$200.00,,TOTAL SPENT,,$3.00',
+      ',BALANCE,,$50.00,,BALANCE,,$247.00',
+    ].join('\n');
+    responses[2] = updatedDraftGrid;
+    responses[3] = updatedDraftGrid;
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      text: async () => responses.shift(),
+    }));
+
+    const refreshed = await refreshGoogleSheetState(EMPTY_SAVED_STATE, fetchMock);
+    const ownerData = buildOwnerViewData(refreshed);
+    const owner = ownerData.owners.find((entry) => entry.name === 'YEASTIE BEASTIES');
+    const report = buildDraftValidationReport(refreshed);
+
+    expect(owner.rosterPlayers).toEqual([
+      expect.objectContaining({
+        name: 'Crack and hookers',
+        owner: 'YEASTIE BEASTIES',
+        position: 'C/L',
+        cost: 200,
+        notInAhlPool: true,
+      }),
+    ]);
+    expect(report.ownerDraftPlans.find((plan) => plan.owner === 'YEASTIE BEASTIES')).toMatchObject({
+      retainedSpend: 200,
+      skaters: 1,
+      unmatchedDraftPlayers: [{ name: 'Crack and hookers', position: 'C/L', cost: 200 }],
+    });
   });
 });
 
