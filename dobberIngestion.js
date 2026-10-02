@@ -238,6 +238,7 @@ export function normalizeDobberRows(rows) {
       nhlPos: String(readField(row, 'POS') || '').trim().toUpperCase() || null,
       salary: parseOptionalNumber(readField(row, 'Salary')),
       aav: parseOptionalNumber(readField(row, 'AAV')),
+      age: parseOptionalNumber(readField(row, 'Age')),
       bps,
       kvs,
       pps,
@@ -837,12 +838,18 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
       player.dobberRookie = null;
       player.pricingMethod = 'unavailable';
       player.prospectMetadata = null;
+      player.age = null;
+      player.dobberUpside = null;
+      player.threeYearPoints = null;
       return applyForecastedStats(player, null);
     }
 
     player.nhlPosition = dobber.nhlPos;
     player.salary = dobber.salary;
     player.aav = dobber.aav;
+    player.age = Number.isFinite(dobber.age) ? dobber.age : null;
+    player.dobberUpside = Number.isFinite(dobber.upside) ? dobber.upside : null;
+    player.threeYearPoints = Number.isFinite(dobber.threeYearPoints) ? dobber.threeYearPoints : null;
     player.dobberProjections = dobber.projections;
     player.dobberRiskFlags = dobber.riskFlags;
     player.dobberRole = dobber.role ?? null;

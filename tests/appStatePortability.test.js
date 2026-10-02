@@ -536,7 +536,7 @@ describe('Dobber source status', () => {
     globalThis.XLSX = {
       read: () => ({ Sheets: { 'EVERYTHING (Skaters)': {} } }),
       utils: {
-        sheet_to_json: () => [{ Player: 'Connor McDavid', Team: 'EDM', POS: 'C', Points: 131, Goals: 36, Assists: 95, Games: 77, SOG: 277 }],
+        sheet_to_json: () => [{ Player: 'Connor McDavid', Team: 'EDM', POS: 'C', Age: 29.4, Points: 131, Goals: 36, Assists: 95, Games: 77, SOG: 277 }],
       },
     };
     try {
@@ -548,12 +548,25 @@ describe('Dobber source status', () => {
       expect(next.state.metadata.dobberExcel).toMatchObject({ status: 'loaded-local', sourceType: 'bundled' });
       expect(next.state.metadata.dobberExcel.warning).toMatch(/predates forecast Goals\/Assists/);
       expect(next.message).toMatch(/predates forecast Goals\/Assists/);
-      expect(next.state.datasets.dobber.excelSchemaVersion).toBe(2);
+      expect(next.state.datasets.dobber.excelSchemaVersion).toBe(3);
       expect(next.state.datasets.dobber.players['connor mcdavid'].forecastProjections)
         .toMatchObject({ ProjG: 36, ProjA: 95 });
+      expect(next.state.datasets.dobber.players['connor mcdavid'].age).toBe(29.4);
     } finally {
       globalThis.XLSX = previousXlsx;
     }
+  });
+
+  test('treats a v2 import with Goals/Assists but no Age as stale', async () => {
+    const fetchMock = jest.fn(async () => ({ ok: false, status: 404 }));
+    const state = staleLocalDobberState({ excelSchemaVersion: 2 });
+    Object.assign(state.datasets.dobber.players['connor mcdavid'].forecastProjections, { ProjG: '36', ProjA: '95' });
+    const next = await refreshDobberState(state, fetchMock);
+    expect(next.state.metadata.dobberExcel.warning).toMatch(/predates forecast Goals\/Assists and Age/);
+
+    state.datasets.dobber.players['connor mcdavid'].age = 29.4;
+    const withAge = await refreshDobberState(state, fetchMock);
+    expect(withAge.state.metadata.dobberExcel.warning).toBe('');
   });
 
   test('keeps a stale local Excel import when the bundled workbook is unavailable, and asks for a re-import', async () => {
@@ -568,10 +581,10 @@ describe('Dobber source status', () => {
 
   test('trusts a current-schema local Excel import even when its workbook lacks Goals/Assists columns', async () => {
     const fetchMock = jest.fn(async () => ({ ok: false, status: 404 }));
-    const next = await refreshDobberState(staleLocalDobberState({ excelSchemaVersion: 2 }), fetchMock);
+    const next = await refreshDobberState(staleLocalDobberState({ excelSchemaVersion: 3 }), fetchMock);
 
     expect(next.state.metadata.dobberExcel).toMatchObject({ sourceType: 'local', warning: '' });
-    expect(next.state.datasets.dobber.excelSchemaVersion).toBe(2);
+    expect(next.state.datasets.dobber.excelSchemaVersion).toBe(3);
   });
 });
 
