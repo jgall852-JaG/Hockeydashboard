@@ -1,7 +1,7 @@
 import { parseProspects } from './prospectParser.js';
 import { parseVeterans } from './veteranParser.js';
 import { parseAhlBudgetSheet, parseRoster } from './rosterParser.js';
-import { getExperienceTierFromGames, renderDraftAuctionDashboard } from './draftAuctionUI.js';
+import { getExperienceTierFromGames, renderDealRatingContent, renderDraftAuctionDashboard } from './draftAuctionUI.js';
 import {
   AHL_SHEET_SOURCES,
   applyAhlEligibility,
@@ -4304,6 +4304,12 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   document.querySelector('[data-winning-bid-form] select[name="team"]')?.addEventListener('change', (event) => {
     state.selectedDraftTeam = event.target.value || '';
     rerender();
+  });
+  document.querySelector('[data-winning-bid-form] [data-deal-bid]')?.addEventListener('input', (event) => {
+    const output = event.target.form?.querySelector('[data-deal-rating]');
+    if (!output) return;
+    const fairPrice = output.dataset.fairPrice === '' ? null : Number(output.dataset.fairPrice);
+    output.innerHTML = renderDealRatingContent(event.target.value, fairPrice);
   });
   document.querySelectorAll('[data-close-player-details]').forEach((element) => {
     element.addEventListener('click', (event) => {

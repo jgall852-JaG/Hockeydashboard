@@ -322,6 +322,23 @@ button.secondary {
   border-top: 1px solid var(--line-soft);
 }
 
+.deal-rating {
+  align-self: end;
+  font-size: 0.9rem;
+}
+
+.deal-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  color: #0b1220;
+}
+
+.deal-green { background: #4ade80; }
+.deal-yellow { background: #facc15; }
+.deal-red { background: #f87171; }
+
 .draft-workspace-panel {
   border-color: rgba(103, 183, 255, 0.3);
 }
