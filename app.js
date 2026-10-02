@@ -23,6 +23,7 @@ import {
 } from './personalDraftList.js';
 import { loadAhlSnapshot, saveAhlSnapshot } from './offlineSnapshotStore.js';
 import { computeDraftIQ } from './draftIqV2.js';
+import { computeDraftIQv3 } from './draftIqV3.js';
 import {
   applyLocalDraftEdits,
   createEmptyLocalEdits,
@@ -844,18 +845,21 @@ function hasLocalDobberImport(metadata, sourceName, records) {
 }
 
 // Bump when the normalized Dobber player shape gains fields that stored local
-// imports cannot back-fill (v2 = forecast Goals/Assists via ProjG/ProjA).
-const DOBBER_EXCEL_SCHEMA_VERSION = 2;
+// imports cannot back-fill (v2 = forecast Goals/Assists via ProjG/ProjA, v3 = Age).
+const DOBBER_EXCEL_SCHEMA_VERSION = 3;
 
-// A local import saved before ProjG/ProjA were captured carries forecast
-// points but no goals/assists, which would leave those columns NULL forever.
+// A local import saved by an older build carries forecast points but lacks later fields
+// (Goals/Assists, Age), which would leave them NULL forever.
 function isStaleLocalDobberImport(dobber, players) {
   if (Number(dobber?.excelSchemaVersion) >= DOBBER_EXCEL_SCHEMA_VERSION) return false;
-  const projections = Object.values(players || {})
-    .map((player) => player?.forecastProjections)
+  const storedPlayers = Object.values(players || {}).filter((player) => player && typeof player === 'object');
+  const projections = storedPlayers
+    .map((player) => player.forecastProjections)
     .filter((entry) => entry && typeof entry === 'object');
   if (!projections.some((entry) => entry.ProjPts !== undefined)) return false;
-  return !projections.some((entry) => entry.ProjG !== undefined || entry.ProjA !== undefined);
+  const lacksGoalsAssists = !projections.some((entry) => entry.ProjG !== undefined || entry.ProjA !== undefined);
+  const lacksAge = !storedPlayers.some((player) => Object.hasOwn(player, 'age'));
+  return lacksGoalsAssists || lacksAge;
 }
 
 async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
@@ -900,12 +904,12 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
   let excelWarning = '';
   if (staleLocalExcel) {
     if (hasBundledExcel) {
-      excelWarning = 'Saved Dobber Excel import predates forecast Goals/Assists; using the bundled workbook. Re-import Dobber Excel to use your own file.';
+      excelWarning = 'Saved Dobber Excel import predates forecast Goals/Assists and Age; using the bundled workbook. Re-import Dobber Excel to use your own file.';
     } else {
       // Without a bundled fallback, the stale import is still better than nothing.
       players = stalePlayers;
       hasLocalExcel = true;
-      excelWarning = 'Saved Dobber Excel import predates forecast Goals/Assists; re-import Dobber Excel to fill them.';
+      excelWarning = 'Saved Dobber Excel import predates forecast Goals/Assists and Age; re-import Dobber Excel to fill them.';
     }
   }
   const excelLoaded = hasLocalExcel || hasBundledExcel;
@@ -1518,27 +1522,44 @@ function rebuildDraftValidationReport(stateObj, monies = null) {
   return buildDraftValidationReport(stateObj, { monies });
 }
 
-// Single rebuild pipeline: canonical pool -> availability -> ownership -> Monies -> validation report -> DraftIQ v2.
+// Single rebuild pipeline: canonical pool -> availability -> ownership -> Monies -> validation report
+// -> DraftIQ v2 -> DraftIQ v3 (always last).
 function rebuildDraftState(stateObj) {
   const { ownership, availableKeys, monies } = rebuildCanonicalAhlPoolState(stateObj);
   const report = rebuildDraftValidationReport(stateObj, monies);
   const draftIQ = rebuildDraftIQ(stateObj, { ownership, availableKeys, monies });
-  return { ownership, availableKeys, monies, report, draftIQ };
+  const draftIQv3 = rebuildDraftIQv3(stateObj, { ownership, availableKeys, monies });
+  return { ownership, availableKeys, monies, report, draftIQ, draftIQv3 };
+}
+
+function getDraftIqTeamContext(monies) {
+  const team = state.bestAvailableNeedsTeam || '';
+  const teamMonies = (monies?.teams || []).find((entry) => normalizeLookupKey(entry.team) === normalizeLookupKey(team));
+  return { team, openSlots: Number.isInteger(teamMonies?.openSlots) ? teamMonies.openSlots : null };
 }
 
 function rebuildDraftIQ(stateObj, { ownership, availableKeys, monies }) {
-  const team = state.bestAvailableNeedsTeam || '';
-  const teamMonies = (monies?.teams || []).find((entry) => normalizeLookupKey(entry.team) === normalizeLookupKey(team));
   const draftIQ = computeDraftIQ({
     ahlPool: stateObj?.datasets?.ahlPool,
     availableKeys,
     players: state.draftIntelligence?.players?.players || [],
     ownersByPlayerKey: ownership?.ownersByPlayerKey,
-    team,
-    openSlots: Number.isInteger(teamMonies?.openSlots) ? teamMonies.openSlots : null,
+    ...getDraftIqTeamContext(monies),
   });
   if (stateObj?.datasets) stateObj.datasets.draftIQ = draftIQ;
   return draftIQ;
+}
+
+function rebuildDraftIQv3(stateObj, { ownership, availableKeys, monies }) {
+  const draftIQv3 = computeDraftIQv3({
+    ahlPool: stateObj?.datasets?.ahlPool,
+    availableKeys,
+    players: state.draftIntelligence?.players?.players || [],
+    ownersByPlayerKey: ownership?.ownersByPlayerKey,
+    ...getDraftIqTeamContext(monies),
+  });
+  if (stateObj?.datasets) stateObj.datasets.draftIQv3 = draftIQv3;
+  return draftIQv3;
 }
 
 function hasGoogleSheetSnapshot(stateObj) {
@@ -4098,6 +4119,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     draftedPlayers,
     ahlPool: unifiedState.datasets.ahlPool || {},
     draftIQ: unifiedState.datasets.draftIQ || {},
+    draftIQv3: unifiedState.datasets.draftIQv3 || {},
     availableKeys,
     shortlist: state.shortlist,
     personalDraftList: state.personalDraftList,

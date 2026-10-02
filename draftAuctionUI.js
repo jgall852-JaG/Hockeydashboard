@@ -67,6 +67,7 @@ function renderPlayerRows(players, availableKeys, personalDraftList, {
         <td>${forecastValue(player.forecastedAssists)}</td>
         <td>${forecastValue(player.forecastedPoints)}</td>
         <td>${forecastValue(player.draftIQv2)}</td>
+        <td>${forecastValue(player.draftIQv3)}</td>
       </tr>`;
     }
     return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
@@ -85,7 +86,7 @@ function renderPlayerRows(players, availableKeys, personalDraftList, {
 function renderPlayerTable(players, availableKeys, personalDraftList, options = {}) {
   const normalizedOptions = { kind: 'board', ...options };
   const headers = normalizedOptions.kind === 'best-available'
-    ? ['Player', 'Final Position', 'Forecasted Goals', 'Forecasted Assists', 'Forecasted Points', 'DraftIQ']
+    ? ['Player', 'Final Position', 'Forecasted Goals', 'Forecasted Assists', 'Forecasted Points', 'DraftIQ', 'DraftIQ v3']
     : ['Player', 'Final Position', 'Experience Tier', 'Owner', 'Auction Value', 'Remove Locally'];
   return `<div class="table-wrap"><table class="validation-table">
     <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
@@ -333,6 +334,7 @@ export function renderDraftAuctionDashboard({
   draftedPlayers = [],
   ahlPool = {},
   draftIQ = {},
+  draftIQv3 = {},
   availableKeys,
   personalDraftList = [],
   personalDraftListSort = 'rank',
@@ -396,9 +398,10 @@ export function renderDraftAuctionDashboard({
       forecastedPoints: finiteOrNull(player?.forecast?.projectedPoints, player?.forecastedPoints),
       adp: finiteOrNull(player?.adp, player?.forecast?.adp),
       draftIQv2: finiteOrNull(draftIQ?.[playerKey]?.draftIQ),
+      draftIQv3: finiteOrNull(draftIQv3?.[playerKey]?.draftIQ),
     }];
   });
-  const bestSortOptions = ['ADP', 'Forecasted Points', 'DraftIQ'];
+  const bestSortOptions = ['ADP', 'Forecasted Points', 'DraftIQ', 'DraftIQ v3'];
   // No bundled source supplies ADP today; sorting by an all-NULL column would silently fall
   // through to the points tie-breaker while still claiming "ADP", so it is disabled instead.
   const hasAdpData = bestPlayers.some((player) => player.adp !== null);
@@ -413,6 +416,7 @@ export function renderDraftAuctionDashboard({
   const primaryCompare = {
     ADP: (left, right) => compareNullable(left.adp, right.adp, 1),
     DraftIQ: (left, right) => compareNullable(left.draftIQv2, right.draftIQv2, -1),
+    'DraftIQ v3': (left, right) => compareNullable(left.draftIQv3, right.draftIQv3, -1),
     'Forecasted Points': () => 0,
   }[bestSort];
   // Tie-breakers: forecasted points -> goals -> assists -> ADP; NULLs always sort last.
@@ -445,6 +449,7 @@ export function renderDraftAuctionDashboard({
       ['SHPPG', 'Second-Half Points per Game'],
       ['ProjPts', 'Projected Points'],
       ['DraftIQ', 'Best Available ranking score: Forecasted Points + positional scarcity + (pedigree - risk) + team needs + shots per game'],
+      ['DraftIQ v3', 'Extended ranking score: DraftIQ inputs plus upside, AHL splits consistency, projection confidence, and contract value (points per auction $), minus an age-regression penalty'],
       ['KVS', 'Keeper Value Score'],
       ['BPS', 'Breakout Probability Score'],
       ['RSS', 'Risk Stability Score'],
@@ -469,7 +474,7 @@ export function renderDraftAuctionDashboard({
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
     <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">${bestSearchKey
     ? `${rankedBestPlayers.length} currently available player${rankedBestPlayers.length === 1 ? '' : 's'} matching &ldquo;${escapeHtml(bestAvailableSearch.trim())}&rdquo; across the canonical AHL pool (position filter ignored while searching).`
-    : 'Top 25 currently available, undrafted players matching the selected position.'} Sorted by ${{ ADP: 'ADP (lowest first)', 'Forecasted Points': 'Forecasted Points (highest first)', DraftIQ: 'DraftIQ (highest first)' }[bestSort]}; forecast fields are NULL when Dobber has no projection.</p></div>
+    : 'Top 25 currently available, undrafted players matching the selected position.'} Sorted by ${{ ADP: 'ADP (lowest first)', 'Forecasted Points': 'Forecasted Points (highest first)', DraftIQ: 'DraftIQ (highest first)', 'DraftIQ v3': 'DraftIQ v3 (highest first)' }[bestSort]}; forecast fields are NULL when Dobber has no projection.</p></div>
       <div class="best-available-toolbar"><label>Search <input id="bestAvailableSearch" type="search" value="${escapeHtml(bestAvailableSearch)}" placeholder="Player name" /></label><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${bestSortOptions.map((key) => (key === 'ADP' && !hasAdpData
     ? '<option value="ADP" disabled>ADP (no data)</option>'
     : `<option ${selected(key, bestSort)}>${key}</option>`)).join('')}</select></label><label>Team needs <select id="bestAvailableNeedsTeam"><option value="">None</option>${(teamNames || []).map((team) => `<option value="${escapeHtml(team)}" ${selected(team, bestAvailableNeedsTeam)}>${escapeHtml(team)}</option>`).join('')}</select></label>${legend}</div></div>

@@ -31,6 +31,9 @@ describe('Dobber ingestion', () => {
       POS: 'c',
       Salary: '$7,500,000',
       AAV: '6.25',
+      Age: '27.5',
+      Upside: '95',
+      '3YP': '82',
       BPS: '0.72',
       KVS: '68',
       Projections: '{"PPS":80,"RSS":70,"RRS":20}',
@@ -43,6 +46,9 @@ describe('Dobber ingestion', () => {
       nhlPos: 'C',
       salary: 7500000,
       aav: 6.25,
+      age: 27.5,
+      upside: 95,
+      threeYearPoints: 82,
       bps: 72,
       kvs: 68,
       pps: 80,
@@ -616,6 +622,7 @@ describe('Dobber ingestion', () => {
           players: normalizeDobberRows([{
             Player: 'Text Projection',
             POS: 'C',
+            Age: '31',
             BPS: 70,
             KVS: 60,
             Projections: 'Projected for a strong season',
@@ -658,6 +665,10 @@ describe('Dobber ingestion', () => {
       classification: 'UNPRICED',
       sourcesUsed: { DobberExcel: true, DobberPDFs: false },
     });
+    // DraftIQ v3 inputs carried from the Dobber Excel row.
+    expect(textOnly).toMatchObject({ age: 31, dobberUpside: null, threeYearPoints: null });
+    expect(missingMetrics).toMatchObject({ age: null, dobberUpside: null, threeYearPoints: null });
+    expect(unmatched).toMatchObject({ age: null, dobberUpside: null, threeYearPoints: null });
     expect(textOnly.missingSourceList).toEqual(expect.arrayContaining([
       'Dobber projection PPS',
       'Dobber projection RSS',
