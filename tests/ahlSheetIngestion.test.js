@@ -81,6 +81,26 @@ describe('AHL sheet ingestion', () => {
     expect([...afterAssignmentRemoved].sort()).toEqual(['assigned player', 'available player', 'local assigned player']);
   });
 
+  test('adds Utility-only players to the canonical pool with their Utility positions', () => {
+    const pool = buildCanonicalAhlPool(
+      [{ name: 'Position Only', position: 'D', nhlteam: 'MTL' }],
+      [
+        { name: 'Nazem Kadri', position: 'U', poolposition: 'C/R', nhlteam: 'COL' },
+        { name: 'No Positions', position: 'U', poolposition: '', nhlteam: 'XXX' },
+      ],
+    );
+    expect(pool.get('nazem kadri')).toMatchObject({
+      name: 'Nazem Kadri',
+      team: 'COL',
+      positions: new Set(['C', 'RW']),
+      flags: { fromPositionSheet: false, fromUtilitySheet: true, primaryPosition: null, utilityPosition: 'C/R' },
+    });
+    expect(pool.get('position only').positions).toEqual(new Set(['D']));
+    expect(pool.has('no positions')).toBe(false);
+    const state = { datasets: { ahlPool: serializeCanonicalAhlPool(pool) } };
+    expect([...buildAvailableAhlPoolKeys(state)].sort()).toEqual(['nazem kadri', 'position only']);
+  });
+
   test('excludes locally removed players from canonical availability', () => {
     const pool = buildCanonicalAhlPool([
       { name: 'Kept Player', position: 'C', nhlteam: 'AAA' },

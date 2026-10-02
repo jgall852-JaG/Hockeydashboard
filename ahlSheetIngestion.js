@@ -153,17 +153,36 @@ export function buildCanonicalAhlPool(positionRows, utilityRows = []) {
   });
 
   (utilityRows || []).forEach((record) => {
-    const playerKey = normalizeLookupKey(record?.name);
-    const existing = pool.get(playerKey);
-    if (!existing) return;
+    const name = String(record?.name || '').trim();
+    const playerKey = normalizeLookupKey(name);
+    if (!playerKey) return;
     const utilityPositions = parsePoolPositions(record?.poolposition || record?.eligibility || record?.utilityPosition);
+    // Utility-only players (e.g. Nazem Kadri C/R) are part of the canonical pool even when the
+    // AHL Position sheet does not list them; their positions come entirely from Utility.
+    const existing = pool.get(playerKey) || {
+      playerKey,
+      name,
+      team: String(record?.nhlteam || record?.team || '').trim(),
+      positions: new Set(),
+      rights: false,
+      flags: {
+        fromPositionSheet: false,
+        fromUtilitySheet: false,
+        primaryPosition: null,
+        utilityPositions: [],
+        utilityPosition: null,
+      },
+    };
+    if (!existing.flags.fromPositionSheet && !utilityPositions.length) return;
     utilityPositions.forEach((position) => existing.positions.add(position));
+    existing.team = existing.team || String(record?.nhlteam || record?.team || '').trim();
     existing.flags.utilityPositions = [...new Set([...existing.flags.utilityPositions, ...utilityPositions])];
     existing.flags.utilityPosition = existing.flags.utilityPosition
       || String(record?.poolposition || record?.eligibility || record?.utilityPosition || '').trim()
       || null;
     existing.flags.fromUtilitySheet = true;
     existing.rights ||= hasRightsFlag(record);
+    pool.set(playerKey, existing);
   });
 
   return pool;
@@ -606,8 +625,8 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, poolOwnershi
   stateObj.datasets.ahlPool = serializeCanonicalAhlPool(canonicalPool);
   stateObj.datasets.availableKeys = [...availableKeys];
 
-  const positionByAlias = buildAliasRecordMap(positionRecords);
-  const positionByKey = new Map(positionRecords.map((record) => [normalizeLookupKey(record.name), record]));
+  const positionByAlias = buildAliasRecordMap([...positionRecords, ...utilityRecords]);
+  const positionByKey = new Map([...utilityRecords, ...positionRecords].map((record) => [normalizeLookupKey(record.name), record]));
   const rosterByName = new Map(Object.values(roster?.players || {}).map((record) => [normalizeLookupKey(record.name), record]));
   const officialPoolRecords = [
     ...getSourceRecords(roster, 'retained-grid'),
