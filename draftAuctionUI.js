@@ -222,11 +222,16 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
     return found?.[1] ?? null;
   };
   const isMissingMetric = (value) => value === null || value === undefined
-    || (typeof value === 'string' && (!value.trim() || value.trim().toLowerCase() === 'null'));
-  const metricMarkup = (rows, { hideMissing = false, alwaysShow = [] } = {}) => rows
-    .filter(([label, value]) => !hideMissing || !isMissingMetric(value) || alwaysShow.includes(label))
-    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value ?? 'NULL')}</dd></div>`)
+    || (typeof value === 'string' && (!value.trim() || value.trim().toLowerCase() === 'null'))
+    || (Array.isArray(value) && !value.some((entry) => !isMissingMetric(entry)));
+  const metricMarkup = (rows, { alwaysShow = [] } = {}) => rows
+    .filter(([label, value]) => !isMissingMetric(value) || alwaysShow.includes(label))
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${isMissingMetric(value) ? '' : escapeHtml(value)}</dd></div>`)
     .join('');
+  const textList = (value) => (Array.isArray(value) ? value : [value])
+    .filter((entry) => !isMissingMetric(entry))
+    .map(escapeHtml)
+    .join(', ');
   const scoreValue = (value) => Number.isFinite(value) ? value.toFixed(2) : value;
   const projectionRows = Object.entries(projections).map(([label, value]) => [label, value]);
   const forecastRows = [
@@ -251,16 +256,6 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
   const scoreRows = [
     ['Composite Score', player.forecast?.compositeScore ?? player.compositeForecastScore],
     ['Forecasted Points', player.forecastedPoints ?? player.forecast?.projectedPoints],
-    ['ADP', player.adp ?? player.forecast?.adp],
-  ];
-  const riskRows = [
-    ['Risk Score', player.riskScore],
-    ['Pedigree Score', player.pedigreeScore],
-    ['Pedigree', player.intelEdge?.pedigree],
-    ['Projection Confidence', player.intelEdge?.projectionConfidence],
-    ['Sleeper Tag', player.intelEdge?.sleeperTag],
-    ['Bust Tag', player.intelEdge?.bustTag],
-    ['Pricing Method', player.pricingMethod],
   ];
   const prospect = player.prospectMetadata || null;
   const prospectRows = prospect ? [
@@ -284,7 +279,16 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
     <section class="draft-modal panel" role="dialog" aria-modal="true" aria-labelledby="draftModalTitle" tabindex="-1">
       <button type="button" class="modal-close secondary" aria-label="Close player profile" data-close-player-details>Close</button>
       <h2 id="draftModalTitle">${escapeHtml(player.name)}</h2>
-      <p>Final Position ${escapeHtml(player.finalPosition || player.finalPositionOverride || 'NULL')} | AHL Position ${escapeHtml(player.ahlPosition || 'NULL')} | Utility ${escapeHtml(player.utilityPosition || 'NULL')} | Experience Tier ${escapeHtml(player.draftOwner ? getExperienceTierFromGames(player.nhlCareerGamesPlayed) : player.experienceTier || player.category || 'NULL')}</p>
+      <p>${[
+    ['Final Position', player.finalPosition || player.finalPositionOverride],
+    ['AHL Position', player.ahlPosition],
+    ['Utility', player.utilityPosition],
+    ['Experience Tier', player.draftOwner
+      ? getExperienceTierFromGames(player.nhlCareerGamesPlayed)
+      : player.experienceTier || player.category],
+  ].filter(([, value]) => !isMissingMetric(value))
+    .map(([label, value]) => `${label} ${escapeHtml(value)}`)
+    .join(' | ')}</p>
       ${player.valuationStatus !== 'priced' ? '<p class="warning-banner">Estimated value UNPRICED - required source-backed inputs are missing. A paid Draft 2026 price or local winning bid, when present, is shown separately.</p>' : ''}
       <form class="local-player-assignment-form" data-local-assignment-form="${escapeHtml(player.id)}">
         <label>Local owner
@@ -306,7 +310,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['PP Unit', player.ppUnit ?? projectionValue('PP Unit', 'PPUnit', 'PP')],
           ['TOI', projectionValue('TOI', 'Time on Ice')],
           ['PPTOI', projectionValue('PPTOI', 'PP TOI', 'Power Play Time on Ice')],
-        ], { hideMissing: true })}</dl></article>
+        ])}</dl></article>
         <article class="detail-card"><h3>Forecasted Stats (Dobber Projections)</h3><dl class="kv-list">${metricMarkup(forecastRows)}</dl></article>
         <article class="detail-card"><h3>Historical Splits (AHL Scores)</h3><dl class="kv-list">${metricMarkup([
           ['FHPPG', player.forecast?.FHPPG ?? player.historicalSplits?.FHPPG],
@@ -314,13 +318,12 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['Source tab', player.historicalSplits?.sourceTab],
         ])}</dl></article>
         <article class="detail-card"><h3>Composite Forecast Score</h3><dl class="kv-list">${metricMarkup(scoreRows, {
-          hideMissing: true,
           alwaysShow: ['Composite Score', 'Forecasted Points'],
         })}</dl></article>
-        <article class="detail-card"><h3>Risk &amp; Pedigree (Dobber PDF Intel)</h3><dl class="kv-list">${metricMarkup(riskRows, { hideMissing: true })}
-          <p><strong>Strengths:</strong> ${(player.strengths || []).map(escapeHtml).join(', ') || 'NULL'}</p>
-          ${(player.risks || []).some((risk) => !isMissingMetric(risk))
-    ? `<p><strong>Risks:</strong> ${player.risks.filter((risk) => !isMissingMetric(risk)).map(escapeHtml).join(', ')}</p>`
+        <article class="detail-card"><h3>Risk &amp; Pedigree (Dobber PDF Intel)</h3>
+          <p><strong>Strengths:</strong>${textList(player.strengths) ? ` ${textList(player.strengths)}` : ''}</p>
+          ${textList(player.risks)
+    ? `<p><strong>Risks:</strong> ${textList(player.risks)}</p>`
     : ''}
         </article>
         ${prospect ? `<article class="detail-card"><h3>Prospect Intelligence (Dobber Report)</h3><dl class="kv-list">${metricMarkup(prospectRows)}</dl>
@@ -329,10 +332,9 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
         <article class="detail-card"><h3>Keeper / Contract</h3><dl class="kv-list">${metricMarkup([
           ['KVS', player.keeper?.KVS],
           ['Salary', player.salary],
-          ['AAV', player.aav],
-        ], { hideMissing: true, alwaysShow: ['KVS', 'Salary'] })}</dl></article>
+        ], { alwaysShow: ['KVS', 'Salary'] })}</dl></article>
         <article class="detail-card"><h3>Availability</h3><dl class="kv-list">${metricMarkup([
-          ['Owner', player.ownership || 'NULL'],
+          ['Owner', player.ownership],
           ['Availability', availability],
           ['Removed-local', player.localStatus === 'removed-local'],
           ['Not-in-ahl', player.status === 'not-in-ahl'],
@@ -350,8 +352,11 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['Last Decent Player Premium', fairPrice?.lastPlayerPremium],
         ])}</dl></article>
       </div>
-      <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
-        <strong>Recommended max bid:</strong> ${money(recommendation)}${player.draftOwner ? ` <strong>Draft 2026 / winning bid:</strong> ${money(player.draftPrice)}` : ''}</p>
+      <p>${[
+    ['Auction value', Number.isFinite(player.auctionValue) ? money(player.auctionValue) : 'UNPRICED'],
+    ['Recommended max bid', Number.isFinite(recommendation) ? money(recommendation) : 'UNPRICED'],
+    ...(player.draftOwner ? [['Draft 2026 / winning bid', Number.isFinite(player.draftPrice) ? money(player.draftPrice) : 'UNPRICED']] : []),
+  ].map(([label, value]) => `<strong>${label}:</strong> ${value}`).join(' ')}</p>
       <form class="winning-bid-form" data-winning-bid-form="${escapeHtml(player.id)}" data-assignment-key="${escapeHtml(player.assignmentKey || player.id)}">
         <label>Winning team
           <select name="team" required>

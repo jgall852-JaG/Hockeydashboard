@@ -106,7 +106,7 @@ describe('draft auction dashboard rendering', () => {
     expect(html).toContain('<th scope="col">Availability</th>');
     expect(html).toMatch(/id="personal-draft-list-panel"[^>]* hidden>/);
     expect(html).toContain('Record winning bid');
-    expect(html).toContain('Recommended max bid:</strong> NULL');
+    expect(html).toContain('<strong>Recommended max bid:</strong> UNPRICED');
     expect(html).toContain('Personal Draft List');
     const boardPanel = html.slice(html.indexOf('id="draft-board-panel"'), html.indexOf('id="best-available-panel"'));
     expect(boardPanel).not.toContain('Add to Personal List');
@@ -563,22 +563,28 @@ describe('draft auction dashboard rendering', () => {
 
     const missing = { ...player, poolGames: undefined, auctionValue: null, valuationStatus: 'unpriced' };
     const unpricedModal = renderDraftAuctionDashboard({ ...baseProps, fairPriceV2: {}, players: [missing], selectedPlayer: missing });
-    expect(unpricedModal).toContain('Total Pool Games</dt><dd>NULL</dd>');
+    expect(unpricedModal).not.toContain('<dt>Total Pool Games</dt>');
     expect(unpricedModal).toContain('data-market-price=""');
     expect(unpricedModal).toContain('Deal Rating: UNPRICED');
+    const unpricedProfile = unpricedModal.slice(
+      unpricedModal.indexOf('<section class="draft-modal'),
+      unpricedModal.indexOf('</section>', unpricedModal.indexOf('<section class="draft-modal')) + '</section>'.length,
+    );
+    expect(unpricedProfile).not.toContain('NULL');
   });
 
   test('player profile hides missing details and formats derived Dobber scores without mutating data', () => {
     const player = {
       id: 'profile-cleanup', name: 'Profile Cleanup', status: 'in-ahl', finalPosition: 'C',
       available: true, forecast: { compositeScore: null, projectedPoints: 0 },
-      dobberProjections: { PP: null, TOI: null, PPTOI: null },
+      dobberProjections: { PP: 'NULL', TOI: '  null ', PPTOI: null, 'Other missing': null },
       production: { PPS: 0.126 },
       deployment: { DS: null, RSS: 1, RRS: 0.996 },
       prospect: { BPS: 0.1 },
-      riskScore: null, pedigreeScore: null, intelEdge: { projectionConfidence: null, sleeperTag: null, bustTag: null },
-      pricingMethod: null, strengths: [], risks: [null, undefined, ''],
-      keeper: { KVS: null }, salary: null, aav: null,
+      riskScore: 20, pedigreeScore: 30,
+      intelEdge: { pedigree: 'High', projectionConfidence: 90, sleeperTag: true, bustTag: false },
+      pricingMethod: 'derived', adp: 12, strengths: [], risks: [null, undefined, ''],
+      keeper: { KVS: null }, salary: null, aav: 12,
     };
     const props = {
       activeTab: 'best-available', players: [player], ahlPool: createAhlPool([player]),
@@ -595,8 +601,12 @@ describe('draft auction dashboard rendering', () => {
     const riskPedigree = section('Risk &amp; Pedigree \\(Dobber PDF Intel\\)');
     const keeperContract = section('Keeper / Contract');
     const dobberScores = modal.slice(modal.indexOf('<dt>PPS</dt>'), modal.indexOf('</dl>', modal.indexOf('<dt>PPS</dt>')));
+    const profile = modal.slice(
+      modal.indexOf('<section class="draft-modal'),
+      modal.indexOf('</section>', modal.indexOf('<section class="draft-modal')) + '</section>'.length,
+    );
 
-    expect(nhlProfile).not.toContain('NULL');
+    expect(profile).not.toContain('NULL');
     ['PP Unit', 'TOI', 'PPTOI', 'NHL POS', 'Team', 'Deployment'].forEach((label) => {
       expect(nhlProfile).not.toContain(`<dt>${label}</dt>`);
     });
@@ -604,15 +614,16 @@ describe('draft auction dashboard rendering', () => {
     expect(dobberScores).toContain('<dt>RSS</dt><dd>1.00</dd>');
     expect(dobberScores).toContain('<dt>RRS</dt><dd>1.00</dd>');
     expect(dobberScores).toContain('<dt>BPS</dt><dd>0.10</dd>');
-    expect(composite).toContain('<dt>Composite Score</dt><dd>NULL</dd>');
+    expect(composite).toContain('<dt>Composite Score</dt><dd></dd>');
     expect(composite).toContain('<dt>Forecasted Points</dt><dd>0</dd>');
-    ['Risk Score', 'Pedigree Score', 'Projection Confidence', 'Sleeper Tag', 'Bust Tag'].forEach((label) => {
+    expect(composite).not.toContain('ADP');
+    ['Risk Score', 'Pedigree Score', 'Pedigree', 'Projection Confidence', 'Sleeper Tag', 'Bust Tag', 'Pricing Method'].forEach((label) => {
       expect(riskPedigree).not.toContain(`<dt>${label}</dt>`);
     });
-    expect(riskPedigree).toContain('<p><strong>Strengths:</strong> NULL</p>');
+    expect(riskPedigree).toContain('<p><strong>Strengths:</strong></p>');
     expect(riskPedigree).not.toContain('<strong>Risks:</strong>');
-    expect(keeperContract).toContain('<dt>KVS</dt><dd>NULL</dd>');
-    expect(keeperContract).toContain('<dt>Salary</dt><dd>NULL</dd>');
+    expect(keeperContract).toContain('<dt>KVS</dt><dd></dd>');
+    expect(keeperContract).toContain('<dt>Salary</dt><dd></dd>');
     expect(keeperContract).not.toContain('<dt>AAV</dt>');
     expect(player.production.PPS).toBe(0.126);
     expect(player.deployment.RSS).toBe(1);
