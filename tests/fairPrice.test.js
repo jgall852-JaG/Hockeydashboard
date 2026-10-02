@@ -3,6 +3,7 @@ import {
   calculateFairPriceV2,
   computeFairPriceV2,
   getPoolPoints,
+  getPowerPlayFactor,
   getRatioFactor,
   getScarcityFactor,
   FAIR_PRICE_V2_RANGES,
@@ -105,6 +106,16 @@ describe('fairPriceV2 factors', () => {
     expect(getRatioFactor(52, 50, FAIR_PRICE_V2_RANGES.poolGames)).toBeCloseTo(1.04);
   });
 
+  test('power-play pricing premiums prioritize PP1 over PP2 and leave PP0 or missing neutral', () => {
+    expect(getPowerPlayFactor(1)).toBe(1.15);
+    expect(getPowerPlayFactor(2)).toBe(1.075);
+    expect(getPowerPlayFactor(0)).toBe(1);
+    expect(getPowerPlayFactor(null)).toBe(1);
+    expect(getPowerPlayFactor(undefined)).toBe(1);
+    expect(calculateFairPriceV2({ basePrice: 10, powerPlayFactor: getPowerPlayFactor(1) })).toBe(11.5);
+    expect(calculateFairPriceV2({ basePrice: 10, powerPlayFactor: getPowerPlayFactor(2) })).toBe(10.75);
+  });
+
   test('fairPriceV2 multiplies base price by all factors and rounds to 2 decimals', () => {
     expect(calculateFairPriceV2({ basePrice: 10, scarcityFactor: 1.15, productionFactor: 1.1, poolGamesFactor: 0.95 })).toBe(12.02);
     expect(calculateFairPriceV2({ basePrice: null })).toBeNull();
@@ -161,5 +172,33 @@ describe('computeFairPriceV2', () => {
     expect(getDealRating(0.7 * fair, fair).rating).toBe('STEAL');
     expect(getDealRating(1.1 * fair, fair).rating).toBe('FAIR');
     expect(getDealRating(1.1 * fair + 0.5, fair).rating).toBe('OVERPAY');
+  });
+
+  test('uses Dobber PP unit economics in fair price and returns profile factors', () => {
+    const ppPool = pool([
+      ['pp1 player', ['C']],
+      ['pp2 player', ['C']],
+      ['pp0 player', ['C']],
+      ['pp unknown', ['C']],
+    ]);
+    const ppPlayers = [
+      { name: 'PP1 Player', tier: 3, ppUnit: 1 },
+      { name: 'PP2 Player', tier: 3, ppUnit: 2 },
+      { name: 'PP0 Player', tier: 3, ppUnit: 0 },
+      { name: 'PP Unknown', tier: 3, ppUnit: null },
+    ];
+    const prices = computeFairPriceV2({
+      ahlPool: ppPool,
+      availableKeys: Object.keys(ppPool),
+      players: ppPlayers,
+    });
+
+    expect(prices['pp1 player']).toMatchObject({ ppUnit: 1, powerPlayFactor: 1.15 });
+    expect(prices['pp2 player']).toMatchObject({ ppUnit: 2, powerPlayFactor: 1.075 });
+    expect(prices['pp0 player']).toMatchObject({ ppUnit: 0, powerPlayFactor: 1 });
+    expect(prices['pp unknown']).toMatchObject({ ppUnit: null, powerPlayFactor: 1 });
+    expect(prices['pp1 player'].fairPriceV2).toBeGreaterThan(prices['pp2 player'].fairPriceV2);
+    expect(prices['pp2 player'].fairPriceV2).toBeGreaterThan(prices['pp0 player'].fairPriceV2);
+    expect(prices['pp0 player'].fairPriceV2).toBe(prices['pp unknown'].fairPriceV2);
   });
 });

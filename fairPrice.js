@@ -2,7 +2,7 @@ import { parseCSVLine } from './rosterParser.js';
 import { normalizeLookupKey } from './liveNhlApi.js';
 import { buildPositionalScarcity } from './draftIqV2.js';
 
-// fairPriceV2 = basePrice * scarcityFactor * productionFactor * poolGamesFactor, in draft dollars.
+// fairPriceV2 = basePrice * scarcityFactor * productionFactor * poolGamesFactor * powerPlayFactor.
 // basePrice is the player's most recent past auction price (Post Draft 2025, then 2024); otherwise
 // the league-average past price for the player's tier. NHL salary, AAV and keeper cost are never used.
 export const PAST_AUCTION_SEASONS = Object.freeze(['2025', '2024']);
@@ -10,6 +10,7 @@ export const FAIR_PRICE_V2_RANGES = Object.freeze({
   scarcity: Object.freeze({ min: 0.8, max: 1.4 }),
   production: Object.freeze({ min: 0.9, max: 1.3 }),
   poolGames: Object.freeze({ min: 0.85, max: 1.15 }),
+  powerPlay: Object.freeze({ pp1: 1.15, pp2: 1.075 }),
 });
 // D and C scale within their band by canonical pool depth; wingers are fixed.
 const SCARCITY_BANDS = Object.freeze({
@@ -141,9 +142,24 @@ export function getRatioFactor(value, leagueAverage, { min, max }) {
   return clamp(value / leagueAverage, min, max);
 }
 
-export function calculateFairPriceV2({ basePrice, scarcityFactor = 1, productionFactor = 1, poolGamesFactor = 1 } = {}) {
+export function getPowerPlayFactor(ppUnit) {
+  const unit = ppUnit === null || ppUnit === undefined || String(ppUnit).trim() === ''
+    ? null
+    : Number(ppUnit);
+  if (unit === 1) return FAIR_PRICE_V2_RANGES.powerPlay.pp1;
+  if (unit === 2) return FAIR_PRICE_V2_RANGES.powerPlay.pp2;
+  return 1;
+}
+
+export function calculateFairPriceV2({
+  basePrice,
+  scarcityFactor = 1,
+  productionFactor = 1,
+  poolGamesFactor = 1,
+  powerPlayFactor = 1,
+} = {}) {
   if (!(finite(basePrice) > 0)) return null;
-  return round2(basePrice * scarcityFactor * productionFactor * poolGamesFactor);
+  return round2(basePrice * scarcityFactor * productionFactor * poolGamesFactor * powerPlayFactor);
 }
 
 // Computes fairPriceV2 for every canonical pool player. Returns a JSON-safe object keyed by
@@ -172,6 +188,13 @@ export function computeFairPriceV2({
     const player = playersByKey.get(playerKey) || {};
     const positions = [...(poolPlayer?.positions instanceof Set ? poolPlayer.positions : poolPlayer?.positions || [])];
     const poolGames = player.poolGames || getPoolGamesForTeam(poolPlayer?.team || player.team) || null;
+    const ppUnitValue = player.ppUnit
+      ?? player.dobberProjections?.PPUnit
+      ?? player.dobberProjections?.['PP Unit']
+      ?? player.dobberProjections?.PP;
+    const ppUnit = ppUnitValue === null || ppUnitValue === undefined || String(ppUnitValue).trim() === ''
+      ? null
+      : finite(Number(ppUnitValue));
     return {
       playerKey,
       positions,
@@ -182,6 +205,7 @@ export function computeFairPriceV2({
         player.forecastedAssists ?? player.forecast?.projectedAssists,
       ),
       totalPoolGames: finite(poolGames?.totalPoolGames),
+      ppUnit,
     };
   });
 
@@ -195,7 +219,7 @@ export function computeFairPriceV2({
   const leagueAveragePoolGames = average(entries.map(({ totalPoolGames }) => totalPoolGames).filter((value) => value !== null));
 
   const result = {};
-  entries.forEach(({ playerKey, positions, tier, pastPrice, poolPoints, totalPoolGames }) => {
+  entries.forEach(({ playerKey, positions, tier, pastPrice, poolPoints, totalPoolGames, ppUnit }) => {
     let basePrice = null;
     let baseSource = null;
     if (pastPrice) {
@@ -212,12 +236,14 @@ export function computeFairPriceV2({
       scarcityFactor: round2(getScarcityFactor(positions, scarcity)),
       productionFactor: round2(getRatioFactor(poolPoints, leagueAveragePoolPoints, FAIR_PRICE_V2_RANGES.production)),
       poolGamesFactor: round2(getRatioFactor(totalPoolGames, leagueAveragePoolGames, FAIR_PRICE_V2_RANGES.poolGames)),
+      powerPlayFactor: getPowerPlayFactor(ppUnit),
     };
     result[playerKey] = {
       fairPriceV2: calculateFairPriceV2({ basePrice, ...factors }),
       basePrice,
       baseSource,
       ...factors,
+      ppUnit,
       poolPoints,
       totalPoolGames,
     };

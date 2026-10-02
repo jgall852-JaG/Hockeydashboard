@@ -167,5 +167,6 @@ describe('forecasted stats', () => {
     expect(player.forecast.splitsMethod).toBe('derived');
     expect(player.forecast.compositeScore).not.toBeNull();
     expect(player.compositeForecastScore).not.toBeNull();
+    expect(player.ppUnit).toBe(1);
   });
 });

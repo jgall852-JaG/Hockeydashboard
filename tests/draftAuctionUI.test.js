@@ -518,6 +518,7 @@ describe('draft auction dashboard rendering', () => {
   test('player profile shows AHL Scores pool games under forecast goals/assists/points and a fairPriceV2 deal rating', () => {
     const player = {
       id: 'pool-player', name: 'Pool Player', status: 'in-ahl', available: true, finalPosition: 'C',
+      ppUnit: 1,
       forecastedGoals: 30, forecastedAssists: 40, forecastedPoints: 70,
       poolGames: { firstHalfGames: 31, secondHalfGames: 27, totalPoolGames: 58 },
       auctionValue: 20, valuationStatus: 'priced', nhlCareerGamesPlayed: 500,
@@ -529,7 +530,7 @@ describe('draft auction dashboard rendering', () => {
       fairPriceV2: {
         'pool player': {
           fairPriceV2: 23.76, basePrice: 18, baseSource: 'Post Draft 2025 (P Player)',
-          scarcityFactor: 1.1, productionFactor: 1.2, poolGamesFactor: 1,
+          scarcityFactor: 1.1, productionFactor: 1.2, poolGamesFactor: 1, powerPlayFactor: 1.15,
         },
       },
     };
@@ -550,6 +551,8 @@ describe('draft auction dashboard rendering', () => {
     expect(modal).toContain('Deal Rating: enter a bid');
     expect(modal).toContain('Base Source</dt><dd>Post Draft 2025 (P Player)</dd>');
     expect(modal).toContain('Scarcity Factor</dt><dd>1.1</dd>');
+    expect(modal).toContain('PP Unit</dt><dd>1</dd>');
+    expect(modal).toContain('Power Play Factor</dt><dd>1.15</dd>');
 
     const missing = { ...player, poolGames: undefined, auctionValue: null, valuationStatus: 'unpriced' };
     const unpricedModal = renderDraftAuctionDashboard({ ...baseProps, fairPriceV2: {}, players: [missing], selectedPlayer: missing });

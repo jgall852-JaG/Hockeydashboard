@@ -297,7 +297,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['NHL POS', player.nhlPosition],
           ['Team', player.team || player.dobberProjections?.team],
           ['Deployment', player.deployment?.DS],
-          ['PP Unit', projectionValue('PP Unit', 'PPUnit')],
+          ['PP Unit', player.ppUnit ?? projectionValue('PP Unit', 'PPUnit', 'PP')],
           ['TOI', projectionValue('TOI', 'Time on Ice')],
           ['PPTOI', projectionValue('PPTOI', 'PP TOI', 'Power Play Time on Ice')],
         ])}</dl></article>
@@ -333,6 +333,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['Scarcity Factor', fairPrice?.scarcityFactor],
           ['Production Factor', fairPrice?.productionFactor],
           ['Pool Games Factor', fairPrice?.poolGamesFactor],
+          ['Power Play Factor', fairPrice?.powerPlayFactor],
         ])}</dl></article>
       </div>
       <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
