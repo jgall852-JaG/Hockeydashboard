@@ -9,6 +9,102 @@ import {
 } from '../app.js';
 
 describe('draft validation report', () => {
+  test('includes newly drafted retained-grid players in the team roster and uses refreshed sheet budget totals', () => {
+    const player = {
+      name: 'Crack and hookers',
+      owner: 'YEASTIE BEASTIES',
+      position: 'C/L',
+      poolposition: 'C/L',
+      cost: 200,
+      retained: true,
+      source: 'retained-grid',
+    };
+    const sheetBudget = {
+      team: 'YEASTIE BEASTIES',
+      totalSpent: 237,
+      remainingBudget: 13,
+      playersDrafted: 4,
+      openSlots: 21,
+    };
+    const snapshot = {
+      version: 2,
+      datasets: {
+        prospects: { prospects: {} },
+        veterans: {
+          veterans: {
+            'static-veteran': {
+              playerId: 'static-veteran',
+              name: 'Static Veteran',
+              owner: 'YEASTIE BEASTIES',
+              currentCost: 35,
+            },
+          },
+        },
+        roster: {
+          players: { 'crack-and-hookers': player },
+          sources: {
+            'retained-grid': {
+              layout: 'retained-grid',
+              players: { 'crack-and-hookers': player },
+            },
+          },
+          teamBudgets: [sheetBudget],
+        },
+      },
+      metadata: {},
+      workingAssignments: {},
+    };
+    const ownerData = buildOwnerViewData(snapshot);
+    const owner = ownerData.owners.find((entry) => entry.name === 'YEASTIE BEASTIES');
+
+    expect(owner.rosterPlayers).toHaveLength(1);
+    expect(owner.rosterPlayers[0]).toMatchObject({
+      name: 'Crack and hookers',
+      position: 'C/L',
+      cost: 200,
+      sourceType: 'roster',
+    });
+    expect(buildOwnerDraftPlan(owner, sheetBudget)).toMatchObject({
+      retainedSpend: 237,
+      remainingBudget: 13,
+      playersDrafted: 4,
+      openSlots: 21,
+    });
+
+    const refreshedSnapshot = {
+      ...snapshot,
+      datasets: {
+        ...snapshot.datasets,
+        roster: {
+          ...snapshot.datasets.roster,
+          players: {},
+          sources: {
+            'retained-grid': { layout: 'retained-grid', players: {} },
+          },
+          teamBudgets: [{
+            team: 'YEASTIE BEASTIES',
+            totalSpent: 37,
+            remainingBudget: 213,
+            playersDrafted: 3,
+            openSlots: 22,
+          }],
+        },
+      },
+    };
+    const refreshedOwner = buildOwnerViewData(refreshedSnapshot).owners
+      .find((entry) => entry.name === 'YEASTIE BEASTIES');
+
+    expect(refreshedOwner.rosterPlayers).toEqual([]);
+    expect(refreshedOwner.veterans.map((entry) => entry.name)).toEqual(['Static Veteran']);
+    expect(buildOwnerDraftPlan(refreshedOwner, refreshedSnapshot.datasets.roster.teamBudgets[0]))
+      .toMatchObject({
+        retainedSpend: 37,
+        remainingBudget: 213,
+        playersDrafted: 3,
+        openSlots: 22,
+      });
+  });
+
   test('accepts only valid $0.50 working assignment bid increments', () => {
     const draft = { playerKey: 'one', name: 'Player One', team: 'TEAM A', bid: '1.50' };
     expect(createWorkingAssignmentDraft(draft)?.bid).toBe(1.5);

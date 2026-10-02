@@ -221,6 +221,7 @@ describe('google sheet refresh integration', () => {
       [
         'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
         'LW One,ANA,C One,BOS,RW One,BUF,D One,CGY',
+        'Utility One,NYR,,,,,,',
       ].join('\n'),
       [
         'UTILITY,,',
@@ -300,6 +301,20 @@ describe('google sheet refresh integration', () => {
       name: 'Utility One',
       position: 'U',
     });
+    expect(next.datasets.ahlPool['utility one']).toMatchObject({
+      name: 'Utility One',
+      team: 'NYR',
+      positions: ['LW', 'C'],
+      flags: {
+        primaryPosition: 'LW',
+        utilityPosition: 'C/L',
+        fromPositionSheet: true,
+        fromUtilitySheet: true,
+        available: true,
+      },
+    });
+    expect(next.datasets.availableKeys).toContain('utility one');
+    expect(next.datasets.availableKeys).not.toContain('connor bedard');
     expect(next.datasets.prospects.isRightsList).toBe(true);
     expect(next.metadata.roster.sourceName).toBe('AHL Roster');
     expect(next.metadata.prospects.sourceName).toBe('AHL Keeper Rights');
