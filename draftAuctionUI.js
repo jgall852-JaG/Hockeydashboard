@@ -12,12 +12,17 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 
 const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL';
 
-// Fair price is the estimated auction value in draft dollars; NHL and keeper salaries are never used.
+// Fair price is fairPriceV2 in draft dollars; NHL salary and keeper salary are never used.
 export function renderDealRatingContent(bid, fairPrice) {
-  if (!Number.isFinite(fairPrice) || fairPrice <= 0) return 'Deal rating: UNPRICED (no estimated auction value)';
+  const hasFairPrice = Number.isFinite(fairPrice) && fairPrice > 0;
+  const bidText = String(bid ?? '').trim();
+  const bidValue = bidText === '' ? NaN : Number(bidText);
+  const fairText = `<span class="deal-field">Fair Price: <strong>${hasFairPrice ? money(fairPrice) : 'UNPRICED'}</strong></span>`;
+  const bidMarkup = `<span class="deal-field">Your Bid: <strong>${Number.isFinite(bidValue) ? money(bidValue) : '—'}</strong></span>`;
+  if (!hasFairPrice) return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: UNPRICED (no fair price)</span>`;
   const deal = getDealRating(bid, fairPrice);
-  if (!deal) return `Deal rating: enter a bid (fair price ${money(fairPrice)})`;
-  return `Deal rating: <span class="deal-badge deal-${deal.tone}">${deal.rating}</span> (fair price ${money(fairPrice)})`;
+  if (!deal) return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: enter a bid</span>`;
+  return `${fairText} ${bidMarkup} <span class="deal-field">Deal Rating: <span class="deal-badge deal-${deal.tone}">${deal.rating}</span></span>`;
 }
 
 export function getExperienceTierFromGames(gamesPlayed) {
@@ -197,8 +202,9 @@ function renderPersonalDraftList(players, entries, availableKeys, { sort, positi
   </section>`;
 }
 
-function renderModal(player, teams, teamBudgets, selectedTeam) {
+function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null) {
   if (!player) return '';
+  const fairPriceV2 = Number.isFinite(fairPrice?.fairPriceV2) ? fairPrice.fairPriceV2 : null;
   const budget = teamBudgets.find((entry) => entry.team === selectedTeam);
   const recommendation = budget
     ? calculateRecommendedMaxBid(player.auctionValue, player.tier, budget.remainingBudget, budget.openSlots)
@@ -318,6 +324,14 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
           ['Removed-local', player.localStatus === 'removed-local'],
           ['Not-in-ahl', player.status === 'not-in-ahl'],
         ])}</dl></article>
+        <article class="detail-card"><h3>Fair Price v2 (draft dollars)</h3><dl class="kv-list">${metricMarkup([
+          ['Fair Price', fairPriceV2 === null ? 'UNPRICED' : money(fairPriceV2)],
+          ['Base Price', Number.isFinite(fairPrice?.basePrice) ? money(fairPrice.basePrice) : null],
+          ['Base Source', fairPrice?.baseSource],
+          ['Scarcity Factor', fairPrice?.scarcityFactor],
+          ['Production Factor', fairPrice?.productionFactor],
+          ['Pool Games Factor', fairPrice?.poolGamesFactor],
+        ])}</dl></article>
       </div>
       <p><strong>Auction value:</strong> ${player.auctionValue === null ? 'UNPRICED' : money(player.auctionValue)}
         <strong>Recommended max bid:</strong> ${money(recommendation)}${player.draftOwner ? ` <strong>Draft 2026 / winning bid:</strong> ${money(player.draftPrice)}` : ''}</p>
@@ -331,7 +345,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
         <label>Winning bid
           <input name="bid" type="number" min="0.50" step="0.50" placeholder="0.50" required data-deal-bid />
         </label>
-        <output class="deal-rating" data-deal-rating data-fair-price="${Number.isFinite(player.auctionValue) ? player.auctionValue : ''}" aria-live="polite">${renderDealRatingContent('', player.auctionValue)}</output>
+        <output class="deal-rating" data-deal-rating data-fair-price="${fairPriceV2 ?? ''}" aria-live="polite">${renderDealRatingContent('', fairPriceV2)}</output>
         <label>Roster category
           <select name="classification" required>
             <option value="">Select category</option>
@@ -351,6 +365,7 @@ export function renderDraftAuctionDashboard({
   ahlPool = {},
   draftIQ = {},
   draftIQv3 = {},
+  fairPriceV2 = {},
   availableKeys,
   personalDraftList = [],
   personalDraftListSort = 'rank',
@@ -525,5 +540,5 @@ export function renderDraftAuctionDashboard({
       ${tab('team-budgets', 'Team Budgets')}${tab('personal-draft-list', 'Personal Draft List')}${tab('tools-validation', 'Tools & Validation')}
     </div>
     ${panels[activeTab] || boardPanel}
-    ${renderModal(selectedPlayer, teamNames, teamBudgets, selectedTeam)}`;
+    ${renderModal(selectedPlayer, teamNames, teamBudgets, selectedTeam, fairPriceV2?.[normalizeLookupKey(selectedPlayer?.name)] || null)}`;
 }

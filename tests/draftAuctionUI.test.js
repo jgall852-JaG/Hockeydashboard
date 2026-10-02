@@ -508,7 +508,7 @@ describe('draft auction dashboard rendering', () => {
     expect(modal).toContain('Composite Score</dt><dd>86</dd>');
   });
 
-  test('player profile shows AHL Scores pool games under forecast goals/assists/points and a deal rating', () => {
+  test('player profile shows AHL Scores pool games under forecast goals/assists/points and a fairPriceV2 deal rating', () => {
     const player = {
       id: 'pool-player', name: 'Pool Player', status: 'in-ahl', available: true, finalPosition: 'C',
       forecastedGoals: 30, forecastedAssists: 40, forecastedPoints: 70,
@@ -519,6 +519,12 @@ describe('draft auction dashboard rendering', () => {
       activeTab: 'best-available', players: [player], ahlPool: createAhlPool([player]),
       availableKeys: new Set(['pool player']), search: '', teamBudgets: [], teamNames: ['Team A'],
       selectedTeam: '', sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+      fairPriceV2: {
+        'pool player': {
+          fairPriceV2: 23.76, basePrice: 18, baseSource: 'Post Draft 2025 (P Player)',
+          scarcityFactor: 1.1, productionFactor: 1.2, poolGamesFactor: 1,
+        },
+      },
     };
     const modal = renderDraftAuctionDashboard({ ...baseProps, selectedPlayer: player });
     const labels = [...modal.matchAll(/<dt>([^<]+)<\/dt>/g)].map((match) => match[1]);
@@ -530,22 +536,29 @@ describe('draft auction dashboard rendering', () => {
     expect(modal).toContain('Pool Games (FH)</dt><dd>31</dd>');
     expect(modal).toContain('Pool Games (SH)</dt><dd>27</dd>');
     expect(modal).toContain('Total Pool Games</dt><dd>58</dd>');
-    expect(modal).toContain('data-deal-rating data-fair-price="20"');
-    expect(modal).toContain('Deal rating: enter a bid (fair price $20.00)');
+    // fairPriceV2, not the estimated auction value ($20), drives the deal rating.
+    expect(modal).toContain('data-deal-rating data-fair-price="23.76"');
+    expect(modal).toContain('Fair Price: <strong>$23.76</strong>');
+    expect(modal).toContain('Your Bid: <strong>—</strong>');
+    expect(modal).toContain('Deal Rating: enter a bid');
+    expect(modal).toContain('Base Source</dt><dd>Post Draft 2025 (P Player)</dd>');
+    expect(modal).toContain('Scarcity Factor</dt><dd>1.1</dd>');
 
     const missing = { ...player, poolGames: undefined, auctionValue: null, valuationStatus: 'unpriced' };
-    const unpricedModal = renderDraftAuctionDashboard({ ...baseProps, players: [missing], selectedPlayer: missing });
+    const unpricedModal = renderDraftAuctionDashboard({ ...baseProps, fairPriceV2: {}, players: [missing], selectedPlayer: missing });
     expect(unpricedModal).toContain('Total Pool Games</dt><dd>NULL</dd>');
     expect(unpricedModal).toContain('data-fair-price=""');
-    expect(unpricedModal).toContain('Deal rating: UNPRICED');
+    expect(unpricedModal).toContain('Deal Rating: UNPRICED');
   });
 
-  test('deal rating content colours STEAL / FAIR / OVERPAY from draft dollars only', () => {
+  test('deal rating content shows fair price, bid and a STEAL / FAIR / OVERPAY badge', () => {
     expect(renderDealRatingContent('14', 20)).toContain('<span class="deal-badge deal-green">STEAL</span>');
     expect(renderDealRatingContent('22', 20)).toContain('<span class="deal-badge deal-yellow">FAIR</span>');
     expect(renderDealRatingContent('22.5', 20)).toContain('<span class="deal-badge deal-red">OVERPAY</span>');
-    expect(renderDealRatingContent('', 20)).toBe('Deal rating: enter a bid (fair price $20.00)');
-    expect(renderDealRatingContent('10', null)).toContain('UNPRICED');
+    expect(renderDealRatingContent('22.5', 20)).toContain('Your Bid: <strong>$22.50</strong>');
+    expect(renderDealRatingContent('', 20.456)).toContain('Fair Price: <strong>$20.46</strong>');
+    expect(renderDealRatingContent('', 20)).toContain('Deal Rating: enter a bid');
+    expect(renderDealRatingContent('10', null)).toContain('Fair Price: <strong>UNPRICED</strong>');
   });
 
   test('Best Available sorts ADP ascending, otherwise Forecasted Points descending, with missing values last', () => {
