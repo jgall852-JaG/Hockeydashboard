@@ -197,6 +197,11 @@ describe('portable state helpers', () => {
         transactions: { status: 'empty' },
       },
       manualOverrides: [{ id: 'manual-1', name: 'Manual Player' }],
+      draftGridNameAliases: [{
+        sourceName: 'J Guentzel',
+        owner: 'TEAM A',
+        targetName: 'Jake Guentzel',
+      }],
       workingAssignments: { alpha: { playerKey: 'alpha' } },
     }, {
       updatedAt: '2026-09-27T13:05:00.000Z',
@@ -206,6 +211,11 @@ describe('portable state helpers', () => {
 
     expect(bundle.format).toBe('hockey-dashboard-portable-state');
     expect(bundle.appState.metadata.prospects.sourceName).toBe('prospects.csv');
+    expect(bundle.appState.draftGridNameAliases).toEqual([{
+      sourceName: 'J Guentzel',
+      owner: 'TEAM A',
+      targetName: 'Jake Guentzel',
+    }]);
     expect(bundle.liveCache.players['prospect:player-one'].status).toBe('ok');
     expect(bundle.liveCache.teams.EDM.teamAbbrev).toBe('EDM');
   });
@@ -355,6 +365,11 @@ describe('google sheet refresh integration', () => {
         transactions: { status: 'empty' },
       },
       manualOverrides: [{ id: 'manual-1', name: 'Manual Player' }],
+      draftGridNameAliases: [{
+        sourceName: 'J Guentzel',
+        owner: 'TEAM B',
+        targetName: 'Jake Guentzel',
+      }],
       workingAssignments: {
         'nick perbix': { playerKey: 'nick perbix', name: 'Nick Perbix' },
       },
@@ -414,6 +429,11 @@ describe('google sheet refresh integration', () => {
       'AHL Games Played',
     ]);
     expect(next.manualOverrides).toHaveLength(1);
+    expect(next.draftGridNameAliases).toEqual([{
+      sourceName: 'J Guentzel',
+      owner: 'TEAM B',
+      targetName: 'Jake Guentzel',
+    }]);
     expect(next.workingAssignments['nick perbix'].name).toBe('Nick Perbix');
     expect(next.localEdits).toMatchObject({
       removedPlayers: [],
@@ -451,7 +471,7 @@ describe('google sheet refresh integration', () => {
         owner: 'YEASTIE BEASTIES',
         position: 'C/L',
         cost: 200,
-        notInAhlPool: true,
+        nameUnresolved: true,
       }),
     ]);
     expect(report.ownerDraftPlans.find((plan) => plan.owner === 'YEASTIE BEASTIES')).toMatchObject({
