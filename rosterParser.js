@@ -265,8 +265,8 @@ function parseRetainedGrid(lines) {
             team: owner,
             totalSpent: null,
             remainingBudget: null,
-            keeperCosts: null,
-            rookieFarmCosts: null,
+            gridCosts: null,
+            farmCosts: null,
             hasFarmDeductionRow: false,
             playersDrafted: 0,
             skaters: { count: 0, max: 23 },
@@ -323,15 +323,15 @@ function parseRetainedGrid(lines) {
       if (!['G', 'GT', 'GOALIE', 'GOALIE TEAM'].includes(position.toUpperCase())) {
         budget.skaters.count += 1;
       }
-      budget.keeperCosts = (budget.keeperCosts || 0) + parseCost(rawCost);
+      budget.gridCosts = (budget.gridCosts || 0) + parseCost(rawCost);
     }
   }
 
   result.teamBudgets = [...teamBudgets.values()].map((budget) => ({
     ...budget,
     retained: budget.totalSpent,
-    rookieFarmCosts: budget.hasFarmDeductionRow
-      ? Number(Math.max(0, (budget.totalSpent ?? 0) - (budget.keeperCosts ?? 0)).toFixed(2))
+    farmCosts: budget.hasFarmDeductionRow
+      ? Number(Math.max(0, (budget.totalSpent ?? 0) - (budget.gridCosts ?? 0)).toFixed(2))
       : null,
     openSlots: Math.max(0, 25 - budget.playersDrafted),
   })).map(({ hasFarmDeductionRow, ...budget }) => budget);
@@ -374,8 +374,8 @@ function parseAhlBudgetSheet(csvData) {
       skaters,
       playersDrafted: skaters.count,
       openSlots: Math.max(0, skaters.max - skaters.count),
-      keeperCosts: null,
-      rookieFarmCosts: null,
+      gridCosts: null,
+      farmCosts: null,
       penalties: null,
       adjustments: null,
     }];

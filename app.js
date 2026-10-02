@@ -1227,6 +1227,8 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
         ? parseAhlBudgetSheet(csvText)
       : source.datasetType === 'prospects'
         ? parseProspects(csvText)
+      : source.datasetType === 'veterans'
+        ? parseVeterans(csvText)
         : parseRoster(csvText);
     if (source.datasetType === 'prospects') {
       parsedData.isRightsList = true;
@@ -1237,6 +1239,8 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
         ? parsedData.teamBudgets.length
       : source.datasetType === 'prospects'
       ? Object.keys(parsedData.prospects || {}).length
+      : source.datasetType === 'veterans'
+      ? Object.keys(parsedData.veterans || {}).length
       : Object.keys(parsedData.players || {}).length;
     if ((source.expectedLayout && parsedData.layout !== source.expectedLayout) || !recordCount) {
       throw new Error(`AHL Sheet refresh returned an unexpected ${source.name} layout.`);
@@ -1258,6 +1262,8 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
       ? parsedData.teamBudgets.length
       : source.datasetType === 'prospects'
       ? Object.keys(parsedData.prospects || {}).length
+      : source.datasetType === 'veterans'
+      ? Object.keys(parsedData.veterans || {}).length
       : Object.keys(parsedData.players || {}).length;
   });
   if (next.datasets.budget?.teamBudgets?.length && next.datasets.roster) {
@@ -1738,7 +1744,9 @@ function buildOwnerDraftPlan(ownerEntry, sheetBudget = null) {
     playersDrafted: sheetBudget?.playersDrafted ?? slotCounts.skaters + slotCounts.goalieTeams,
     openSlots: slotsNeeded,
     keeperCosts: sheetBudget?.keeperCosts ?? null,
-    rookieFarmCosts: sheetBudget?.rookieFarmCosts ?? null,
+    rookieCosts: sheetBudget?.rookieCosts ?? null,
+    farmCosts: sheetBudget?.farmCosts ?? null,
+    draftCosts: sheetBudget?.draftCosts ?? null,
     penalties: sheetBudget?.penalties ?? null,
     adjustments: sheetBudget?.adjustments ?? null,
     skaters: slotCounts.skaters,
@@ -1966,12 +1974,14 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
     const teamMonies = findTeamMonies(monies, owner.name);
     if (!teamMonies?.hasSheetBaseline) return buildOwnerDraftPlan(owner);
     return buildOwnerDraftPlan(owner, {
-      totalSpent: teamMonies.spend,
+      totalSpent: teamMonies.totalSpent,
       remainingBudget: teamMonies.remainingBudget,
       playersDrafted: teamMonies.playersDrafted,
       openSlots: teamMonies.openSlots,
       keeperCosts: teamMonies.keeperCosts,
-      rookieFarmCosts: teamMonies.rookieFarmCosts,
+      rookieCosts: teamMonies.rookieCosts,
+      farmCosts: teamMonies.farmCosts,
+      draftCosts: teamMonies.draftCosts,
       penalties: teamMonies.penalties,
       adjustments: teamMonies.adjustments,
     });
@@ -2216,6 +2226,18 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
         : `Local ownership changes applied to Monies: ${monies.teams.reduce((sum, team) => sum + team.changes.length, 0)}`,
       count: monies.unresolvedAssignments.length,
     },
+    (() => {
+      const gaps = monies.teams.filter((team) => team.unreconciledSpend !== null && Math.abs(team.unreconciledSpend) >= 0.01);
+      return {
+        key: 'team-budgets-reconciliation',
+        label: 'Team Budgets: Cost Breakdown',
+        status: gaps.length ? 'warning' : 'valid',
+        message: gaps.length
+          ? `TOTAL SPENT differs from keeper + rookie + farm + auction costs for ${gaps.map((team) => `${team.team} ($${team.unreconciledSpend.toFixed(2)})`).join(', ')}`
+          : 'Keeper, rookie, farm, and auction costs reconcile with TOTAL SPENT',
+        count: gaps.length,
+      };
+    })(),
     {
       key: 'draft-roster-rules',
       label: 'Draft Roster Rules (23 skaters + 2 goalie teams)',
@@ -3937,15 +3959,18 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   const teamBudgets = (monies.teams || []).map((teamMonies) => ({
     team: ownerData.owners.find((owner) => normalizeLookupKey(owner.name) === normalizeLookupKey(teamMonies.team))?.name
       || teamMonies.team,
-    spend: teamMonies.spend,
+    totalSpent: teamMonies.totalSpent,
     remainingBudget: teamMonies.remainingBudget,
     playersDrafted: teamMonies.playersDrafted,
     skaters: teamMonies.skaters,
     openSlots: teamMonies.openSlots,
     averageSpendRemaining: teamMonies.averageSpendRemaining,
-    maxPossibleBid: teamMonies.maxBid,
+    maxPossibleBid: teamMonies.maxPossibleBid,
     keeperCosts: teamMonies.keeperCosts,
-    rookieFarmCosts: teamMonies.rookieFarmCosts,
+    rookieCosts: teamMonies.rookieCosts,
+    farmCosts: teamMonies.farmCosts,
+    draftCosts: teamMonies.draftCosts,
+    unreconciledSpend: teamMonies.unreconciledSpend,
     penalties: teamMonies.penalties,
     adjustments: teamMonies.adjustments,
   }));

@@ -53,6 +53,11 @@ function buildMockSheetResponses() {
       'TEAM B,',
       'Matthew Knies LW - 2021,$3,1,,,,N',
     ].join('\n'),
+    [
+      'TEAMS,2023,2024,2025,2026,2027',
+      'TEAM B,,,,,',
+      'Jake Guentzel LW - 2025,,,$40.50,$45.50,',
+    ].join('\n'),
     ',Thursday,October 1,2026\n1,MATCHUP,,TIME\n,Buffalo,@ Columbus,7:00 PM',
     ',Rank,Team,GP,W,L,T,PTS,GF,GA,GD\n,1,Ironmen,0,0,0,0,0,0,0,0',
     ',Player,GP\n,Example,0',
@@ -358,7 +363,7 @@ describe('google sheet refresh integration', () => {
       },
     }, fetchMock);
 
-    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(fetchMock).toHaveBeenCalledTimes(10);
     expect(next.datasets.roster.layout).toBe('merged');
     expect(Object.keys(next.datasets.roster.sources)).toEqual(expect.arrayContaining([
       'inventory',
@@ -393,6 +398,11 @@ describe('google sheet refresh integration', () => {
     expect(next.datasets.prospects.isRightsList).toBe(true);
     expect(next.metadata.roster.sourceName).toBe('AHL Roster');
     expect(next.metadata.prospects.sourceName).toBe('AHL Keeper Rights');
+    expect(next.metadata.veterans.sourceName).toBe('AHL Veterans');
+    expect(Object.values(next.datasets.veterans.veterans)).toEqual([
+      expect.objectContaining({ name: 'Jake Guentzel', owner: 'TEAM B', currentCost: 45.5 }),
+    ]);
+    expect(next.datasets.monies.teams.map((team) => team.team)).toEqual(expect.arrayContaining(['TEAM A', 'TEAM B']));
     expect(next.metadata.ahlSheets.status).toBe('ok');
     expect(Object.keys(next.datasets.ahlScores.tabs)).toEqual([
       'AHL Scores',

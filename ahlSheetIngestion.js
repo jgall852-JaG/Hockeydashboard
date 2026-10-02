@@ -11,6 +11,7 @@ export const AHL_SHEET_SOURCES = Object.freeze([
   { name: 'AHL Budget', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1727331506', datasetType: 'budget', expectedLayout: 'budget' },
   { name: 'AHL Roster', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '910545566', datasetType: 'roster', expectedLayout: 'league-layout' },
   { name: 'AHL Keeper Rights', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1065921002', datasetType: 'prospects' },
+  { name: 'AHL Veterans', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1905579914', datasetType: 'veterans' },
   { name: 'AHL Scores', spreadsheetId: AHL_SCORES_SPREADSHEET_ID, gid: '0', datasetType: 'scores' },
   { name: 'AHL Scorebulator', spreadsheetId: AHL_SCORES_SPREADSHEET_ID, gid: '1339694329', datasetType: 'scores' },
   { name: 'AHL Games Played', spreadsheetId: AHL_SCORES_SPREADSHEET_ID, gid: '1076930424', datasetType: 'scores' },
@@ -247,14 +248,22 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
 
   const prospects = Object.values(stateObj?.datasets?.prospects?.prospects || {});
   const veterans = Object.values(stateObj?.datasets?.veterans?.veterans || {});
+  // Keeper type per pool player drives the Team Budgets cost breakdown.
+  const keeperTypeByPlayerKey = new Map();
   prospects.forEach((record) => {
     markOwner(record, null, { protectedOwner: true });
     if (hasRightsFlag(record) || (record.matchingRights && Number(record.termRemaining) === 0)) {
       const key = resolvePoolKey(record.name);
       if (key) rightsKeys.add(key);
     }
+    const key = resolvePoolKey(record.name);
+    if (key && !record.released && String(record.owner || '').trim()) keeperTypeByPlayerKey.set(key, 'rookie');
   });
-  veterans.forEach((record) => markOwner(record, null, { protectedOwner: true }));
+  veterans.forEach((record) => {
+    markOwner(record, null, { protectedOwner: true });
+    const key = resolvePoolKey(record.name);
+    if (key && String(record.owner || '').trim()) keeperTypeByPlayerKey.set(key, 'veteran');
+  });
 
   // Draft 2026 grid rows carry the costs already counted in the sheet's TOTAL SPENT/BALANCE.
   const draftGridByPlayerKey = new Map();
@@ -347,6 +356,7 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
     rightsKeys,
     removedKeys,
     draftGridByPlayerKey,
+    keeperTypeByPlayerKey,
     assignmentsByPlayerKey,
     unassignedKeys,
     unresolvedAssignments,

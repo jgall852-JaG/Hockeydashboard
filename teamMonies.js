@@ -35,8 +35,10 @@ function createTeamLedger(team, sheetBudget = null) {
     sheetSkaters: sheetBudget?.skaters && Number.isFinite(sheetBudget.skaters.count)
       ? { count: sheetBudget.skaters.count, max: sheetBudget.skaters.max ?? MONIES_RULES.targetSkaters }
       : null,
-    keeperCosts: finiteOrNull(sheetBudget?.keeperCosts),
-    rookieFarmCosts: finiteOrNull(sheetBudget?.rookieFarmCosts),
+    sheetGridCosts: finiteOrNull(sheetBudget?.gridCosts ?? sheetBudget?.keeperCosts),
+    sheetFarmCosts: finiteOrNull(sheetBudget?.farmCosts ?? sheetBudget?.rookieFarmCosts),
+    resolvedGridCosts: 0,
+    costs: { keeper: 0, rookie: 0, draft: 0 },
     penalties: finiteOrNull(sheetBudget?.penalties),
     adjustments: finiteOrNull(sheetBudget?.adjustments),
     spendDelta: 0,
@@ -78,9 +80,20 @@ export function buildTeamMonies(stateObj, ownership = getCanonicalAhlPoolOwnersh
     return poolPositions?.length ? poolPositions : fallback;
   };
 
+  const keeperTypes = ownership?.keeperTypeByPlayerKey || new Map();
+  const addCategoryCost = (team, playerKey, cost) => {
+    const category = keeperTypes.get(playerKey) === 'veteran'
+      ? 'keeper'
+      : keeperTypes.get(playerKey) === 'rookie' ? 'rookie' : 'draft';
+    ledgerFor(team).costs[category] += cost;
+  };
+
   (ownership?.draftGridByPlayerKey || new Map()).forEach((row, playerKey) => {
     const assignment = assignments.get(playerKey);
     const positions = positionsFor(playerKey, row.position);
+    ledgerFor(row.owner).resolvedGridCosts += row.cost;
+    const reassigned = assignment?.source === 'manual'
+      && normalizeLookupKey(assignment.team) !== normalizeLookupKey(row.owner);
     if (unassignedKeys.has(playerKey) && !protectedKeys.has(playerKey)) {
       applyChange(ledgerFor(row.owner), {
         playerKey, name: row.name, cost: -row.cost, slots: -1, positions, reason: 'manual-unassign',
@@ -89,7 +102,8 @@ export function buildTeamMonies(stateObj, ownership = getCanonicalAhlPoolOwnersh
     }
     // Recorded winning bids for grid rows are already in the sheet baseline;
     // only a manual reassignment moves a grid player's cost between teams.
-    if (assignment?.source === 'manual' && normalizeLookupKey(assignment.team) !== normalizeLookupKey(row.owner)) {
+    addCategoryCost(reassigned ? assignment.team : row.owner, playerKey, row.cost);
+    if (reassigned) {
       applyChange(ledgerFor(row.owner), {
         playerKey, name: row.name, cost: -row.cost, slots: -1, positions, reason: 'manual-reassign-out',
       });
@@ -101,6 +115,7 @@ export function buildTeamMonies(stateObj, ownership = getCanonicalAhlPoolOwnersh
 
   assignments.forEach((assignment, playerKey) => {
     if (ownership?.draftGridByPlayerKey?.has(playerKey)) return;
+    addCategoryCost(assignment.team, playerKey, Number(assignment.bid) || 0);
     applyChange(ledgerFor(assignment.team), {
       playerKey,
       name: assignment.name,
@@ -113,18 +128,31 @@ export function buildTeamMonies(stateObj, ownership = getCanonicalAhlPoolOwnersh
 
   const teams = [...ledgers.values()].map((ledger) => {
     const hasSheetBalance = ledger.sheetRemaining !== null;
-    const spend = ledger.sheetTotalSpent !== null ? roundMoney(ledger.sheetTotalSpent + ledger.spendDelta) : null;
+    const totalSpent = ledger.sheetTotalSpent !== null ? roundMoney(ledger.sheetTotalSpent + ledger.spendDelta) : null;
     const remainingBudget = hasSheetBalance ? roundMoney(ledger.sheetRemaining - ledger.spendDelta) : null;
     const playersDrafted = Math.max(0, ledger.sheetPlayersDrafted + ledger.slotDelta);
     const baselineOpenSlots = ledger.sheetOpenSlots ?? Math.max(0, MONIES_RULES.rosterSlots - ledger.sheetPlayersDrafted);
     const openSlots = Math.max(0, baselineOpenSlots - ledger.slotDelta);
-    const maxBid = remainingBudget !== null && openSlots > 0
+    const maxPossibleBid = remainingBudget !== null && openSlots > 0
       ? roundMoney(remainingBudget - ((openSlots - 1) * MONIES_RULES.minSlotCost))
+      : null;
+    // Grid rows that do not resolve to the canonical pool stay in the sheet
+    // baseline and are reported as auction costs.
+    const unresolvedGridCosts = ledger.sheetGridCosts !== null
+      ? Math.max(0, ledger.sheetGridCosts - ledger.resolvedGridCosts)
+      : 0;
+    const keeperCosts = roundMoney(ledger.costs.keeper);
+    const rookieCosts = roundMoney(ledger.costs.rookie);
+    const draftCosts = roundMoney(ledger.costs.draft + unresolvedGridCosts);
+    const farmCosts = ledger.sheetTotalSpent !== null ? (ledger.sheetFarmCosts ?? 0) : null;
+    const unreconciledSpend = totalSpent !== null
+      ? roundMoney(totalSpent - keeperCosts - rookieCosts - draftCosts - farmCosts
+        - (ledger.penalties ?? 0) - (ledger.adjustments ?? 0))
       : null;
     return {
       team: ledger.team,
       hasSheetBaseline: hasSheetBalance,
-      spend,
+      totalSpent,
       remainingBudget,
       playersDrafted,
       openSlots,
@@ -132,9 +160,12 @@ export function buildTeamMonies(stateObj, ownership = getCanonicalAhlPoolOwnersh
         ? { count: Math.max(0, ledger.sheetSkaters.count + ledger.skaterDelta), max: ledger.sheetSkaters.max }
         : null,
       averageSpendRemaining: remainingBudget !== null && openSlots > 0 ? roundMoney(remainingBudget / openSlots) : null,
-      maxBid: maxBid !== null && maxBid >= MONIES_RULES.minSlotCost ? maxBid : null,
-      keeperCosts: ledger.keeperCosts,
-      rookieFarmCosts: ledger.rookieFarmCosts,
+      maxPossibleBid: maxPossibleBid !== null && maxPossibleBid >= MONIES_RULES.minSlotCost ? maxPossibleBid : null,
+      keeperCosts,
+      rookieCosts,
+      farmCosts,
+      draftCosts,
+      unreconciledSpend,
       penalties: ledger.penalties,
       adjustments: ledger.adjustments,
       localSpendDelta: roundMoney(ledger.spendDelta),
@@ -146,12 +177,12 @@ export function buildTeamMonies(stateObj, ownership = getCanonicalAhlPoolOwnersh
   const mapBy = (field) => Object.fromEntries(teams.map((team) => [team.team, team[field]]));
   return {
     teams,
-    teamSpendMap: mapBy('spend'),
+    teamSpendMap: mapBy('totalSpent'),
     teamRemainingMap: mapBy('remainingBudget'),
     teamSlotMap: mapBy('openSlots'),
     teamPenaltyMap: mapBy('penalties'),
     teamAdjustmentMap: mapBy('adjustments'),
-    teamMaxBidMap: mapBy('maxBid'),
+    teamMaxBidMap: mapBy('maxPossibleBid'),
     unresolvedAssignments: [...(ownership?.unresolvedAssignments || [])],
   };
 }
