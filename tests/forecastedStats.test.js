@@ -74,6 +74,11 @@ describe('forecasted stats', () => {
       .toMatchObject({ forecastedGoals: null, forecastedAssists: 4, forecastedPoints: null });
     expect(buildForecastedStats({ ProjPts: '', ProjG: '  ', ProjA: null }, null))
       .toMatchObject({ projectedPoints: null, projectedGoals: null, projectedAssists: null });
+    ['', '-', '-1', '#N/A', 'N/A', null].forEach((bad) => {
+      const parsed = normalizeDobberRows([{ Player: 'Bad Row', Games: '70', Goals: bad, Assists: bad, Points: bad, SOG: '150' }]);
+      expect(applyForecastedStats({ name: 'Bad Row' }, parsed['bad row'].forecastProjections))
+        .toMatchObject({ forecastedGoals: null, forecastedAssists: null, forecastedPoints: null });
+    });
   });
 
   test('reads Dobber Goals/Assists columns as forecasted goals and assists, leaving bad cells NULL', () => {
