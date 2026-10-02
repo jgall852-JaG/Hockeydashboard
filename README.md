@@ -37,8 +37,13 @@ Use the app to answer four questions:
 2. Open `http://127.0.0.1:3000/index.html` on that computer. On another device on the same network, use the LAN URL printed by the launcher instead of `127.0.0.1`.
 3. Follow [Hockeydashboard_Access.md](./Hockeydashboard_Access.md) for the manual Dobber uploads and cross-device setup.
 
+## Open the hosted dashboard (no launcher required)
+Open **https://jgall852-jag.github.io/Hockeydashboard/** in Edge or another modern browser, then click **Refresh AHL Sheets** for current league data. You do not need Node.js or a running local server for this address. If you previously used the local dashboard, use **Export State** there (while its launcher is running) and **Import Saved State** on the hosted page to move browser-local changes; then refresh the sheets. Personal Draft List entries have their own JSON export/import. State and uploads do not automatically sync between `127.0.0.1` and GitHub Pages.
+
+If Edge says **"127.0.0.1 refused to connect"**, you opened a local bookmark or installed local copy, not the hosted site. Either open the hosted URL above or run `Launch-Hockey-Dashboard.bat` before opening `http://127.0.0.1:3000/index.html`. Unregistering an offline service worker does not start the local server. Do not clear browser site data to fix this; that can delete locally stored state.
+
 ## How to access away from your desktop
-- **Hosted access:** enable GitHub Pages for this repository and use the published URL on laptop or phone.
+- **Hosted access:** use **https://jgall852-jag.github.io/Hockeydashboard/** on laptop or phone.
 - **Portable access:** use **Export State** before leaving your main machine, then **Import Saved State** on another browser or laptop.
 - **Phone use:** the draft board, insights, and winning-bid form are available in the responsive dashboard.
 - **Installable/offline use:** open the HTTPS Pages URL once while online, allow the offline app cache to finish, then use **Install Dashboard** or the browser's install/Add to Home Screen command. Refresh AHL Sheets before going offline.

@@ -24,8 +24,9 @@
 
 ## Hosting
 - The app can be deployed as a static site.
-- GitHub Pages is the preferred low-friction hosted option in this repo.
+- GitHub Pages is deployed at `https://jgall852-jag.github.io/Hockeydashboard/`; it does not require the local Node.js launcher. The local URL `http://127.0.0.1:3000/index.html` requires `Launch-Hockey-Dashboard.bat` to be running on the same computer. An `ERR_CONNECTION_REFUSED` at `127.0.0.1` means the local server is not reachable, not that Pages failed to deploy.
 - Hosted access improves reach from laptop/phone, but does not automatically carry browser state between devices.
+- Browser state is origin-specific: export from the local dashboard and import on Pages when transferring working state; Personal Draft List uses separate JSON export/import. Do not clear site data while troubleshooting without backing up local state.
 - `manifest.json`, install icons, and `service-worker.js` provide installability and offline shell caching on secure origins. The first successful online visit is required before offline use.
 
 ## Live data limitation
