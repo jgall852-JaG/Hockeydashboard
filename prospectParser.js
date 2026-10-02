@@ -48,6 +48,11 @@ function parseCSVLine(line) {
     return result;
 }
 
+// Prospect contracts run three seasons from the draft year; a 2023 pick expires
+// before the 2026 draft. Update AHL_DRAFT_SEASON each draft year.
+export const AHL_DRAFT_SEASON = 2026;
+export const PROSPECT_CONTRACT_YEARS = 3;
+
 function extractPlayerName(rawName) {
     if (!rawName) return "";
 
@@ -76,7 +81,7 @@ function extractPoolPosition(rawName) {
     return match ? match[1].toUpperCase() : "";
 }
 
-function parsePlayerRow(columns, owner) {
+function parsePlayerRow(columns, owner, draftSeason = AHL_DRAFT_SEASON) {
     const rawPlayer = columns[0];
     if (!rawPlayer) return null;
 
@@ -143,6 +148,11 @@ function parsePlayerRow(columns, owner) {
 
     // Matching Rights column is the 7th column (index 6) in the CSV header
     const matchingRights = String(columns[6] || '').trim().toUpperCase() === 'Y';
+    const sheetTermRemaining = termRemaining;
+    if (!farm && Number.isInteger(draftYear) && Number.isInteger(draftSeason)) {
+        termRemaining = Math.max(0, draftYear + PROSPECT_CONTRACT_YEARS - draftSeason);
+    }
+    const expired = !farm && termRemaining === 0;
 
     return {
         playerId: createPlayerId(playerName),
@@ -152,14 +162,18 @@ function parsePlayerRow(columns, owner) {
         prospect: true,
         farm,
         termRemaining,
+        sheetTermRemaining,
+        expired,
+        released: expired && !matchingRights,
         matchingRights,
         draftYear,
         poolPosition,
     };
 }
 
-export function parseProspects(csvData) {
+export function parseProspects(csvData, { draftSeason = AHL_DRAFT_SEASON } = {}) {
     const prospects = {};
+    const releasedProspects = {};
     const farmPlayers = [];
     const owners = {};
     let currentOwner = null;
@@ -188,8 +202,14 @@ export function parseProspects(csvData) {
 
         if (!currentOwner) return;
 
-        const prospect = parsePlayerRow(cols, currentOwner);
+        const prospect = parsePlayerRow(cols, currentOwner, draftSeason);
         if (!prospect) return;
+
+        // Expired contracts without matching rights return to the AHL pool.
+        if (prospect.released) {
+            releasedProspects[prospect.playerId] = prospect;
+            return;
+        }
 
         prospects[prospect.playerId] = prospect;
         owners[currentOwner].push(prospect.playerId);
@@ -201,6 +221,7 @@ export function parseProspects(csvData) {
 
     return {
         prospects,
+        releasedProspects,
         farmPlayers,
         owners,
     };
