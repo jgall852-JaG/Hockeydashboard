@@ -33,7 +33,7 @@
 ## What to check before making a pick
 - Is the snapshot current?
 - Did all configured AHL Draft and AHL Scores tabs load? Those Google Sheets are authoritative for ownership, availability, AHL positions, budgets, keeper costs, rookie/farm eligibility, and completed draft state.
-- Check Owners and League Validation Center after refresh. Unique first-initial names expand automatically from AHL pool, Prospects, or Veterans; resolve remaining names under **Resolve Draft Grid Names** and export state to preserve manual matches.
+- Check Owners and League Validation Center after refresh. Unique first-initial names expand automatically from AHL pool, Prospects, or Veterans; saved manual matches are re-resolved after spelling changes when the canonical AHL pool match remains unique. For unresolved names, use the suggested AHL pool match only when it is unique, then save the match. Export state to preserve manual matches.
 - Does Team Budgets show each AHL Draft balance? A missing balance is reported unavailable rather than estimated. Recorded bids for players not yet in the Draft 2026 grid reduce that balance and open-slot count; bids already entered in the sheet are not counted twice.
 - Are there validation errors?
 - Is the player available?

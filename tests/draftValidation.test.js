@@ -244,6 +244,43 @@ describe('draft validation report', () => {
     }));
   });
 
+  test('offers a unique AHL pool suggestion when other sources make a name ambiguous', () => {
+    const gridPlayer = { name: 'A Gritsyuk', owner: 'DRUNKEN FLYBOYS', source: 'retained-grid' };
+    const state = {
+      version: 2,
+      datasets: {
+        ahlPool: {
+          'arseni gritsyuk': { name: 'Arseni Gritsyuk', positions: ['LW'], flags: {} },
+        },
+        prospects: {
+          prospects: {
+            'arseny-gritsyuk': { name: 'Arseny Gritsyuk', owner: 'DRUNKEN FLYBOYS' },
+          },
+        },
+        veterans: { veterans: {} },
+        roster: {
+          players: { 'a-gritsyuk': gridPlayer },
+          sources: { 'retained-grid': { layout: 'retained-grid', players: { 'a-gritsyuk': gridPlayer } } },
+        },
+      },
+      metadata: {},
+    };
+
+    expect(buildDraftValidationReport(state).details.unmatchedDraftGridPlayers).toEqual([
+      expect.objectContaining({
+        sourceName: 'A Gritsyuk',
+        ahlPoolSuggestion: 'Arseni Gritsyuk',
+      }),
+    ]);
+
+    state.datasets.ahlPool['andrei gritsyuk'] = {
+      name: 'Andrei Gritsyuk',
+      positions: ['LW'],
+      flags: {},
+    };
+    expect(buildDraftValidationReport(state).details.unmatchedDraftGridPlayers[0].ahlPoolSuggestion).toBeNull();
+  });
+
   test('lets users save, edit, and remove owner-scoped ambiguous name resolutions', () => {
     const previousLocalStorage = globalThis.localStorage;
     globalThis.localStorage = { setItem: () => {} };
@@ -306,6 +343,55 @@ describe('draft validation report', () => {
         globalThis.localStorage = previousLocalStorage;
       }
     }
+  });
+
+  test('keeps saved resolutions after refresh changes a resolved name spelling', () => {
+    const gridPlayer = { name: 'A Gritsyuk', owner: 'DRUNKEN FLYBOYS', source: 'retained-grid' };
+    const state = {
+      version: 2,
+      datasets: {
+        ahlPool: {
+          'arseni gritsyuk': { name: 'Arseni Gritsyuk', positions: ['LW'], flags: {} },
+        },
+        prospects: {
+          prospects: {
+            'arseni-gritsyuk': { name: 'Arseni Gritsyuk', owner: 'DRUNKEN FLYBOYS' },
+          },
+        },
+        veterans: { veterans: {} },
+        roster: {
+          players: { 'a-gritsyuk': gridPlayer },
+          sources: { 'retained-grid': { layout: 'retained-grid', players: { 'a-gritsyuk': gridPlayer } } },
+        },
+      },
+      draftGridNameAliases: [{
+        sourceName: 'A Gritsyuk',
+        owner: 'DRUNKEN FLYBOYS',
+        targetName: 'Arseny Gritsyuk',
+      }],
+      metadata: {},
+    };
+
+    const [owner] = buildOwnerViewData(state).owners;
+    expect(owner.rosterPlayers).toMatchObject([
+      {
+        name: 'Arseni Gritsyuk',
+        sourceName: 'A Gritsyuk',
+        nameMatchMethod: 'manual',
+        nameUnresolved: false,
+      },
+    ]);
+
+    state.datasets.ahlPool['andrei gritsyuk'] = {
+      name: 'Andrei Gritsyuk',
+      positions: ['LW'],
+      flags: {},
+    };
+    const ambiguousOwner = buildOwnerViewData(state).owners[0];
+    expect(ambiguousOwner.rosterPlayers[0]).toMatchObject({
+      name: 'A Gritsyuk',
+      nameUnresolved: true,
+    });
   });
 
   test('accepts only valid $0.50 working assignment bid increments', () => {
