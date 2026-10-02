@@ -69,6 +69,8 @@ function forecastProjections(row, projections) {
     // "EVERYTHING (Skaters)" tab in the bundled Dobber draft list workbook.
     ProjPts: ['ProjPts', 'Proj Pts', 'Projected Points', 'Forecasted Points', 'Points'],
     ProjGP: ['ProjGP', 'Proj Games', 'Projected Games', 'Games', 'GP'],
+    ProjG: ['ProjG', 'Proj Goals', 'Projected Goals', 'Forecasted Goals', 'Goals'],
+    ProjA: ['ProjA', 'Proj Assists', 'Projected Assists', 'Forecasted Assists', 'Assists'],
     ProjSOG: ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots', 'SOG', 'Shots'],
   };
   const direct = Object.fromEntries(Object.entries(directFields).flatMap(([field, aliases]) => {

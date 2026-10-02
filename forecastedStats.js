@@ -1,4 +1,4 @@
-function readProjection(projections, aliases) {
+function readProjection(projections, aliases, { strict = true } = {}) {
   if (!projections || typeof projections !== 'object' || Array.isArray(projections)) return null;
   const keys = Object.keys(projections);
   const key = aliases.map((alias) => keys.find((candidate) => (
@@ -7,6 +7,9 @@ function readProjection(projections, aliases) {
   if (!key || projections[key] === null || String(projections[key]).trim() === '') return null;
   const value = Number(String(projections[key]).replace(/,/g, '').trim());
   if (!Number.isFinite(value) || value < 0) {
+    // Goals/assists are display-only; the bundled workbook has rows like Assists = -1, which
+    // should leave that field NULL rather than reject the entire Dobber import.
+    if (!strict) return null;
     throw new Error(`Dobber projection ${key} must be a nonnegative number.`);
   }
   return value;
@@ -43,6 +46,8 @@ export function buildForecastedStats(projections, historicalSplits, trendInputs 
   const projectedPoints = readProjection(projections, ['ProjPts', 'Projected Points', 'Forecasted Points', 'projectedPoints']);
   const projectedGames = readProjection(projections, ['ProjGP', 'Proj Games', 'Projected Games', 'projectedGames', 'GP']);
   const projectedShots = readProjection(projections, ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots', 'projectedShots', 'SOG', 'Shots']);
+  const projectedGoals = readProjection(projections, ['ProjG', 'Proj Goals', 'Projected Goals', 'Forecasted Goals', 'projectedGoals', 'Goals'], { strict: false });
+  const projectedAssists = readProjection(projections, ['ProjA', 'Proj Assists', 'Projected Assists', 'Forecasted Assists', 'projectedAssists', 'Assists'], { strict: false });
   let FHPPG = historicalSplits?.FHPPG ?? null;
   let SHPPG = historicalSplits?.SHPPG ?? null;
   let splitsMethod = Number.isFinite(FHPPG) && Number.isFinite(SHPPG) ? 'actual' : null;
@@ -68,7 +73,9 @@ export function buildForecastedStats(projections, historicalSplits, trendInputs 
   const compositeScore = complete
     ? Math.round((projectedPoints + 0.25 * (SHPPG - FHPPG) * projectedGames + 0.1 * projectedShots) * 100) / 100
     : null;
-  return { projectedPoints, projectedGames, projectedShots, FHPPG, SHPPG, splitsMethod, compositeScore };
+  return {
+    projectedPoints, projectedGoals, projectedAssists, projectedGames, projectedShots, FHPPG, SHPPG, splitsMethod, compositeScore,
+  };
 }
 
 export function applyForecastedStats(player, projections, trendInputs) {
@@ -81,6 +88,8 @@ export function applyForecastedStats(player, projections, trendInputs) {
     strengths,
     forecast,
     forecastedPoints: forecast.projectedPoints,
+    forecastedGoals: forecast.projectedGoals,
+    forecastedAssists: forecast.projectedAssists,
     compositeForecastScore: forecast.compositeScore,
   };
 }

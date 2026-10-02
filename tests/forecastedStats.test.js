@@ -7,6 +7,8 @@ describe('forecasted stats', () => {
     const splits = { FHPPG: 0.6, SHPPG: 0.9, sourceTab: 'Scores' };
     expect(buildForecastedStats(projections, splits)).toEqual({
       projectedPoints: 60,
+      projectedGoals: null,
+      projectedAssists: null,
       projectedGames: 80,
       projectedShots: 200,
       FHPPG: 0.6,
@@ -60,6 +62,19 @@ describe('forecasted stats', () => {
     expect(() => buildForecastedStats({ ProjGP: -1 }, {})).toThrow('Dobber projection ProjGP');
     expect(() => normalizeDobberRows([{ Player: 'Player One', ProjPts: 'maybe' }]))
       .toThrow('Dobber projection ProjPts');
+  });
+
+  test('reads Dobber Goals/Assists columns as forecasted goals and assists, leaving bad cells NULL', () => {
+    const rows = normalizeDobberRows([
+      { Player: 'Scorer', Games: '80', Goals: '36', Assists: '95', Points: '131', SOG: '300' },
+      { Player: 'Bad Assists', Games: '20', Goals: '3', Assists: '-1', Points: '2', SOG: '30' },
+    ]);
+    expect(buildForecastedStats(rows.scorer.forecastProjections, null))
+      .toMatchObject({ projectedGoals: 36, projectedAssists: 95, projectedPoints: 131 });
+    expect(buildForecastedStats(rows['bad assists'].forecastProjections, null))
+      .toMatchObject({ projectedGoals: 3, projectedAssists: null, projectedPoints: 2 });
+    expect(applyForecastedStats({ name: 'Scorer' }, rows.scorer.forecastProjections))
+      .toMatchObject({ forecastedGoals: 36, forecastedAssists: 95, forecastedPoints: 131 });
   });
 
   test('reads explicit forecast columns even when the Projections cell is narrative text', () => {

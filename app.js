@@ -125,6 +125,7 @@ const state = {
   draftBoardSearch: '',
   draftPositionFilter: '',
   bestPositionFilter: '',
+  bestAvailableSearch: '',
   draftCategoryFilter: '',
   bestAvailableSort: 'ADP',
   showRemovedPlayers: false,
@@ -3952,7 +3953,7 @@ async function hydrateDraftBoardProfiles(draftedPlayers) {
 function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) {
   const app = document.getElementById('app');
   const activeSearch = document.activeElement;
-  const focusState = ['draftBoardSearch'].includes(activeSearch?.id)
+  const focusState = ['draftBoardSearch', 'bestAvailableSearch'].includes(activeSearch?.id)
     ? { id: activeSearch.id, selectionStart: activeSearch.selectionStart, selectionEnd: activeSearch.selectionEnd }
     : null;
   const monies = draftValidationReport.monies || unifiedState.datasets.monies || rebuildTeamBudgets(unifiedState);
@@ -4055,6 +4056,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     search: state.draftBoardSearch,
     positionFilter: state.draftPositionFilter,
     bestPositionFilter: state.bestPositionFilter,
+    bestAvailableSearch: state.bestAvailableSearch,
     categoryFilter: state.draftCategoryFilter,
     bestAvailableSort: state.bestAvailableSort,
     showRemovedPlayers: state.showRemovedPlayers,
@@ -4114,6 +4116,10 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   });
   document.getElementById('bestPositionFilter')?.addEventListener('change', (event) => {
     state.bestPositionFilter = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('bestAvailableSearch')?.addEventListener('input', (event) => {
+    state.bestAvailableSearch = event.target.value || '';
     rerender();
   });
   document.getElementById('draftCategoryFilter')?.addEventListener('change', (event) => {

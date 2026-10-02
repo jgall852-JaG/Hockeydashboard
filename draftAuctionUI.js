@@ -37,7 +37,10 @@ function renderPlayerRows(players, availableKeys, personalDraftList, {
   emptyMessage = 'No matching players.',
   highlightUnavailable = false,
 } = {}) {
-  if (!players.length) return `<tr><td colspan="6" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+  if (!players.length) {
+    const colspan = kind === 'best-available' ? 5 : 6;
+    return `<tr><td colspan="${colspan}" class="empty-state">${escapeHtml(emptyMessage)}</td></tr>`;
+  }
   return players.map((player) => {
     const isAvailable = player.status !== 'not-in-ahl'
       && player.localStatus !== 'removed-local'
@@ -50,19 +53,19 @@ function renderPlayerRows(players, availableKeys, personalDraftList, {
       && !isAvailable
       && !player.ownership;
     const rowClasses = [removed ? 'removed-local' : '', unavailable ? 'ahl-unavailable' : ''].filter(Boolean).join(' ');
-    const experienceTier = player.experienceTier || player.category || 'NULL';
     const finalPosition = player.finalPosition || player.finalPositionOverride || 'NULL';
     if (kind === 'best-available') {
-      const forecastedPoints = player.forecast?.projectedPoints ?? player.forecastedPoints ?? null;
-      const compositeScore = player.forecast?.compositeScore ?? player.compositeForecastScore ?? null;
+      const forecastValue = (value) => Number.isFinite(value) ? value : 'NULL';
+      const detailsId = player.poolOnly ? '' : player.id;
       return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
-        <td><button type="button" class="link-button" data-player-details="${escapeHtml(player.id)}">${escapeHtml(player.name)}</button>
-          <button type="button" class="secondary personal-list-toggle" data-personal-add="${escapeHtml(player.id)}" ${isPersonal ? 'disabled aria-disabled="true"' : ''}>${isPersonal ? 'In List' : 'Add to Personal List'}</button></td>
+        <td>${detailsId
+    ? `<button type="button" class="link-button" data-player-details="${escapeHtml(detailsId)}">${escapeHtml(player.name)}</button>
+          <button type="button" class="secondary personal-list-toggle" data-personal-add="${escapeHtml(detailsId)}" ${isPersonal ? 'disabled aria-disabled="true"' : ''}>${isPersonal ? 'In List' : 'Add to Personal List'}</button>`
+    : `<span data-pool-player="${escapeHtml(player.id)}">${escapeHtml(player.name)}</span>`}</td>
         <td>${escapeHtml(finalPosition)}</td>
-        <td>${escapeHtml(experienceTier)}</td>
-        <td>${forecastedPoints ?? 'NULL'}</td>
-        <td>${compositeScore ?? 'NULL'}</td>
-        <td>${isAvailable ? 'Available' : 'Unavailable'}</td>
+        <td>${forecastValue(player.forecastedGoals)}</td>
+        <td>${forecastValue(player.forecastedAssists)}</td>
+        <td>${forecastValue(player.forecastedPoints)}</td>
       </tr>`;
     }
     return `<tr class="${rowClasses}" data-player-status="${escapeHtml(player.status || '')}">
@@ -81,7 +84,7 @@ function renderPlayerRows(players, availableKeys, personalDraftList, {
 function renderPlayerTable(players, availableKeys, personalDraftList, options = {}) {
   const normalizedOptions = { kind: 'board', ...options };
   const headers = normalizedOptions.kind === 'best-available'
-    ? ['Player', 'Final Position', 'Experience Tier', 'Forecasted Points', 'Composite Score', 'Availability']
+    ? ['Player', 'Final Position', 'Forecasted Goals', 'Forecasted Assists', 'Forecasted Points']
     : ['Player', 'Final Position', 'Experience Tier', 'Owner', 'Auction Value', 'Remove Locally'];
   return `<div class="table-wrap"><table class="validation-table">
     <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
@@ -337,6 +340,7 @@ export function renderDraftAuctionDashboard({
   search,
   positionFilter,
   bestPositionFilter = '',
+  bestAvailableSearch = '',
   categoryFilter,
   bestAvailableSort,
   showRemovedPlayers = false,
@@ -361,52 +365,51 @@ export function renderDraftAuctionDashboard({
     const matchesCategory = !categoryFilter || getExperienceTierFromGames(player.nhlCareerGamesPlayed) === categoryFilter;
     return matchesSearch && matchesPosition && matchesCategory;
   });
-  const bestPlayers = players.flatMap((player) => {
+  const playersByKey = new Map();
+  (players || []).forEach((player) => {
     const playerKey = normalizeLookupKey(player.name);
-    const poolPlayer = canonicalPool.get(playerKey);
-    if (!poolPlayer || !availableKeySet.has(playerKey)) return [];
+    if (playerKey && !playersByKey.has(playerKey)) playersByKey.set(playerKey, player);
+  });
+  const finiteOrNull = (...values) => values.find(Number.isFinite) ?? null;
+  // Rows come from the canonical pool ∩ availableKeys; positions come only from the pool (AHL
+  // Position + AHL Utility), never from NHL API, Dobber, or player-level position fields.
+  const bestPlayers = [...canonicalPool].flatMap(([playerKey, poolPlayer]) => {
+    if (!availableKeySet.has(playerKey)) return [];
+    const player = playersByKey.get(playerKey) || null;
+    if (player && (player.localStatus === 'removed-local' || player.status === 'not-in-ahl')) return [];
     const positions = [...(poolPlayer.positions instanceof Set
       ? poolPlayer.positions
       : poolPlayer.positions || [])];
     return [{
-      ...player,
-      finalPosition: positions.join('/') || player.finalPosition,
-      ahlPosition: poolPlayer.flags?.primaryPosition || player.ahlPosition,
-      utilityPosition: poolPlayer.flags?.utilityPosition || player.utilityPosition,
+      ...(player || { id: `pool:${playerKey}`, name: poolPlayer.name, status: 'in-ahl', poolOnly: true }),
+      team: poolPlayer.team || player?.team || '',
+      finalPosition: positions.join('/') || null,
+      finalPositionOverride: null,
+      ahlPosition: poolPlayer.flags?.primaryPosition || null,
+      utilityPosition: poolPlayer.flags?.utilityPosition || null,
+      poolPositions: positions,
+      forecastedGoals: finiteOrNull(player?.forecast?.projectedGoals, player?.forecastedGoals),
+      forecastedAssists: finiteOrNull(player?.forecast?.projectedAssists, player?.forecastedAssists),
+      forecastedPoints: finiteOrNull(player?.forecast?.projectedPoints, player?.forecastedPoints),
+      adp: finiteOrNull(player?.adp, player?.forecast?.adp),
     }];
   });
-  const sortKeys = {
-    ADP: 'adp',
-    FHPPG: 'FHPPG',
-    SHPPG: 'SHPPG',
-    'Forecasted Points': 'forecastedPoints',
-    'Composite Score': 'compositeScore',
-    'Games Played': 'gamesPlayed',
+  const bestSortOptions = ['ADP', 'Forecasted Points'];
+  const bestSort = bestAvailableSort === 'ADP' ? 'ADP' : 'Forecasted Points';
+  const compareNullable = (left, right, direction) => {
+    if (left === null) return right === null ? 0 : 1;
+    if (right === null) return -1;
+    return direction * (left - right);
   };
-  const sortValueKeys = {
-    adp: ['adp', 'forecast.adp'],
-    forecastedPoints: ['forecast.projectedPoints', 'forecastedPoints'],
-    compositeScore: ['forecast.compositeScore', 'compositeForecastScore'],
-    FHPPG: ['forecast.FHPPG', 'historicalSplits.FHPPG'],
-    SHPPG: ['forecast.SHPPG', 'historicalSplits.SHPPG'],
-    gamesPlayed: ['seasonStats.gamesPlayed'],
-  };
-  const readSortValue = (player, key) => key.split('.').reduce((value, part) => value?.[part], player);
-  const getSortValue = (player) => {
-    const key = sortKeys[bestAvailableSort] || 'adp';
-    const candidates = sortValueKeys[key] || [key];
-    return candidates.map((candidate) => readSortValue(player, candidate)).find(Number.isFinite) ?? null;
-  };
-  bestPlayers.sort((left, right) => {
-    const leftValue = getSortValue(left);
-    const rightValue = getSortValue(right);
-    if (leftValue === null || leftValue === undefined) return rightValue === null || rightValue === undefined ? left.name.localeCompare(right.name) : 1;
-    if (rightValue === null || rightValue === undefined) return -1;
-    return rightValue - leftValue || left.name.localeCompare(right.name);
-  });
-  const rankedBestPlayers = bestPlayers
-    .filter((player) => !bestPositionFilter || getAhlPlayerPositions(player).includes(bestPositionFilter))
-    .slice(0, 10);
+  bestPlayers.sort((left, right) => (bestSort === 'ADP' ? compareNullable(left.adp, right.adp, 1) : 0)
+    || compareNullable(left.forecastedPoints, right.forecastedPoints, -1)
+    || left.name.localeCompare(right.name));
+  const bestSearchKey = normalizeLookupKey(bestAvailableSearch || '');
+  const rankedBestPlayers = bestSearchKey
+    ? bestPlayers.filter((player) => normalizeLookupKey(player.name).includes(bestSearchKey))
+    : bestPlayers
+      .filter((player) => !bestPositionFilter || player.poolPositions.includes(bestPositionFilter))
+      .slice(0, 10);
   const tab = (id, label) => `<button type="button" role="tab" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
   const selected = (value, current) => value === current ? 'selected' : '';
   const localPlayerFilters = `<div class="draft-board-filters draft-local-edit-toggles">
@@ -423,7 +426,6 @@ export function renderDraftAuctionDashboard({
       ['FHPPG', 'First-Half Points per Game'],
       ['SHPPG', 'Second-Half Points per Game'],
       ['ProjPts', 'Projected Points'],
-      ['CompScore', 'Composite Forecast Score'],
       ['KVS', 'Keeper Value Score'],
       ['BPS', 'Breakout Probability Score'],
       ['RSS', 'Risk Stability Score'],
@@ -446,8 +448,10 @@ export function renderDraftAuctionDashboard({
     </div>
   </section>`;
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
-    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Top 10 currently available, undrafted players matching the selected position. Forecast fields remain NULL until source-backed projections are available.</p></div>
-      <div class="best-available-toolbar"><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
+    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">${bestSearchKey
+    ? `${rankedBestPlayers.length} currently available player${rankedBestPlayers.length === 1 ? '' : 's'} matching &ldquo;${escapeHtml(bestAvailableSearch.trim())}&rdquo; across the canonical AHL pool (position filter ignored while searching).`
+    : 'Top 10 currently available, undrafted players matching the selected position.'} Sorted by ${bestSort === 'ADP' ? 'ADP (lowest first)' : 'Forecasted Points (highest first)'}; forecast fields are NULL when Dobber has no projection.</p></div>
+      <div class="best-available-toolbar"><label>Search <input id="bestAvailableSearch" type="search" value="${escapeHtml(bestAvailableSearch)}" placeholder="Player name" /></label><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${bestSortOptions.map((key) => `<option ${selected(key, bestSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
       ${localPlayerFilters}
       ${renderPlayerTable(rankedBestPlayers, availableKeySet, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
     </div>
