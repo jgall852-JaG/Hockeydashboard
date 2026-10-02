@@ -1,6 +1,7 @@
 import { parseCSVLine } from './rosterParser.js';
 import { normalizeLookupKey } from './liveNhlApi.js';
 import { buildPositionalScarcity } from './draftIqV2.js';
+import { DRAFT_IQ_V3_WEIGHTS } from './draftIqV3.js';
 
 // fairPriceV2 = basePrice * scarcityFactor * productionFactor * poolGamesFactor * powerPlayFactor.
 // basePrice is the player's most recent past auction price (Post Draft 2025, then 2024); otherwise
@@ -11,6 +12,8 @@ export const FAIR_PRICE_V2_RANGES = Object.freeze({
   production: Object.freeze({ min: 0.9, max: 1.3 }),
   poolGames: Object.freeze({ min: 0.85, max: 1.15 }),
   powerPlay: Object.freeze({ pp1: 1.15, pp2: 1.075 }),
+  marketBudget: Object.freeze({ unchanged: 1, half: 0.95, low: 0.9, late: 0.85 }),
+  lastPlayerPremium: Object.freeze({ depleted: 1.2, scarce: 1.1, normal: 1 }),
 });
 // D and C scale within their band by canonical pool depth; wingers are fixed.
 const SCARCITY_BANDS = Object.freeze({
@@ -151,6 +154,52 @@ export function getPowerPlayFactor(ppUnit) {
   return 1;
 }
 
+export function getBudgetFactor(monies) {
+  const teams = monies?.teams || [];
+  if (!teams.length || teams.some((team) => (
+    !Number.isFinite(team?.totalSpent) || !Number.isFinite(team?.remainingBudget)
+  ))) return 1;
+  let totalInitialBudget = 0;
+  let totalRemainingBudget = 0;
+  for (const team of teams) {
+    totalInitialBudget += team.totalSpent + team.remainingBudget;
+    totalRemainingBudget += team.remainingBudget;
+  }
+  if (!(totalInitialBudget > 0)) return 1;
+  const budgetTrend = totalRemainingBudget / totalInitialBudget;
+  if (budgetTrend >= 0.75) return FAIR_PRICE_V2_RANGES.marketBudget.unchanged;
+  if (budgetTrend >= 0.5) return FAIR_PRICE_V2_RANGES.marketBudget.half;
+  if (budgetTrend >= 0.3) return FAIR_PRICE_V2_RANGES.marketBudget.low;
+  return FAIR_PRICE_V2_RANGES.marketBudget.late;
+}
+
+export function getLastPlayerPremium(positions, remainingQualityByPosition, initialQualityByPosition) {
+  const premiums = (positions || []).map((position) => {
+    const initialQuality = finite(initialQualityByPosition?.[position]);
+    const remainingQuality = finite(remainingQualityByPosition?.[position]);
+    if (initialQuality === null || !(initialQuality > 0) || remainingQuality === null) {
+      return FAIR_PRICE_V2_RANGES.lastPlayerPremium.normal;
+    }
+    const remainingShare = remainingQuality / initialQuality;
+    if (remainingShare < 0.25) return FAIR_PRICE_V2_RANGES.lastPlayerPremium.depleted;
+    if (remainingShare < 0.4) return FAIR_PRICE_V2_RANGES.lastPlayerPremium.scarce;
+    return FAIR_PRICE_V2_RANGES.lastPlayerPremium.normal;
+  });
+  return premiums.length ? Math.max(...premiums) : FAIR_PRICE_V2_RANGES.lastPlayerPremium.normal;
+}
+
+export function calculateMarketPrice({
+  fairPriceV2,
+  psychologyFactor = 1,
+  scarcityTrendFactor = 1,
+  budgetFactor = 1,
+  lastPlayerPremium = 1,
+} = {}) {
+  if (!(finite(fairPriceV2) > 0)) return null;
+  const scaled = fairPriceV2 * psychologyFactor * scarcityTrendFactor * budgetFactor * lastPlayerPremium;
+  return Math.round(scaled * 2) / 2;
+}
+
 export function calculateFairPriceV2({
   basePrice,
   scarcityFactor = 1,
@@ -169,9 +218,12 @@ export function computeFairPriceV2({
   availableKeys,
   players = [],
   pastAuctions = null,
+  monies = null,
+  draftIQv3 = {},
   getPoolGamesForTeam = () => null,
 } = {}) {
   const pool = ahlPool instanceof Map ? [...ahlPool] : Object.entries(ahlPool || {});
+  const availableKeySet = availableKeys instanceof Set ? availableKeys : new Set(availableKeys || []);
   const positionsByKey = new Map(pool.map(([playerKey, poolPlayer]) => [
     playerKey,
     [...(poolPlayer?.positions instanceof Set ? poolPlayer.positions : poolPlayer?.positions || [])],
@@ -208,6 +260,22 @@ export function computeFairPriceV2({
       ppUnit,
     };
   });
+  const initialQualityByPosition = {};
+  const remainingQualityByPosition = {};
+  entries.forEach(({ playerKey, positions }) => {
+    const scoreRecord = draftIQv3?.[playerKey];
+    const score = finite(scoreRecord?.draftIQ);
+    if (score === null) return;
+    const selectedTeamNeedsBoost = finite(scoreRecord?.inputs?.teamNeedsBoost) ?? 0;
+    const leagueNeutralScore = score - (DRAFT_IQ_V3_WEIGHTS.teamNeedsBoost * selectedTeamNeedsBoost);
+    positions.forEach((position) => {
+      initialQualityByPosition[position] = (initialQualityByPosition[position] || 0) + leagueNeutralScore;
+      if (availableKeySet.has(playerKey)) {
+        remainingQualityByPosition[position] = (remainingQualityByPosition[position] || 0) + leagueNeutralScore;
+      }
+    });
+  });
+  const budgetFactor = getBudgetFactor(monies);
 
   const tierPrices = {};
   entries.forEach(({ tier, pastPrice }) => {
@@ -238,11 +306,28 @@ export function computeFairPriceV2({
       poolGamesFactor: round2(getRatioFactor(totalPoolGames, leagueAveragePoolGames, FAIR_PRICE_V2_RANGES.poolGames)),
       powerPlayFactor: getPowerPlayFactor(ppUnit),
     };
+    const fairPriceV2 = calculateFairPriceV2({ basePrice, ...factors });
+    const lastPlayerPremium = getLastPlayerPremium(
+      positions,
+      remainingQualityByPosition,
+      initialQualityByPosition,
+    );
     result[playerKey] = {
-      fairPriceV2: calculateFairPriceV2({ basePrice, ...factors }),
+      fairPriceV2,
+      marketPrice: calculateMarketPrice({
+        fairPriceV2,
+        psychologyFactor: 1,
+        scarcityTrendFactor: 1,
+        budgetFactor,
+        lastPlayerPremium,
+      }),
       basePrice,
       baseSource,
       ...factors,
+      psychologyFactor: 1,
+      scarcityTrendFactor: 1,
+      budgetFactor,
+      lastPlayerPremium,
       ppUnit,
       poolPoints,
       totalPoolGames,

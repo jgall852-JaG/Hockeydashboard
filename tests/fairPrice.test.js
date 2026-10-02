@@ -1,7 +1,10 @@
 import {
   buildPastAuctionPrices,
   calculateFairPriceV2,
+  calculateMarketPrice,
   computeFairPriceV2,
+  getBudgetFactor,
+  getLastPlayerPremium,
   getPoolPoints,
   getPowerPlayFactor,
   getRatioFactor,
@@ -116,6 +119,40 @@ describe('fairPriceV2 factors', () => {
     expect(calculateFairPriceV2({ basePrice: 10, powerPlayFactor: getPowerPlayFactor(2) })).toBe(10.75);
   });
 
+  test('market budget factor follows remaining-league-budget thresholds', () => {
+    const factorAt = (remaining) => getBudgetFactor({
+      teams: [{ totalSpent: 1000 - remaining, remainingBudget: remaining }],
+    });
+    expect(factorAt(750)).toBe(1);
+    expect(factorAt(749)).toBe(0.95);
+    expect(factorAt(500)).toBe(0.95);
+    expect(factorAt(499)).toBe(0.9);
+    expect(factorAt(300)).toBe(0.9);
+    expect(factorAt(299)).toBe(0.85);
+    expect(getBudgetFactor({ teams: [{ totalSpent: null, remainingBudget: 300 }] })).toBe(1);
+  });
+
+  test('last-decent-player premium compares available positional quality with full-pool quality', () => {
+    expect(getLastPlayerPremium(['C'], { C: 24 }, { C: 100 })).toBe(1.2);
+    expect(getLastPlayerPremium(['C'], { C: 39 }, { C: 100 })).toBe(1.1);
+    expect(getLastPlayerPremium(['C'], { C: 40 }, { C: 100 })).toBe(1);
+    expect(getLastPlayerPremium(['C', 'D'], { C: 20, D: 50 }, { C: 100, D: 100 })).toBe(1.2);
+    expect(getLastPlayerPremium(['C'], { C: 0 }, { C: 0 })).toBe(1);
+  });
+
+  test('market price combines economic factors and rounds to the nearest half dollar', () => {
+    expect(calculateMarketPrice({
+      fairPriceV2: 20,
+      psychologyFactor: 1,
+      scarcityTrendFactor: 1,
+      budgetFactor: 0.9,
+      lastPlayerPremium: 1.2,
+    })).toBe(21.5);
+    expect(calculateMarketPrice({ fairPriceV2: 20.13 })).toBe(20);
+    expect(calculateMarketPrice({ fairPriceV2: 20.13, budgetFactor: 0.95 })).toBe(19);
+    expect(calculateMarketPrice({ fairPriceV2: null })).toBeNull();
+  });
+
   test('fairPriceV2 multiplies base price by all factors and rounds to 2 decimals', () => {
     expect(calculateFairPriceV2({ basePrice: 10, scarcityFactor: 1.15, productionFactor: 1.1, poolGamesFactor: 0.95 })).toBe(12.02);
     expect(calculateFairPriceV2({ basePrice: null })).toBeNull();
@@ -200,5 +237,39 @@ describe('computeFairPriceV2', () => {
     expect(prices['pp1 player'].fairPriceV2).toBeGreaterThan(prices['pp2 player'].fairPriceV2);
     expect(prices['pp2 player'].fairPriceV2).toBeGreaterThan(prices['pp0 player'].fairPriceV2);
     expect(prices['pp0 player'].fairPriceV2).toBe(prices['pp unknown'].fairPriceV2);
+  });
+
+  test('computes team-budget compression and quality depletion premium with keepers in initial quality', () => {
+    const qualityPool = pool([
+      ['available center', ['C']],
+      ['keeper center', ['C']],
+    ]);
+    const prices = computeFairPriceV2({
+      ahlPool: qualityPool,
+      availableKeys: new Set(['available center']),
+      players: [
+        { name: 'Available Center', tier: 3 },
+        { name: 'Keeper Center', tier: 3 },
+      ],
+      monies: {
+        teams: [
+          { totalSpent: 100, remainingBudget: 150 },
+          { totalSpent: 250, remainingBudget: 500 },
+        ],
+      },
+      draftIQv3: {
+        'available center': { draftIQ: 40, inputs: { teamNeedsBoost: 100 } },
+        'keeper center': { draftIQ: 60, inputs: { teamNeedsBoost: 0 } },
+      },
+    });
+
+    expect(prices['available center']).toMatchObject({
+      fairPriceV2: 13.6,
+      budgetFactor: 0.95,
+      lastPlayerPremium: 1.1,
+      psychologyFactor: 1,
+      scarcityTrendFactor: 1,
+      marketPrice: 14,
+    });
   });
 });
