@@ -12,7 +12,7 @@ describe('prospectParser basic parsing', () => {
     ];
 
     const csv = rows.join('\n');
-    const data = parseProspects(csv);
+    const data = parseProspects(csv, { draftSeason: null });
 
     const prospects = data.prospects;
     const keys = Object.keys(prospects);
@@ -66,7 +66,7 @@ describe('prospectParser expanded cases', () => {
     ];
 
     const csv = rows.join('\n');
-    const data = parseProspects(csv);
+    const data = parseProspects(csv, { draftSeason: null });
 
     const prospectValues = Object.values(data.prospects);
     expect(prospectValues.length).toBe(9);
@@ -146,5 +146,43 @@ describe('prospectParser expanded cases', () => {
     expect(fr.farm).toBe(true);
     // matching rights should be true even for farm players when column contains Y
     expect(fr.matchingRights).toBe(true);
+  });
+});
+
+describe('prospect contract expiry', () => {
+  const csv = [
+    'TEAMS,COST,Term Remaining,YR1,YR2,YR3,Matching Rights',
+    'YEASTIE BEASTIES,,,,,,',
+    'Brandt Clarke D - 2023,$3.00,1,X,X,X,N',
+    'Mavrik Bourque C - 2024,$1.00,1,X,X,X,Y',
+    'Gabriel Perreault RW - 2025,$0.50,2,X,X,,Y',
+    'Tij Iginla LW - 2025,$0.50,FARM,,,,Y',
+    'HEBREW HAMMERS,,,,,,',
+    'Connor Bedard C - 2023,$42.50,0,X,X,X,Y',
+  ].join('\n');
+
+  test('derives term from draft year and releases expired prospects without matching rights', () => {
+    const data = parseProspects(csv, { draftSeason: 2026 });
+    const byName = Object.fromEntries(Object.values(data.prospects).map((p) => [p.name, p]));
+
+    expect(byName['Brandt Clarke']).toBeUndefined();
+    expect(data.owners['YEASTIE BEASTIES']).not.toContain('brandt-clarke');
+    expect(Object.values(data.releasedProspects)).toEqual([
+      expect.objectContaining({
+        name: 'Brandt Clarke',
+        owner: 'YEASTIE BEASTIES',
+        draftYear: 2023,
+        termRemaining: 0,
+        sheetTermRemaining: 1,
+        expired: true,
+        released: true,
+      }),
+    ]);
+    expect(byName['Mavrik Bourque']).toMatchObject({ termRemaining: 1, expired: false });
+    expect(byName['Gabriel Perreault']).toMatchObject({ termRemaining: 2, expired: false });
+    expect(byName['Tij Iginla']).toMatchObject({ farm: true, termRemaining: null, expired: false });
+    expect(byName['Connor Bedard']).toMatchObject({
+      termRemaining: 0, expired: true, released: false, matchingRights: true,
+    });
   });
 });

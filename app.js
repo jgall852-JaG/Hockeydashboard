@@ -10,6 +10,7 @@ import {
   buildAvailableAhlPoolKeys,
   buildCanonicalAhlPool,
   getCanonicalAhlPoolOwnership,
+  hasCanonicalAhlPool,
   parseAhlScoreSheet,
   serializeCanonicalAhlPool,
 } from './ahlSheetIngestion.js';
@@ -404,6 +405,7 @@ export function buildOwnerViewData(rawState) {
     new Set(),
     stateObj.localEdits,
     stateObj.workingAssignments,
+    { protectedKeys: getProtectedOwnerKeys(stateObj) },
   );
   const effectiveByKey = new Map(localEditView.players.map((player) => [player.playerKey, player]));
   const prospectsArr = prospectsArrRaw.map((player) => effectiveByKey.get(player.playerKey) || player);
@@ -746,6 +748,7 @@ function normalizeState(stateObj) {
 
 function applyAhlSheetIntelligence(stateObj) {
   if (!state.draftIntelligence || stateObj?.metadata?.ahlSheets?.status !== 'ok') return;
+  if (isCanonicalPoolRefreshRequired(stateObj)) return;
   const { ownership } = rebuildCanonicalAhlPoolState(stateObj);
   const report = buildDraftValidationReport(stateObj);
   let ahlOutputs = buildAhlDraftIntelligenceOutputs(
@@ -771,6 +774,7 @@ function applyAhlSheetIntelligence(stateObj) {
         new Set(stateObj.datasets.availableKeys || []),
         stateObj.localEdits,
         stateObj.workingAssignments,
+        { protectedKeys: getProtectedOwnerKeys(stateObj, ownership) },
       ).players;
     }),
     stateObj,
@@ -1191,11 +1195,15 @@ function parsePortableStateBundle(bundle) {
     throw new Error('This file does not contain a Hockey Dashboard saved state.');
   }
 
+  const appState = normalizeState(appStateSource);
+  const poolGuard = guardImportedCanonicalPool(appState);
+
   return {
-    appState: normalizeState(appStateSource),
+    appState,
     liveCache: sanitizeLiveCache(candidate?.liveCache),
     exportedAt: candidate?.exportedAt || null,
     format: candidate?.format || 'legacy',
+    poolWarning: poolGuard.warning,
   };
 }
 
@@ -1263,6 +1271,7 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
   };
   next.localEdits = markLocalEditsUpdated(createEmptyLocalEdits(), next.localEdits.lastUpdated);
   next.metadata.localDraftEdits = next.localEdits;
+  next.metadata.ahlPool = { status: 'ok', rebuiltAt: new Date().toISOString(), warning: null };
   rebuildCanonicalAhlPoolState(next);
   return next;
 }
@@ -1384,7 +1393,44 @@ function getOfficialPoolAliasOwners(stateObj) {
   return getCanonicalAhlPoolOwnership(stateObj);
 }
 
+const CANONICAL_POOL_REFRESH_WARNING = 'Imported snapshot has no canonical AHL pool. Click Refresh AHL Sheets to rebuild it from AHL Position + Utility before using Best Available.';
+
+function isCanonicalPoolRefreshRequired(stateObj) {
+  return stateObj?.metadata?.ahlPool?.status === 'needs-refresh';
+}
+
+function guardImportedCanonicalPool(appState) {
+  if (hasCanonicalAhlPool(appState?.datasets?.ahlPool)) {
+    return { trusted: true, warning: null };
+  }
+  appState.datasets.ahlPool = {};
+  appState.datasets.availableKeys = [];
+  appState.metadata.ahlPool = {
+    status: 'needs-refresh',
+    warning: CANONICAL_POOL_REFRESH_WARNING,
+    detectedAt: new Date().toISOString(),
+  };
+  return { trusted: false, warning: CANONICAL_POOL_REFRESH_WARNING };
+}
+
+function getProtectedOwnerKeys(stateObj, ownership = null) {
+  const keys = new Set(ownership?.protectedKeys || []);
+  [
+    ...Object.values(stateObj?.datasets?.prospects?.prospects || {}),
+    ...Object.values(stateObj?.datasets?.veterans?.veterans || {}),
+  ].forEach((record) => {
+    const key = normalizeLookupKey(record?.name);
+    if (key) keys.add(key);
+  });
+  return keys;
+}
+
 function rebuildCanonicalAhlPoolState(stateObj) {
+  if (isCanonicalPoolRefreshRequired(stateObj)) {
+    stateObj.datasets.ahlPool = {};
+    stateObj.datasets.availableKeys = [];
+    return { ownership: getOfficialPoolAliasOwners(stateObj), availableKeys: new Set() };
+  }
   const roster = stateObj?.datasets?.roster;
   const positionRows = Object.values(roster?.sources?.inventory?.players || {});
   const utilityRows = Object.values(roster?.sources?.utility?.players || {});
@@ -1433,7 +1479,9 @@ function updateTopbarActions(currentState = state.importedData || DEFAULT_STATE)
   const googleSnapshotLoaded = hasGoogleSheetSnapshot(currentState);
 
   if (liveRefreshStatus) {
-    if (state.liveRefreshMessage && googleSnapshotLoaded) {
+    if (isCanonicalPoolRefreshRequired(currentState)) {
+      liveRefreshStatus.textContent = currentState.metadata.ahlPool.warning || CANONICAL_POOL_REFRESH_WARNING;
+    } else if (state.liveRefreshMessage && googleSnapshotLoaded) {
       liveRefreshStatus.textContent = state.liveRefreshMessage;
     } else if (googleSnapshotLoaded) {
       liveRefreshStatus.textContent = 'Google Sheets snapshot loaded';
@@ -1505,7 +1553,8 @@ function applyPortableStateBundle(bundle) {
   state.liveCache = sanitizeLiveCache(parsed.liveCache);
   state.liveProfiles = state.liveCache.players ? { ...state.liveCache.players } : {};
   state.liveRequests = {};
-  state.liveRefreshMessage = hasGoogleSheetSnapshot(parsed.appState) ? 'Google Sheets snapshot loaded' : '';
+  state.liveRefreshMessage = parsed.poolWarning
+    || (hasGoogleSheetSnapshot(parsed.appState) ? 'Google Sheets snapshot loaded' : '');
   state.selectedOwner = null;
   state.selectedPlayerKey = null;
 
@@ -3890,6 +3939,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     sourceAvailableKeys,
     unifiedState.localEdits,
     unifiedState.workingAssignments,
+    { protectedKeys: getProtectedOwnerKeys(unifiedState, getOfficialPoolAliasOwners(unifiedState)) },
   );
   const availableKeys = localDraftView.availableKeys;
   const players = localDraftView.players.map((player) => ({
@@ -4941,4 +4991,5 @@ export {
   refreshGoogleSheetState,
   serializePortableStateBundle,
   parsePortableStateBundle,
+  rebuildCanonicalAhlPoolState,
 };
