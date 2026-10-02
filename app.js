@@ -128,7 +128,7 @@ const state = {
   bestPositionFilter: '',
   bestAvailableSearch: '',
   draftCategoryFilter: '',
-  bestAvailableSort: 'ADP',
+  bestAvailableSort: 'Forecasted Points',
   bestAvailableNeedsTeam: '',
   showRemovedPlayers: false,
   highlightUnavailablePlayers: false,
@@ -843,6 +843,21 @@ function hasLocalDobberImport(metadata, sourceName, records) {
     && !/onedrive|dobber excel everything|fantasy guide and prospect report/i.test(sourceName);
 }
 
+// Bump when the normalized Dobber player shape gains fields that stored local
+// imports cannot back-fill (v2 = forecast Goals/Assists via ProjG/ProjA).
+const DOBBER_EXCEL_SCHEMA_VERSION = 2;
+
+// A local import saved before ProjG/ProjA were captured carries forecast
+// points but no goals/assists, which would leave those columns NULL forever.
+function isStaleLocalDobberImport(dobber, players) {
+  if (Number(dobber?.excelSchemaVersion) >= DOBBER_EXCEL_SCHEMA_VERSION) return false;
+  const projections = Object.values(players || {})
+    .map((player) => player?.forecastProjections)
+    .filter((entry) => entry && typeof entry === 'object');
+  if (!projections.some((entry) => entry.ProjPts !== undefined)) return false;
+  return !projections.some((entry) => entry.ProjG !== undefined || entry.ProjA !== undefined);
+}
+
 async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
   const next = normalizeState(stateObj);
   const existingExcelMetadata = next.metadata.dobberExcel || {};
@@ -855,11 +870,14 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
   let prospectMetadataByPlayerKey = current.prospectMetadataByPlayerKey || {};
   let excelError = '';
   let pdfError = '';
-  const hasLocalExcel = hasLocalDobberImport(
+  const storedLocalExcel = hasLocalDobberImport(
     next.metadata.dobberExcel,
     current.excelSourceName || next.metadata.dobberExcel?.sourceName,
     Object.keys(players).length,
   );
+  const staleLocalExcel = storedLocalExcel && isStaleLocalDobberImport(current, players);
+  const stalePlayers = staleLocalExcel ? players : null;
+  let hasLocalExcel = storedLocalExcel && !staleLocalExcel;
   const hasLocalPdfs = hasLocalDobberImport(
     next.metadata.dobberPdfs,
     current.pdfSourceName || next.metadata.dobberPdfs?.sourceName,
@@ -879,6 +897,17 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
   }
   const hasBundledExcel = !hasLocalExcel && Boolean(bundledPlayers);
   if (hasBundledExcel) players = bundledPlayers;
+  let excelWarning = '';
+  if (staleLocalExcel) {
+    if (hasBundledExcel) {
+      excelWarning = 'Saved Dobber Excel import predates forecast Goals/Assists; using the bundled workbook. Re-import Dobber Excel to use your own file.';
+    } else {
+      // Without a bundled fallback, the stale import is still better than nothing.
+      players = stalePlayers;
+      hasLocalExcel = true;
+      excelWarning = 'Saved Dobber Excel import predates forecast Goals/Assists; re-import Dobber Excel to fill them.';
+    }
+  }
   const excelLoaded = hasLocalExcel || hasBundledExcel;
   const excelImportedAt = hasLocalExcel ? current.excelImportedAt || null : (hasBundledExcel ? new Date().toISOString() : null);
   next.metadata.dobberExcel = {
@@ -892,6 +921,7 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
     lastAttempt: existingExcelMetadata.lastAttempt,
     records: excelLoaded ? Object.keys(players).length : 0,
     error: excelError,
+    warning: excelWarning,
   };
 
   let bundledPdfResult = null;
@@ -931,6 +961,9 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
     prospectMetadataByPlayerKey,
     excelSourceName: next.metadata.dobberExcel.sourceName,
     excelImportedAt: next.metadata.dobberExcel.importedAt,
+    excelSchemaVersion: staleLocalExcel && !hasBundledExcel
+      ? current.excelSchemaVersion ?? null
+      : DOBBER_EXCEL_SCHEMA_VERSION,
     pdfSourceName: next.metadata.dobberPdfs.sourceName,
     pdfImportedAt: next.metadata.dobberPdfs.importedAt,
   };
@@ -941,7 +974,7 @@ async function refreshDobberState(stateObj, fetchImpl = globalThis.fetch) {
     state: next,
     message: [
       statusLabel,
-      [excelError && `Excel: ${excelError}`, pdfError && `PDFs: ${pdfError}`].filter(Boolean).join(' | '),
+      [excelError && `Excel: ${excelError}`, excelWarning && `Excel: ${excelWarning}`, pdfError && `PDFs: ${pdfError}`].filter(Boolean).join(' | '),
     ].filter(Boolean).join(': '),
   };
 }
@@ -4159,7 +4192,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     });
   });
   document.getElementById('bestAvailableSort')?.addEventListener('change', (event) => {
-    state.bestAvailableSort = event.target.value || 'ADP';
+    state.bestAvailableSort = event.target.value || 'Forecasted Points';
     rerender();
   });
   const localPlayerKey = (playerId) => normalizeLookupKey(
@@ -4714,6 +4747,7 @@ async function importDobberExcelFile(file) {
     players: attachDobberIntel(result.players, current.intelByPlayerKey, current.prospectMetadataByPlayerKey),
     excelSourceName: result.fileName,
     excelImportedAt: result.lastImport,
+    excelSchemaVersion: DOBBER_EXCEL_SCHEMA_VERSION,
   };
   next.metadata.dobberStatus = 'loaded-local';
   renderDobberImportStatus('excel', next.metadata.dobberExcel, result);

@@ -7,7 +7,7 @@
 4. Confirm the AHL source status is loaded and validation shows no blocking ownership or availability conflicts.
 5. Confirm UNPRICED warnings when Dobber Excel or player-level score inputs have not been supplied.
 6. If OneDrive refresh reports 401/403, use **Import Dobber Excel** or its drop zone with the workbook containing `EVERYTHING (Skaters)`; optionally import both Dobber PDFs using their button or drop zone.
-7. Confirm successful local imports show `loaded-local`, a parsed player count, and the last-import time. Invalid workbook/PDF warnings remain visible; remote failures stay `unavailable`.
+7. Confirm successful local imports show `loaded-local`, a parsed player count, and the last-import time. Invalid workbook/PDF warnings remain visible; remote failures stay `unavailable`. If the status says a saved Dobber Excel import "predates forecast Goals/Assists", click **Import Dobber Excel** again.
 8. Confirm the offline snapshot timestamp and install the dashboard from the browser or use **Install Dashboard**.
 9. Use your laptop for drafting. Use your phone only for quick lookup or emergency access.
 
@@ -41,7 +41,7 @@
 - Are player-level score inputs available? If not, DraftIQ and auction values must remain UNPRICED.
 - Is Final Position sourced from Utility when listed, and from AHL Position otherwise?
 - Are manual removals, assignments, and unassignments intentional? They are browser-local overlays, remain offline, and clear only after a successful AHL refresh. Local Dobber imports preserve them.
-- Best Available lists only currently available players from the canonical AHL pool (top 25 per position; columns Final Position, Forecasted Goals/Assists/Points, and DraftIQ; sorted by ADP, Forecasted Points, or DraftIQ). Positions come only from AHL Position + Utility. Pick your team in the **Team needs** selector so DraftIQ includes your positional needs; use its Search box to find any available player by name. **Show Removed Players** controls visibility of commissioner removals.
+- Best Available lists only currently available players from the canonical AHL pool (top 25 per position; columns Final Position, Forecasted Goals/Assists/Points, and DraftIQ; sorted by Forecasted Points, DraftIQ, or ADP once ADP data exists). Positions come only from AHL Position + Utility. Pick your team in the **Team needs** selector so DraftIQ includes your positional needs; use its Search box to find any available player by name. **Show Removed Players** controls visibility of commissioner removals.
 - Draft Board shows Draft 2026 owners and prices plus local winning bids; Best Available shows the remaining eligible players. Show Removed Players reveals locally hidden rows so they can be restored. NHL career GP may be unavailable, in which case the displayed Draft Board Experience Tier defaults to Veteran with a warning.
 - **Reset Local Edits** is in Tools & Validation and runs the normal authoritative AHL refresh. Edits clear only when that refresh succeeds; local Dobber files are retained and reapplied.
 - Have you exported your Personal Draft List JSON if using another device? LocalStorage and IndexedDB do not sync between devices.

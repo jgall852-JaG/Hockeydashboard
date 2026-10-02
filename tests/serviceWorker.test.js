@@ -69,19 +69,19 @@ describe('service worker caching', () => {
   test('serves fresh network JavaScript and refreshes the versioned cache', async () => {
     const sw = loadServiceWorker({ fetchImpl: async () => createResponse('new bundle') });
     await sw.dispatch('install');
-    expect([...sw.stores.keys()]).toEqual(['hockeydashboard-v22']);
-    expect(sw.stores.get('hockeydashboard-v22').has(`${SCOPE}app.js`)).toBe(true);
+    expect([...sw.stores.keys()]).toEqual(['hockeydashboard-v23']);
+    expect(sw.stores.get('hockeydashboard-v23').has(`${SCOPE}app.js`)).toBe(true);
 
     const { response } = await sw.dispatch('fetch', { request: getRequest('./app.js') });
     expect(response.body).toBe('new bundle');
     expect(sw.fetchMock).toHaveBeenCalledWith(expect.objectContaining({ url: `${SCOPE}app.js` }), { cache: 'no-cache' });
-    expect(sw.stores.get('hockeydashboard-v22').get(`${SCOPE}app.js`).body).toBe('new bundle');
+    expect(sw.stores.get('hockeydashboard-v23').get(`${SCOPE}app.js`).body).toBe('new bundle');
   });
 
   test('pre-caches GitHub Pages relative paths without consulting the HTTP cache', async () => {
     const sw = loadServiceWorker({ fetchImpl: async () => createResponse('unused') });
     await sw.dispatch('install');
-    const cachedUrls = [...sw.stores.get('hockeydashboard-v22').keys()];
+    const cachedUrls = [...sw.stores.get('hockeydashboard-v23').keys()];
     expect(cachedUrls).toContain(`${SCOPE}index.html`);
     expect(cachedUrls).toContain(`${SCOPE}draftIqV2.js`);
     expect(cachedUrls.every((url) => url.startsWith(SCOPE))).toBe(true);
@@ -112,16 +112,16 @@ describe('service worker caching', () => {
   test('activation deletes only stale dashboard caches', async () => {
     const sw = loadServiceWorker({
       fetchImpl: async () => createResponse('network'),
-      existingCaches: ['hockeydashboard-v21', 'hockey-dashboard-static-v16', 'hockeydashboard-v22', 'other-app-v1'],
+      existingCaches: ['hockeydashboard-v22', 'hockey-dashboard-static-v16', 'hockeydashboard-v23', 'other-app-v1'],
     });
     await sw.dispatch('activate');
-    expect([...sw.stores.keys()].sort()).toEqual(['hockeydashboard-v22', 'other-app-v1']);
+    expect([...sw.stores.keys()].sort()).toEqual(['hockeydashboard-v23', 'other-app-v1']);
   });
 
   test('does not cache failed responses', async () => {
     const sw = loadServiceWorker({ fetchImpl: async () => createResponse('server error', { ok: false }) });
     const { response } = await sw.dispatch('fetch', { request: getRequest('./app.js') });
     expect(response.body).toBe('server error');
-    expect(sw.stores.get('hockeydashboard-v22')?.has(`${SCOPE}app.js`) || false).toBe(false);
+    expect(sw.stores.get('hockeydashboard-v23')?.has(`${SCOPE}app.js`) || false).toBe(false);
   });
 });
