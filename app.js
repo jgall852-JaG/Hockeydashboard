@@ -182,6 +182,7 @@ const state = {
   draftBoardSearch: '',
   draftPositionFilter: '',
   bestPositionFilter: '',
+  bestAvailablePoolGamesFilter: '',
   bestAvailableSearch: '',
   draftCategoryFilter: '',
   bestAvailableSort: 'Forecasted Points',
@@ -4533,6 +4534,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     search: state.draftBoardSearch,
     positionFilter: state.draftPositionFilter,
     bestPositionFilter: state.bestPositionFilter,
+    bestAvailablePoolGamesFilter: state.bestAvailablePoolGamesFilter,
     bestAvailableSearch: state.bestAvailableSearch,
     categoryFilter: state.draftCategoryFilter,
     bestAvailableSort: state.bestAvailableSort,
@@ -4668,6 +4670,10 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   });
   document.getElementById('bestPositionFilter')?.addEventListener('change', (event) => {
     state.bestPositionFilter = event.target.value || '';
+    rerender();
+  });
+  document.getElementById('bestAvailablePoolGamesFilter')?.addEventListener('change', (event) => {
+    state.bestAvailablePoolGamesFilter = event.target.value || '';
     rerender();
   });
   document.getElementById('bestAvailableSearch')?.addEventListener('input', (event) => {
