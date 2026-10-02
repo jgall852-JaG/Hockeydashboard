@@ -41,7 +41,7 @@ Use the app to answer four questions:
 - **Hosted access:** enable GitHub Pages for this repository and use the published URL on laptop or phone.
 - **Portable access:** use **Export State** before leaving your main machine, then **Import Saved State** on another browser or laptop.
 - **Phone use:** the draft board, insights, and winning-bid form are available in the responsive dashboard.
-- **Installable/offline use:** open the HTTPS Pages URL once while online, allow the offline app cache to finish, then use **Install Dashboard** or the browser's install/Add to Home Screen command. Refresh AHL Sheets before going offline.
+- **Installable/offline use:** open the HTTPS Pages URL once while online, allow the offline app cache to finish, then use **Install Dashboard** or the browser's install/Add to Home Screen command. Refresh AHL Sheets before going offline. While online, the app always loads the latest deployed files (network-first); the offline cache is only a fallback, so a normal reload picks up new releases.
 - **Offline limits:** cached app files, generated JSON, the last successful AHL snapshot, and browser-local draft state are available offline. AHL refresh and other network sources require a connection. The static app does not synchronize LocalStorage or IndexedDB between devices; export/import is the portable handoff.
 
 ## Data you need

@@ -1,4 +1,9 @@
-const CACHE_NAME = 'hockey-dashboard-static-v16';
+// Bump CACHE_VERSION on every deploy that changes cached assets.
+const CACHE_VERSION = 'v17';
+const CACHE_PREFIX = 'hockeydashboard-';
+const CACHE_NAME = `${CACHE_PREFIX}${CACHE_VERSION}`;
+// Caches created by earlier releases of this dashboard before the prefix change.
+const LEGACY_CACHE_PREFIX = 'hockey-dashboard-static-';
 const APP_SHELL = [
   './',
   './index.html',
@@ -39,7 +44,8 @@ const APP_SHELL = [
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
+      // `reload` bypasses the HTTP cache so a new version never pre-caches stale files.
+      .then((cache) => cache.addAll(APP_SHELL.map((url) => new Request(url, { cache: 'reload' }))))
       .then(() => self.skipWaiting()),
   );
 });
@@ -49,37 +55,46 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((cacheNames) => Promise.all(
         cacheNames
-          .filter((cacheName) => cacheName.startsWith('hockey-dashboard-static-') && cacheName !== CACHE_NAME)
+          .filter((cacheName) => cacheName !== CACHE_NAME && (
+            cacheName.startsWith(CACHE_PREFIX) || cacheName.startsWith(LEGACY_CACHE_PREFIX)
+          ))
           .map((cacheName) => caches.delete(cacheName)),
       ))
       .then(() => self.clients.claim()),
   );
 });
 
-self.addEventListener('fetch', (event) => {
-  const request = event.request;
-  const requestUrl = new URL(request.url);
-  if (request.method !== 'GET' || requestUrl.origin !== self.location.origin) return;
+async function cacheFreshResponse(request, response) {
+  if (!response.ok || response.type === 'opaque') return;
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response);
+  } catch (error) {
+    console.warn('Dashboard cache update failed', error);
+  }
+}
 
-  const networkResponse = fetch(request).then(async (response) => {
-    if (response.ok) {
-      const cache = await caches.open(CACHE_NAME);
-      await cache.put(request, response.clone());
-    }
+async function networkFirst(event) {
+  const { request } = event;
+  try {
+    // `no-cache` revalidates with the server so a reload always gets the deployed bundle.
+    const response = await fetch(request, { cache: 'no-cache' });
+    event.waitUntil(cacheFreshResponse(request, response.clone()));
     return response;
-  });
-  event.waitUntil(networkResponse.then(() => undefined).catch(() => undefined));
-  event.respondWith((async () => {
-    const cached = await caches.match(request, { ignoreSearch: true });
+  } catch (error) {
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(request, { ignoreSearch: true });
     if (cached) return cached;
-    try {
-      return await networkResponse;
-    } catch (error) {
-      if (request.mode === 'navigate') {
-        const appShell = await caches.match('./index.html');
-        if (appShell) return appShell;
-      }
-      throw new Error(`Offline resource is not cached: ${requestUrl.pathname}`, { cause: error });
+    if (request.mode === 'navigate') {
+      const appShell = await cache.match('./index.html');
+      if (appShell) return appShell;
     }
-  })());
+    throw new Error(`Offline resource is not cached: ${new URL(request.url).pathname}`, { cause: error });
+  }
+}
+
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  event.respondWith(networkFirst(event));
 });

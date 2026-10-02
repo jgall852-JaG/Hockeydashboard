@@ -27,6 +27,7 @@
 - GitHub Pages is the preferred low-friction hosted option in this repo.
 - Hosted access improves reach from laptop/phone, but does not automatically carry browser state between devices.
 - `manifest.json`, install icons, and `service-worker.js` provide installability and offline shell caching on secure origins. The first successful online visit is required before offline use.
+- The service worker is network-first for same-origin GET requests: online reloads always fetch the deployed files (bypassing the HTTP cache) and refresh the `hockeydashboard-<version>` cache; the cache is used only when the network fails, with `./index.html` as the navigation fallback. Non-GET and cross-origin requests (Google Sheets, NHL API) are not intercepted. Bump `CACHE_VERSION` in `service-worker.js` when the asset list changes; activation deletes older `hockeydashboard-*` and legacy `hockey-dashboard-static-*` caches.
 
 ## Live data limitation
 - Direct browser requests to the NHL API are limited by CORS, so NHL career GP, positions, and roster data are preloaded into a static snapshot (`data/nhl-snapshot.json`, generated offline by `scripts/build-nhl-snapshot.mjs`) and read locally at runtime — there is no live NHL API call from the browser or the local launcher.
