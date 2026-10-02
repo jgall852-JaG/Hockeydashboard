@@ -221,9 +221,13 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
     const found = Object.entries(projections).find(([key]) => targetKeys.has(normalizeLookupKey(key).replace(/\s+/g, '')));
     return found?.[1] ?? null;
   };
-  const metricMarkup = (rows) => rows
+  const isMissingMetric = (value) => value === null || value === undefined
+    || (typeof value === 'string' && (!value.trim() || value.trim().toLowerCase() === 'null'));
+  const metricMarkup = (rows, { hideMissing = false, alwaysShow = [] } = {}) => rows
+    .filter(([label, value]) => !hideMissing || !isMissingMetric(value) || alwaysShow.includes(label))
     .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value ?? 'NULL')}</dd></div>`)
     .join('');
+  const scoreValue = (value) => Number.isFinite(value) ? value.toFixed(2) : value;
   const projectionRows = Object.entries(projections).map(([label, value]) => [label, value]);
   const forecastRows = [
     ['Forecasted Goals', player.forecastedGoals ?? player.forecast?.projectedGoals],
@@ -238,10 +242,10 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
     ['FHPPG', player.forecast?.FHPPG],
     ['SHPPG', player.forecast?.SHPPG],
     ['Splits Method', player.forecast?.splitsMethod],
-    ['PPS', player.production?.PPS],
-    ['RSS', player.deployment?.RSS],
-    ['RRS', player.deployment?.RRS],
-    ['BPS', player.prospect?.BPS],
+    ['PPS', scoreValue(player.production?.PPS)],
+    ['RSS', scoreValue(player.deployment?.RSS)],
+    ['RRS', scoreValue(player.deployment?.RRS)],
+    ['BPS', scoreValue(player.prospect?.BPS)],
     ...projectionRows,
   ];
   const scoreRows = [
@@ -302,17 +306,22 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['PP Unit', player.ppUnit ?? projectionValue('PP Unit', 'PPUnit', 'PP')],
           ['TOI', projectionValue('TOI', 'Time on Ice')],
           ['PPTOI', projectionValue('PPTOI', 'PP TOI', 'Power Play Time on Ice')],
-        ])}</dl></article>
+        ], { hideMissing: true })}</dl></article>
         <article class="detail-card"><h3>Forecasted Stats (Dobber Projections)</h3><dl class="kv-list">${metricMarkup(forecastRows)}</dl></article>
         <article class="detail-card"><h3>Historical Splits (AHL Scores)</h3><dl class="kv-list">${metricMarkup([
           ['FHPPG', player.forecast?.FHPPG ?? player.historicalSplits?.FHPPG],
           ['SHPPG', player.forecast?.SHPPG ?? player.historicalSplits?.SHPPG],
           ['Source tab', player.historicalSplits?.sourceTab],
         ])}</dl></article>
-        <article class="detail-card"><h3>Composite Forecast Score</h3><dl class="kv-list">${metricMarkup(scoreRows)}</dl></article>
-        <article class="detail-card"><h3>Risk &amp; Pedigree (Dobber PDF Intel)</h3><dl class="kv-list">${metricMarkup(riskRows)}</dl>
+        <article class="detail-card"><h3>Composite Forecast Score</h3><dl class="kv-list">${metricMarkup(scoreRows, {
+          hideMissing: true,
+          alwaysShow: ['Composite Score', 'Forecasted Points'],
+        })}</dl></article>
+        <article class="detail-card"><h3>Risk &amp; Pedigree (Dobber PDF Intel)</h3><dl class="kv-list">${metricMarkup(riskRows, { hideMissing: true })}
           <p><strong>Strengths:</strong> ${(player.strengths || []).map(escapeHtml).join(', ') || 'NULL'}</p>
-          <p><strong>Risks:</strong> ${(player.risks || []).map(escapeHtml).join(', ') || 'NULL'}</p>
+          ${(player.risks || []).some((risk) => !isMissingMetric(risk))
+    ? `<p><strong>Risks:</strong> ${player.risks.filter((risk) => !isMissingMetric(risk)).map(escapeHtml).join(', ')}</p>`
+    : ''}
         </article>
         ${prospect ? `<article class="detail-card"><h3>Prospect Intelligence (Dobber Report)</h3><dl class="kv-list">${metricMarkup(prospectRows)}</dl>
           ${prospect.writeUp ? `<p>${escapeHtml(prospect.writeUp)}</p>` : ''}
@@ -321,7 +330,7 @@ function renderModal(player, teams, teamBudgets, selectedTeam, fairPrice = null)
           ['KVS', player.keeper?.KVS],
           ['Salary', player.salary],
           ['AAV', player.aav],
-        ])}</dl></article>
+        ], { hideMissing: true, alwaysShow: ['KVS', 'Salary'] })}</dl></article>
         <article class="detail-card"><h3>Availability</h3><dl class="kv-list">${metricMarkup([
           ['Owner', player.ownership || 'NULL'],
           ['Availability', availability],
