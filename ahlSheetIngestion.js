@@ -100,6 +100,97 @@ function getSourceRecords(roster, sourceKey) {
   return Object.values(roster?.sources?.[sourceKey]?.players || {});
 }
 
+function normalizePoolPosition(value) {
+  const position = String(value || '').trim().toUpperCase();
+  if (position === 'L') return 'LW';
+  if (position === 'R') return 'RW';
+  if (position === 'LD' || position === 'RD') return 'D';
+  return ['C', 'LW', 'RW', 'D', 'G'].includes(position) ? position : null;
+}
+
+function parsePoolPositions(value) {
+  return String(value || '')
+    .split(/[\/,&\s]+/)
+    .map(normalizePoolPosition)
+    .filter(Boolean);
+}
+
+function hasRightsFlag(record) {
+  return [record?.rights, record?.matchingRights, record?.matchingrights, record?.flags?.rights]
+    .some((value) => value === true || String(value || '').trim().toUpperCase() === 'Y');
+}
+
+export function buildCanonicalAhlPool(positionRows, utilityRows = []) {
+  const pool = new Map();
+  (positionRows || []).forEach((record) => {
+    const name = String(record?.name || '').trim();
+    const playerKey = normalizeLookupKey(name);
+    if (!playerKey) return;
+    const existing = pool.get(playerKey) || {
+      playerKey,
+      name,
+      team: String(record?.nhlteam || record?.team || '').trim(),
+      positions: new Set(),
+      rights: false,
+      flags: {
+        fromPositionSheet: false,
+        fromUtilitySheet: false,
+        primaryPosition: null,
+        utilityPositions: [],
+        utilityPosition: null,
+      },
+    };
+    const primaryPosition = normalizePoolPosition(record?.position || record?.poolposition);
+    if (primaryPosition) {
+      existing.positions.add(primaryPosition);
+      existing.flags.primaryPosition = existing.flags.primaryPosition || primaryPosition;
+    }
+    existing.team = existing.team || String(record?.nhlteam || record?.team || '').trim();
+    existing.rights ||= hasRightsFlag(record);
+    existing.flags.fromPositionSheet = true;
+    pool.set(playerKey, existing);
+  });
+
+  (utilityRows || []).forEach((record) => {
+    const playerKey = normalizeLookupKey(record?.name);
+    const existing = pool.get(playerKey);
+    if (!existing) return;
+    const utilityPositions = parsePoolPositions(record?.poolposition || record?.eligibility || record?.utilityPosition);
+    utilityPositions.forEach((position) => existing.positions.add(position));
+    existing.flags.utilityPositions = [...new Set([...existing.flags.utilityPositions, ...utilityPositions])];
+    existing.flags.utilityPosition = existing.flags.utilityPosition
+      || String(record?.poolposition || record?.eligibility || record?.utilityPosition || '').trim()
+      || null;
+    existing.flags.fromUtilitySheet = true;
+    existing.rights ||= hasRightsFlag(record);
+  });
+
+  return pool;
+}
+
+export function serializeCanonicalAhlPool(pool) {
+  const entries = pool instanceof Map ? [...pool] : Object.entries(pool || {});
+  return Object.fromEntries(entries.map(([playerKey, player]) => [
+    playerKey,
+    {
+      ...player,
+      positions: [...(player.positions instanceof Set ? player.positions : player.positions || [])],
+      flags: { ...(player.flags || {}) },
+    },
+  ]));
+}
+
+function getCanonicalPoolEntries(ahlPool) {
+  const entries = ahlPool instanceof Map ? [...ahlPool] : Object.entries(ahlPool || {});
+  return entries.map(([playerKey, player]) => [
+    playerKey,
+    {
+      ...player,
+      positions: player.positions instanceof Set ? player.positions : new Set(player.positions || []),
+    },
+  ]);
+}
+
 function buildAliasRecordMap(records) {
   const aliases = new Map();
   (records || []).forEach((record) => {
@@ -124,28 +215,90 @@ function resolveAliasRecord(name, recordsByAlias) {
     .find(Boolean) || null;
 }
 
-function getOfficialPoolAliasOwners(roster) {
-  const officialPoolRecords = [
-    ...getSourceRecords(roster, 'retained-grid'),
-    ...getSourceRecords(roster, 'league-layout'),
-  ];
-  const officialPoolNames = new Set(officialPoolRecords
-    .map((record) => normalizeLookupKey(record.name))
-    .filter(Boolean));
-  const aliasOwners = new Map();
-  officialPoolRecords.forEach((record) => {
-    const nameKey = normalizeLookupKey(record.name);
-    getRosterPlayerIdentityAliases(record.name).forEach((alias) => {
-      const currentOwner = aliasOwners.get(alias);
-      aliasOwners.set(alias, currentOwner === undefined || currentOwner === nameKey ? nameKey : null);
+export function getCanonicalAhlPoolOwnership(stateObj) {
+  const poolEntries = getCanonicalPoolEntries(stateObj?.datasets?.ahlPool);
+  const aliasesToPoolKeys = new Map();
+  poolEntries.forEach(([playerKey, player]) => {
+    getRosterPlayerIdentityAliases(player.name).forEach((alias) => {
+      const current = aliasesToPoolKeys.get(alias);
+      aliasesToPoolKeys.set(alias, current === undefined || current === playerKey ? playerKey : null);
     });
   });
-  return { officialPoolRecords, officialPoolNames, aliasOwners };
+
+  const ownersByPlayerKey = new Map(poolEntries.map(([playerKey]) => [playerKey, new Set()]));
+  const draftedKeys = new Set();
+  const assignedKeys = new Set();
+  const rightsKeys = new Set();
+  const removedKeys = new Set();
+  const resolvePoolKey = (name) => getRosterPlayerIdentityAliases(name)
+    .map((alias) => aliasesToPoolKeys.get(alias))
+    .find(Boolean) || null;
+  const markOwner = (record, keySet = null) => {
+    const playerKey = resolvePoolKey(record?.name || record?.playerName);
+    if (!playerKey) return;
+    if (keySet) keySet.add(playerKey);
+    const owner = String(record?.owner || record?.team || '').trim();
+    if (!owner) return;
+    ownersByPlayerKey.get(playerKey).add(owner);
+  };
+
+  const prospects = Object.values(stateObj?.datasets?.prospects?.prospects || {});
+  const veterans = Object.values(stateObj?.datasets?.veterans?.veterans || {});
+  prospects.forEach((record) => {
+    markOwner(record);
+    if (hasRightsFlag(record) || (record.matchingRights && Number(record.termRemaining) === 0)) {
+      const key = resolvePoolKey(record.name);
+      if (key) rightsKeys.add(key);
+    }
+  });
+  veterans.forEach((record) => markOwner(record));
+
+  const draftGrid = stateObj?.datasets?.roster?.sources?.['retained-grid']?.players || {};
+  Object.values(draftGrid).forEach((record) => markOwner(record, draftedKeys));
+  Object.values(stateObj?.datasets?.draft?.players || {}).forEach((record) => markOwner(record, draftedKeys));
+  Object.values(stateObj?.datasets?.roster?.sources?.['league-layout']?.players || {})
+    .forEach((record) => markOwner(record));
+
+  const assignments = [
+    ...Object.values(stateObj?.workingAssignments || {}),
+    ...Object.entries(stateObj?.localEdits?.manualAssignments || {}).map(([name, team]) => ({ name, team })),
+  ];
+  assignments.forEach((record) => markOwner(record, assignedKeys));
+
+  (stateObj?.localEdits?.manualUnassign || []).forEach((name) => {
+    const key = resolvePoolKey(name);
+    if (!key) return;
+    ownersByPlayerKey.get(key).clear();
+    draftedKeys.delete(key);
+    assignedKeys.delete(key);
+  });
+
+  (stateObj?.localEdits?.removedPlayers || []).forEach((name) => {
+    const key = resolvePoolKey(name);
+    if (key) removedKeys.add(key);
+  });
+
+  poolEntries.forEach(([playerKey, player]) => {
+    if (player.rights || player.flags?.rights) rightsKeys.add(playerKey);
+    const rightsOwner = player.flags?.rightsOwner || player.rightsOwner;
+    if (rightsOwner) ownersByPlayerKey.get(playerKey).add(String(rightsOwner).trim());
+  });
+
+  return { ownersByPlayerKey, draftedKeys, assignedKeys, rightsKeys, removedKeys };
 }
 
-function isInOfficialPool(player, officialPoolNames, aliasOwners) {
-  return officialPoolNames.has(normalizeLookupKey(player.name))
-    || getRosterPlayerIdentityAliases(player.name).some((alias) => Boolean(aliasOwners.get(alias)));
+export function buildAvailableAhlPoolKeys(stateObj) {
+  const poolEntries = getCanonicalPoolEntries(stateObj?.datasets?.ahlPool);
+  const ownership = getCanonicalAhlPoolOwnership(stateObj);
+  return new Set(poolEntries
+    .filter(([playerKey]) => (
+      !ownership.ownersByPlayerKey.get(playerKey)?.size
+      && !ownership.draftedKeys.has(playerKey)
+      && !ownership.assignedKeys.has(playerKey)
+      && !ownership.rightsKeys.has(playerKey)
+      && !ownership.removedKeys.has(playerKey)
+    ))
+    .map(([playerKey]) => playerKey));
 }
 
 function clearIneligiblePricing(player) {
@@ -170,12 +323,11 @@ function clearIneligiblePricing(player) {
 }
 
 export function applyAhlEligibilityToPlayers(players, stateObj) {
-  const roster = stateObj?.datasets?.roster;
-  const { officialPoolNames, aliasOwners } = getOfficialPoolAliasOwners(roster);
+  const officialPoolNames = new Set(getCanonicalPoolEntries(stateObj?.datasets?.ahlPool).map(([, player]) => normalizeLookupKey(player.name)));
   return (players || []).map((player) => {
     const status = player.manualOverrideSource
       ? 'not-in-ahl'
-      : isInOfficialPool(player, officialPoolNames, aliasOwners) ? 'in-ahl' : 'not-in-ahl';
+      : officialPoolNames.has(normalizeLookupKey(player.name)) ? 'in-ahl' : 'not-in-ahl';
     return status === 'not-in-ahl'
       ? { ...clearIneligiblePricing(player), status }
       : { ...player, status };
@@ -334,7 +486,7 @@ export function getAhlHistoricalSplits(stateObj, playerName) {
   return { FHPPG: null, SHPPG: null, sourceTab: null };
 }
 
-export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePlayers = []) {
+export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, poolOwnership = null) {
   if (!outputs?.players || !outputs?.auction || !outputs?.tiers || !outputs?.keepers || !outputs?.prospects) {
     throw new Error('All five Draft Intelligence outputs must be loaded before AHL sheet ingestion.');
   }
@@ -345,13 +497,35 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
     throw new Error('AHL Position data is empty.');
   }
 
-  const utilityByAlias = buildAliasRecordMap(utilityRecords);
+  const canonicalPool = buildCanonicalAhlPool(positionRecords, utilityRecords);
+  if (!canonicalPool.size) {
+    throw new Error('AHL Position data did not contain any canonical player records.');
+  }
+  stateObj.datasets.ahlPool = serializeCanonicalAhlPool(canonicalPool);
+  const ownership = poolOwnership?.ownersByPlayerKey instanceof Map
+    ? poolOwnership
+    : getCanonicalAhlPoolOwnership(stateObj);
+  const availableKeys = buildAvailableAhlPoolKeys(stateObj);
+  canonicalPool.forEach((player, playerKey) => {
+    player.flags.owners = [...(ownership.ownersByPlayerKey.get(playerKey) || [])];
+    player.flags.drafted = ownership.draftedKeys.has(playerKey);
+    player.flags.assigned = ownership.assignedKeys.has(playerKey);
+    player.flags.rights = ownership.rightsKeys.has(playerKey);
+    player.flags.removed = ownership.removedKeys.has(playerKey);
+    player.flags.available = availableKeys.has(playerKey);
+  });
+  stateObj.datasets.ahlPool = serializeCanonicalAhlPool(canonicalPool);
+  stateObj.datasets.availableKeys = [...availableKeys];
+
   const positionByAlias = buildAliasRecordMap(positionRecords);
+  const positionByKey = new Map(positionRecords.map((record) => [normalizeLookupKey(record.name), record]));
   const rosterByName = new Map(Object.values(roster?.players || {}).map((record) => [normalizeLookupKey(record.name), record]));
-  const { officialPoolRecords, officialPoolNames, aliasOwners } = getOfficialPoolAliasOwners(roster);
+  const officialPoolRecords = [
+    ...getSourceRecords(roster, 'retained-grid'),
+    ...getSourceRecords(roster, 'league-layout'),
+  ];
   const prospectRecords = Object.values(stateObj?.datasets?.prospects?.prospects || {});
   const prospectByName = new Map(prospectRecords.map((record) => [normalizeLookupKey(record.name), record]));
-  const availableNames = new Set(availablePlayers.map((record) => normalizeLookupKey(record.name)));
   const currentPlayers = outputs.players.players || [];
   const currentByName = new Map(currentPlayers.map((player) => [normalizeLookupKey(player.name), player]));
   const existingOverrides = stateObj?.manualOverrides || [];
@@ -362,21 +536,18 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
   };
   const candidates = new Map();
 
-  positionRecords.forEach((record) => {
-    const key = normalizeLookupKey(record.name);
-    if (!key) return;
-    const utilityRecord = resolveAliasRecord(record.name, utilityByAlias);
+  canonicalPool.forEach((poolPlayer, key) => {
+    const record = positionByKey.get(key);
+    if (!record) return;
     const rosterRecord = rosterByName.get(key) || record;
     const prospectRecord = prospectByName.get(key) || null;
     const id = currentByName.get(key)?.id || key.replace(/\s+/g, '-');
-    const ahlPosition = normalizeBasePosition(record.position);
-    const utilityPositionValue = Object.entries(UTILITY_POSITION_BY_PLAYER)
-      .find(([name]) => normalizeLookupKey(name) === key)?.[1] || null;
-    const hasUtilityEligibility = utilityRecord && utilityPositionValue;
-    const utilityPosition = hasUtilityEligibility ? utilityPositionValue : null;
-    const finalPosition = combineFinalPosition(ahlPosition, utilityPosition);
+    const ahlPosition = poolPlayer.flags.primaryPosition;
+    const utilityPosition = poolPlayer.flags.utilityPosition;
+    const finalPosition = [...poolPlayer.positions].join('/') || null;
+    const owners = [...(ownership.ownersByPlayerKey.get(key) || [])];
     const player = createUnpricedPlayer(
-      record.name,
+      poolPlayer.name,
       id,
       {
         ...rosterRecord,
@@ -388,21 +559,20 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, availablePla
       currentByName.get(key),
       sourceAvailability,
     );
+    player.team = poolPlayer.team || player.team;
+    player.owner = owners[0] || player.owner || null;
+    player.ownership = owners[0] || player.ownership || null;
     player.position = finalPosition;
     player.finalPosition = finalPosition;
     player.ahlPosition = ahlPosition;
     player.utilityPosition = utilityPosition || null;
     player.experienceTier = player.category;
-    player.available = availableNames.has(key);
+    player.available = availableKeys.has(key);
     player.availability = player.available ? 'available' : 'unavailable';
     player.historicalSplits = getAhlHistoricalSplits(stateObj, player.name);
     player.nhlPosition = null;
     player.sourcesUsed = { ...sourceAvailability };
-    const presentInOfficialPool = isInOfficialPool(player, officialPoolNames, aliasOwners);
-    player.status = presentInOfficialPool ? 'in-ahl' : 'not-in-ahl';
-    if (player.status === 'not-in-ahl') {
-      Object.assign(player, clearIneligiblePricing(player));
-    }
+    player.status = 'in-ahl';
     candidates.set(key, player);
   });
 

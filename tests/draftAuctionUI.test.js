@@ -1,6 +1,23 @@
 import { getExperienceTierFromGames, renderDraftAuctionDashboard } from '../draftAuctionUI.js';
 import { buildDraftBoardPlayers } from '../app.js';
 
+function createAhlPool(players) {
+  return Object.fromEntries(players.map((player) => {
+    const positions = [...new Set(String(player.finalPosition || player.position || '')
+      .split(/[\/,\s]+/)
+      .filter(Boolean)
+      .map((position) => position === 'L' ? 'LW' : position === 'R' ? 'RW' : position))];
+    return [player.name.toLowerCase(), {
+      playerKey: player.name.toLowerCase(),
+      name: player.name,
+      team: player.team || '',
+      positions,
+      rights: false,
+      flags: { primaryPosition: positions[0] || null },
+    }];
+  }));
+}
+
 describe('draft auction dashboard rendering', () => {
   test('renders four views, explicit missing-data status, and winning-bid controls', () => {
     const player = {
@@ -126,11 +143,12 @@ describe('draft auction dashboard rendering', () => {
     const formerProspect = { ...player, id: 'former-prospect', name: 'Brandt Clarke', status: 'not-in-ahl' };
     const props = {
       players: [player, removedPlayer, formerProspect],
+      ahlPool: createAhlPool([player, removedPlayer]),
       draftedPlayers: [
         { ...player, draftOwner: 'TEAM A', draftPrice: 4.5, nhlCareerGamesPlayed: 82 },
         { ...removedPlayer, draftOwner: 'TEAM B', draftPrice: 2, nhlCareerGamesPlayed: null },
       ],
-      availableKeys: new Set(['official player', 'removed player']),
+      availableKeys: new Set(['official player']),
       shortlist: new Set(),
       search: '',
       positionFilter: '',
@@ -167,7 +185,7 @@ describe('draft auction dashboard rendering', () => {
     const bestPanel = bestHtml.slice(bestHtml.indexOf('id="best-available-panel"'));
     expect(bestPanel).not.toContain('data-player-status="not-in-ahl"');
     expect(bestPanel).not.toContain('data-player-details="removed-player"');
-    expect(bestPanel).not.toContain('data-player-details="official-player"');
+    expect(bestPanel).toContain('data-player-details="official-player"');
   });
 
   test('excludes unavailable and removed players from Best Available regardless of removed-player display setting', () => {
@@ -190,6 +208,7 @@ describe('draft auction dashboard rendering', () => {
     const props = {
       activeTab: 'best-available',
       players: [player, removedPlayer, { ...player, id: 'former', name: 'Brandt Clarke', status: 'not-in-ahl' }],
+      ahlPool: createAhlPool([player, removedPlayer]),
       availableKeys: new Set(),
       shortlist: new Set(),
       search: '',
@@ -255,6 +274,7 @@ describe('draft auction dashboard rendering', () => {
     const props = {
       activeTab: 'draft-board',
       players: [availablePlayer, draftedPlayer, removedPlayer],
+      ahlPool: createAhlPool([availablePlayer, draftedPlayer, removedPlayer]),
       draftedPlayers: [draftedPlayer, removedPlayer],
       availableKeys: new Set(['available player']),
       shortlist: new Set(),
@@ -415,6 +435,7 @@ describe('draft auction dashboard rendering', () => {
     const props = {
       activeTab: 'best-available',
       players: [player],
+      ahlPool: createAhlPool([player]),
       availableKeys: new Set(['available player']),
       shortlist: new Set(),
       search: '',
@@ -443,7 +464,7 @@ describe('draft auction dashboard rendering', () => {
     expect(header).not.toContain('Auction Value');
     expect(header).not.toContain('Max Bid');
     expect(panel).toContain('data-player-details="available"');
-    expect(panel).toMatch(/<td>C\/L<\/td>\s*<td>Veteran<\/td>\s*<td>60<\/td>\s*<td>86<\/td>\s*<td>Available<\/td>/);
+    expect(panel).toMatch(/<td>C\/LW<\/td>\s*<td>Veteran<\/td>\s*<td>60<\/td>\s*<td>86<\/td>\s*<td>Available<\/td>/);
     expect(panel.slice(panel.indexOf('<tbody>'))).not.toContain('RW');
     const sortOptions = panel.match(/<select id="bestAvailableSort">([\s\S]*?)<\/select>/)[1];
     expect(sortOptions.match(/<option [^>]*>[^<]+<\/option>/g)).toEqual([
@@ -482,7 +503,7 @@ describe('draft auction dashboard rendering', () => {
       { id: 'high', name: 'High', status: 'in-ahl', finalPosition: 'LW', seasonStats: { gamesPlayed: 82 }, forecast: { projectedPoints: 60, compositeScore: 86, FHPPG: 0.6, SHPPG: 0.9 } },
     ];
     const props = {
-      activeTab: 'best-available', players, availableKeys: new Set(['low', 'missing', 'high']),
+      activeTab: 'best-available', players, ahlPool: createAhlPool(players), availableKeys: new Set(['low', 'missing', 'high']),
       shortlist: new Set(), search: '', positionFilter: '', categoryFilter: '',
       availabilityFilter: 'all', bestAvailableSort: 'Composite Score',
       teamBudgets: [], teamNames: [], selectedPlayer: null, selectedTeam: '',
@@ -511,7 +532,8 @@ describe('draft auction dashboard rendering', () => {
     const draftedPlayers = [{ ...players[31], draftOwner: 'TEAM A', draftPrice: 3 }];
     const props = {
       activeTab: 'best-available', players, draftedPlayers,
-      availableKeys: new Set(players.map((player) => player.name.toLowerCase())),
+      ahlPool: createAhlPool(players),
+      availableKeys: new Set(players.filter((player) => player.id !== 'player-31').map((player) => player.name.toLowerCase())),
       bestAvailableSort: 'Games Played', search: '', positionFilter: '',
       categoryFilter: '', teamBudgets: [], teamNames: [], selectedPlayer: null,
       selectedTeam: '', sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
@@ -543,8 +565,9 @@ describe('draft auction dashboard rendering', () => {
     const props = {
       activeTab: 'best-available',
       players,
+      ahlPool: createAhlPool(players),
       draftedPlayers: [],
-      availableKeys: new Set(['listed', 'removed', 'outside pool']),
+      availableKeys: new Set(['listed']),
       bestAvailableSort: 'ADP',
       search: '',
       teamBudgets: [],
@@ -579,6 +602,7 @@ describe('draft auction dashboard rendering', () => {
     const props = {
       activeTab: 'best-available',
       players: [undraftedUnavailable, undraftedAvailable],
+      ahlPool: createAhlPool([undraftedUnavailable, undraftedAvailable]),
       draftedPlayers: [],
       availableKeys: new Set(['open prospect']),
       search: '',

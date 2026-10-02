@@ -7,7 +7,11 @@ import {
   applyAhlEligibility,
   applyAhlEligibilityToPlayers,
   buildAhlDraftIntelligenceOutputs,
+  buildAvailableAhlPoolKeys,
+  buildCanonicalAhlPool,
+  getCanonicalAhlPoolOwnership,
   parseAhlScoreSheet,
+  serializeCanonicalAhlPool,
 } from './ahlSheetIngestion.js';
 import {
   addPersonalDraftListEntry,
@@ -196,7 +200,11 @@ const DATASET_NAMES = Object.freeze([
 ]);
 
 function createEmptyDatasets() {
-  return Object.fromEntries(DATASET_NAMES.map((name) => [name, null]));
+  return {
+    ...Object.fromEntries(DATASET_NAMES.map((name) => [name, null])),
+    ahlPool: {},
+    availableKeys: [],
+  };
 }
 
 function createEmptyMetadata() {
@@ -379,6 +387,9 @@ export function buildOwnerViewData(rawState) {
   const prospectsArrRaw = Object.values(stateObj.datasets.prospects?.prospects || {}).map((player) => decoratePlayer(player, 'prospect'));
   const veteransArrRaw = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
   const rosterArrRaw = Object.values(stateObj.datasets.roster?.players || {}).map((player) => decoratePlayer(player, 'roster'));
+  const retainedGridPlayers = stateObj.datasets.roster?.sources?.['retained-grid']?.players;
+  const draftRosterArr = Object.values(retainedGridPlayers || stateObj.datasets.roster?.players || {})
+    .map((player) => decoratePlayer(player, 'roster'));
 
   // Merge in local draft edits (manual assignments) and recorded winning bids
   // (workingAssignments) so Tools & Validation reflects drafted players
@@ -403,7 +414,7 @@ export function buildOwnerViewData(rawState) {
   // derive owners from dataset owners maps if present
   if (stateObj.datasets.prospects?.owners) Object.keys(stateObj.datasets.prospects.owners).forEach((o) => ownerSet.add(o));
   if (stateObj.datasets.veterans?.owners) Object.keys(stateObj.datasets.veterans.owners).forEach((o) => ownerSet.add(o));
-  rosterArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
+  draftRosterArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
 
   // derive from player records as well
   prospectsArr.forEach((p) => { if (p && p.owner) ownerSet.add(p.owner); });
@@ -413,7 +424,7 @@ export function buildOwnerViewData(rawState) {
     const sourceOwnerProspects = prospectsArr.filter((p) => p.owner === owner);
     const ownerProspects = sourceOwnerProspects.filter((p) => !hasZeroYearsAvailable(p));
     const ownerVeterans = veteransArr.filter((p) => p.owner === owner);
-    const ownerRosterPlayers = rosterArr.filter((p) => p.owner === owner);
+    const ownerRosterPlayers = draftRosterArr.filter((p) => p.owner === owner);
     const farmPlayers = ownerProspects.filter((p) => p.farm);
     const matchingRights = sourceOwnerProspects.filter((p) => hasZeroYearsAvailable(p) && p.matchingRights);
 
@@ -735,11 +746,12 @@ function normalizeState(stateObj) {
 
 function applyAhlSheetIntelligence(stateObj) {
   if (!state.draftIntelligence || stateObj?.metadata?.ahlSheets?.status !== 'ok') return;
+  const { ownership } = rebuildCanonicalAhlPoolState(stateObj);
   const report = buildDraftValidationReport(stateObj);
   let ahlOutputs = buildAhlDraftIntelligenceOutputs(
     state.draftIntelligence,
     stateObj,
-    report.availablePlayers,
+    ownership,
   );
   const generatedOverrides = ahlOutputs.missingPositionOverrides || [];
   const retainedOverrides = (stateObj.manualOverrides || [])
@@ -756,7 +768,7 @@ function applyAhlSheetIntelligence(stateObj) {
       const eligiblePlayers = applyAhlEligibilityToPlayers(players, stateObj);
       return applyLocalDraftEdits(
         eligiblePlayers,
-        new Set(report.availablePlayers.map((player) => normalizeLookupKey(player.name))),
+        new Set(stateObj.datasets.availableKeys || []),
         stateObj.localEdits,
         stateObj.workingAssignments,
       ).players;
@@ -1251,6 +1263,7 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
   };
   next.localEdits = markLocalEditsUpdated(createEmptyLocalEdits(), next.localEdits.lastUpdated);
   next.metadata.localDraftEdits = next.localEdits;
+  rebuildCanonicalAhlPoolState(next);
   return next;
 }
 
@@ -1365,6 +1378,41 @@ function mergeRosterDataset(currentRoster, parsedData, sourceName) {
     sourceName: sourceName || null,
   };
   return rebuildRosterDataset(sources);
+}
+
+function getOfficialPoolAliasOwners(stateObj) {
+  return getCanonicalAhlPoolOwnership(stateObj);
+}
+
+function rebuildCanonicalAhlPoolState(stateObj) {
+  const roster = stateObj?.datasets?.roster;
+  const positionRows = Object.values(roster?.sources?.inventory?.players || {});
+  const utilityRows = Object.values(roster?.sources?.utility?.players || {});
+  if (positionRows.length) {
+    // Persist Map/Set pool data as a JSON-safe keyed object with position arrays.
+    stateObj.datasets.ahlPool = serializeCanonicalAhlPool(
+      buildCanonicalAhlPool(positionRows, utilityRows),
+    );
+  }
+
+  const ownership = getOfficialPoolAliasOwners(stateObj);
+  const availableKeys = buildAvailableAhlPoolKeys(stateObj);
+  const poolEntries = stateObj.datasets.ahlPool instanceof Map
+    ? [...stateObj.datasets.ahlPool]
+    : Object.entries(stateObj.datasets.ahlPool || {});
+  poolEntries.forEach(([playerKey, player]) => {
+    player.flags = {
+      ...(player.flags || {}),
+      owners: [...(ownership.ownersByPlayerKey.get(playerKey) || [])],
+      drafted: ownership.draftedKeys.has(playerKey),
+      assigned: ownership.assignedKeys.has(playerKey),
+      rights: ownership.rightsKeys.has(playerKey),
+      removed: ownership.removedKeys.has(playerKey),
+      available: availableKeys.has(playerKey),
+    };
+  });
+  stateObj.datasets.availableKeys = [...availableKeys];
+  return { ownership, availableKeys };
 }
 
 function hasGoogleSheetSnapshot(stateObj) {
@@ -2953,6 +3001,11 @@ function renderPlayerBadges(player, historicalBidsBundle) {
     if (player.poolPosition) badges.push(`Pool ${player.poolPosition}`);
     if (player.currentCost !== undefined && player.currentCost !== null) badges.push(`$${formatValue(player.currentCost)}`);
     if (player.retentionYear) badges.push(`Ret ${player.retentionYear}`);
+  } else if (player.sourceType === 'roster') {
+    badges.push('Draft Roster');
+    const position = player.position || player.poolposition;
+    if (position) badges.push(`Pool ${position}`);
+    if (player.cost !== undefined && player.cost !== null) badges.push(`$${formatValue(player.cost)}`);
   } else if (player.sourceType) {
     badges.push(player.sourceType);
   }
@@ -3410,6 +3463,10 @@ function renderOwnerDetails(ownerData, report) {
         ${renderPlayerList(selectedOwner.veterans, state.playerSearch, historicalBidsBundle)}
       </article>
       <article class="detail-card">
+        <h3>Draft Roster</h3>
+        ${renderPlayerList(selectedOwner.rosterPlayers, state.playerSearch, historicalBidsBundle)}
+      </article>
+      <article class="detail-card">
         <h3>Farm Players</h3>
         ${renderPlayerList(selectedOwner.farmPlayers, state.playerSearch, historicalBidsBundle)}
       </article>
@@ -3436,6 +3493,7 @@ function renderOwnerDetails(ownerData, report) {
 }
 
 function renderOwnerView(unifiedState) {
+  rebuildCanonicalAhlPoolState(unifiedState);
   const ownerData = buildOwnerViewData(unifiedState);
 
   if (!ownerData.owners.length && !state.draftIntelligence) {
@@ -3826,9 +3884,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       adjustments: budget.adjustments,
     };
   });
-  const sourceAvailableKeys = new Set(
-    (draftValidationReport.availablePlayers || []).map((player) => normalizeLookupKey(player.name)),
-  );
+  const sourceAvailableKeys = new Set(unifiedState.datasets.availableKeys || []);
   const localDraftView = applyLocalDraftEdits(
     state.draftIntelligence.players?.players || [],
     sourceAvailableKeys,
@@ -3897,6 +3953,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     activeTab: state.activeDashboardTab,
     players,
     draftedPlayers,
+    ahlPool: unifiedState.datasets.ahlPool || {},
     availableKeys,
     shortlist: state.shortlist,
     personalDraftList: state.personalDraftList,

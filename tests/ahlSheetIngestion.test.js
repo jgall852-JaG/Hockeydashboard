@@ -1,13 +1,84 @@
 import {
   AHL_SHEET_SOURCES,
   applyAhlEligibility,
+  buildAvailableAhlPoolKeys,
   buildAhlDraftIntelligenceOutputs,
+  buildCanonicalAhlPool,
   getAhlHistoricalSplits,
+  getCanonicalAhlPoolOwnership,
   parseAhlScoreSheet,
+  serializeCanonicalAhlPool,
   UTILITY_POSITION_BY_PLAYER,
 } from '../ahlSheetIngestion.js';
 
 describe('AHL sheet ingestion', () => {
+  test('builds a canonical AHL pool from Position and Utility rows and excludes owned, rights-held, drafted, and assigned players', () => {
+    const pool = buildCanonicalAhlPool([
+      { name: 'Available Player', position: 'C', nhlteam: 'AAA' },
+      { name: 'Rights Player', position: 'D', nhlteam: 'BBB' },
+      { name: 'Keeper Player', position: 'LW', nhlteam: 'CCC' },
+      { name: 'Veteran Player', position: 'RW', nhlteam: 'DDD' },
+      { name: 'Drafted Player', position: 'G', nhlteam: 'EEE' },
+      { name: 'Assigned Player', position: 'C', nhlteam: 'FFF' },
+      { name: 'Local Assigned Player', position: 'D', nhlteam: 'GGG' },
+      { name: 'League Roster Player', position: 'LW', nhlteam: 'HHH' },
+      { name: 'Unowned Draft Board Player', position: 'RW', nhlteam: 'III' },
+    ], [
+      { name: 'Available Player', position: 'U', poolposition: 'C/L' },
+      { name: 'Rights Player', position: 'U', poolposition: 'D', rights: 'Y' },
+    ]);
+    const state = {
+      datasets: {
+        ahlPool: serializeCanonicalAhlPool(pool),
+        prospects: { prospects: {
+          keeper: { name: 'Keeper Player', owner: 'TEAM A' },
+          rights: { name: 'Rights Player', owner: 'TEAM B', matchingRights: true, termRemaining: 0 },
+        } },
+        veterans: { veterans: {
+          veteran: { name: 'Veteran Player', owner: 'TEAM C' },
+        } },
+        roster: { sources: {
+          'retained-grid': { players: {
+            drafted: { name: 'Drafted Player', owner: 'TEAM D' },
+          } },
+          'league-layout': { players: {
+            rostered: { name: 'League Roster Player', owner: 'TEAM G' },
+          } },
+        } },
+        draft: { players: {
+          unowned: { name: 'Unowned Draft Board Player' },
+        } },
+      },
+      workingAssignments: {
+        assigned: { name: 'Assigned Player', team: 'TEAM E' },
+      },
+      localEdits: {
+        removedPlayers: [],
+        manualAssignments: { 'local assigned player': 'TEAM F' },
+        manualUnassign: [],
+      },
+    };
+    const ownership = getCanonicalAhlPoolOwnership(state);
+    const availableKeys = buildAvailableAhlPoolKeys(state);
+
+    expect(pool.get('available player').positions).toEqual(new Set(['C', 'LW']));
+    expect(pool.get('available player').team).toBe('AAA');
+    expect(pool.get('available player').flags).toMatchObject({
+      fromPositionSheet: true,
+      fromUtilitySheet: true,
+      utilityPosition: 'C/L',
+    });
+    expect([...availableKeys]).toEqual(['available player']);
+    expect(ownership.ownersByPlayerKey.get('drafted player')).toEqual(new Set(['TEAM D']));
+    expect(ownership.draftedKeys.has('unowned draft board player')).toBe(true);
+    const afterAssignmentRemoved = buildAvailableAhlPoolKeys({
+      ...state,
+      workingAssignments: {},
+      localEdits: { ...state.localEdits, manualAssignments: {} },
+    });
+    expect([...afterAssignmentRemoved].sort()).toEqual(['assigned player', 'available player', 'local assigned player']);
+  });
+
   test('uses the authoritative Google workbooks and includes score tabs', () => {
     expect(AHL_SHEET_SOURCES.map(({ name }) => name)).toEqual([
       'AHL Position',
@@ -126,9 +197,9 @@ describe('AHL sheet ingestion', () => {
     expect(next.players.sourceCoverage.ahlSheets.scoreTabs).toEqual(['AHL Scores']);
     expect(available).toMatchObject({
       ahlPosition: 'LW',
-      utilityPosition: null,
-      finalPosition: 'LW',
-      position: 'LW',
+      utilityPosition: 'C/LW',
+      finalPosition: 'LW/C',
+      position: 'LW/C',
       category: 'Veteran',
       available: true,
       status: 'in-ahl',
@@ -152,7 +223,7 @@ describe('AHL sheet ingestion', () => {
     expect(Object.keys(next.tiers.tiers)).toEqual(['1', '2', '3', '4', '5']);
   });
 
-  test('marks players absent from AHL Draft and AHL Roster as ineligible and unpriced', () => {
+  test('does not add players absent from the canonical AHL Position pool', () => {
     const formerProspect = {
       id: 'former-prospect',
       name: 'Former Prospect',
@@ -182,11 +253,11 @@ describe('AHL sheet ingestion', () => {
         roster: {
           players: {},
           sources: {
-            inventory: {
-              players: { 'former-prospect': { name: 'Former Prospect', position: 'C' } },
-            },
+            inventory: { players: {
+              other: { name: 'Other Player', position: 'LW' },
+            } },
             utility: { players: {} },
-            'retained-grid': { players: {} },
+            'retained-grid': { players: { former: { name: 'Former Prospect', owner: 'TEAM A' } } },
             'league-layout': { players: {} },
           },
         },
@@ -194,20 +265,13 @@ describe('AHL sheet ingestion', () => {
       },
     };
     const result = buildAhlDraftIntelligenceOutputs(outputs, state, [{ name: 'Former Prospect' }]);
-    expect(result.players.players[0]).toMatchObject({
+    expect(result.players.players.find((player) => player.name === 'Former Prospect')).toMatchObject({
+      name: 'Former Prospect',
       status: 'not-in-ahl',
       available: false,
-      draftIQ: null,
-      auctionValue: null,
-      recommendedMaxBid: null,
-      classification: 'UNPRICED',
     });
-    expect(result.auction.players[0]).toMatchObject({
-      status: 'not-in-ahl',
-      draftIQ: null,
-      auctionValue: null,
-      recommendedMaxBid: null,
-    });
+    expect(state.datasets.ahlPool).not.toHaveProperty('former prospect');
+    expect(state.datasets.availableKeys).toEqual(['other player']);
   });
 
   test('uses AHL Position as base and only applies the explicit Utility sheet list', () => {
@@ -221,7 +285,7 @@ describe('AHL sheet ingestion', () => {
     const utilityRecords = utilityNames.map((name) => ({
       name,
       position: 'U',
-      poolposition: 'U',
+      poolposition: UTILITY_POSITION_BY_PLAYER[name],
     }));
     const players = [...positionRecords, { name: 'Former Utility Player', position: 'C' }].map((player, index) => ({
       ...player,
@@ -259,7 +323,9 @@ describe('AHL sheet ingestion', () => {
       const player = byName.get(name);
       expect(player.utilityPosition).toBe(expectedUtility);
       expect(player.finalPosition.split('/')).toEqual(expect.arrayContaining([
-        ...new Set([player.ahlPosition, ...expectedUtility.split('/')]),
+        ...new Set([player.ahlPosition, ...expectedUtility.split('/').map((position) => (
+          position === 'L' ? 'LW' : position === 'R' ? 'RW' : position
+        ))]),
       ]));
     });
     expect(byName.get('Utility Missing Player')).toMatchObject({
