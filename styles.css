@@ -624,6 +624,54 @@ button.secondary {
   color: var(--muted);
 }
 
+.player-chip.warning-chip {
+  border: 1px solid rgba(243, 201, 105, 0.45);
+  background: rgba(243, 201, 105, 0.12);
+  color: var(--warning);
+}
+
+.draft-grid-name-resolution {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.draft-grid-name-resolution h4,
+.draft-grid-name-resolution p {
+  margin: 0;
+}
+
+.draft-grid-alias-form {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) minmax(180px, 1.5fr) auto auto;
+  align-items: end;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.draft-grid-alias-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.draft-grid-alias-form input,
+.draft-grid-alias-form select {
+  min-width: 0;
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .draft-grid-alias-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .player-chevron {
   color: var(--muted);
   font-size: 1.2rem;

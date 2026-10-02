@@ -6,6 +6,8 @@ import {
   createManualOverrideDraft,
   detectDatasetType,
   parseDraftBoard,
+  upsertDraftGridNameAlias,
+  removeDraftGridNameAlias,
 } from '../app.js';
 
 describe('draft validation report', () => {
@@ -103,6 +105,207 @@ describe('draft validation report', () => {
         playersDrafted: 3,
         openSlots: 22,
       });
+  });
+
+  test('shows draft-grid players missing from the canonical AHL pool with a warning', () => {
+    const gridPlayer = {
+      name: 'Crack and hookers',
+      owner: 'YEASTIE BEASTIES',
+      position: 'C/L',
+      cost: 200,
+      source: 'retained-grid',
+    };
+    const state = {
+      version: 2,
+      datasets: {
+        ahlPool: {
+          'known player': { name: 'Known Player', positions: ['C'], flags: {} },
+        },
+        roster: {
+          players: { 'crack-and-hookers': gridPlayer },
+          sources: {
+            'retained-grid': {
+              layout: 'retained-grid',
+              players: { 'crack-and-hookers': gridPlayer },
+              teamBudgets: [{
+                team: 'YEASTIE BEASTIES',
+                totalSpent: 200,
+                remainingBudget: 50,
+                playersDrafted: 1,
+                openSlots: 24,
+              }],
+            },
+          },
+          teamBudgets: [{
+            team: 'YEASTIE BEASTIES',
+            totalSpent: 200,
+            remainingBudget: 50,
+            playersDrafted: 1,
+            openSlots: 24,
+          }],
+        },
+        prospects: { prospects: {} },
+        veterans: { veterans: {} },
+      },
+      metadata: {},
+      workingAssignments: {},
+    };
+
+    const owner = buildOwnerViewData(state).owners.find((entry) => entry.name === 'YEASTIE BEASTIES');
+    const report = buildDraftValidationReport(state);
+
+    expect(owner.rosterPlayers).toEqual([
+      expect.objectContaining({ name: 'Crack and hookers', nameUnresolved: true }),
+    ]);
+    expect(report.details.unmatchedDraftGridPlayers).toEqual([
+      expect.objectContaining({
+        name: 'Crack and hookers',
+        owner: 'YEASTIE BEASTIES',
+        position: 'C/L',
+      }),
+    ]);
+    expect(report.validationRows).toContainEqual(expect.objectContaining({
+      key: 'draft-grid-name-matches',
+      status: 'warning',
+      message: 'Draft-grid names not matched to the AHL pool, Prospects, or Veterans: Crack and hookers (YEASTIE BEASTIES)',
+    }));
+    expect(report.ownerDraftPlans[0]).toMatchObject({
+      owner: 'YEASTIE BEASTIES',
+      retainedSpend: 200,
+      skaters: 1,
+      unmatchedDraftPlayers: [{ name: 'Crack and hookers', position: 'C/L', cost: 200 }],
+    });
+  });
+
+  test('expands unambiguous first initials using Prospect and Veteran records', () => {
+    const gridPlayers = [
+      { name: 'K Connor', owner: 'YEASTIE BEASTIES', position: 'LW', source: 'retained-grid' },
+      { name: 'M Bourque', owner: 'YEASTIE BEASTIES', position: 'RW', source: 'retained-grid' },
+      { name: 'G Perreault', owner: 'YEASTIE BEASTIES', position: 'RW', source: 'retained-grid' },
+    ];
+    const state = {
+      version: 2,
+      datasets: {
+        ahlPool: { 'ahl player': { name: 'AHL Player', positions: ['C'], flags: {} } },
+        veterans: {
+          veterans: {
+            'kyle-connor': { name: 'Kyle Connor', owner: 'YEASTIE BEASTIES' },
+          },
+        },
+        prospects: {
+          prospects: {
+            'mavrik-bourque': { name: 'Mavrik Bourque', owner: 'YEASTIE BEASTIES' },
+            'gabriel-perreault': { name: 'Gabriel Perreault', owner: 'YEASTIE BEASTIES' },
+          },
+        },
+        roster: {
+          players: Object.fromEntries(gridPlayers.map((player) => [player.name, player])),
+          sources: {
+            'retained-grid': {
+              layout: 'retained-grid',
+              players: Object.fromEntries(gridPlayers.map((player) => [player.name, player])),
+            },
+          },
+        },
+      },
+      metadata: {},
+    };
+
+    const owner = buildOwnerViewData(state).owners.find((entry) => entry.name === 'YEASTIE BEASTIES');
+    const report = buildDraftValidationReport(state);
+
+    expect(owner.rosterPlayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'Kyle Connor',
+        sourceName: 'K Connor',
+        nameUnresolved: false,
+        nameMatchMethod: 'initial',
+        nameMatchSource: 'Veterans',
+      }),
+      expect.objectContaining({
+        name: 'Mavrik Bourque',
+        sourceName: 'M Bourque',
+        nameUnresolved: false,
+        nameMatchMethod: 'initial',
+        nameMatchSource: 'Prospects',
+      }),
+      expect.objectContaining({
+        name: 'Gabriel Perreault',
+        sourceName: 'G Perreault',
+        nameUnresolved: false,
+        nameMatchMethod: 'initial',
+        nameMatchSource: 'Prospects',
+      }),
+    ]));
+    expect(report.details.unmatchedDraftGridPlayers).toEqual([]);
+    expect(report.validationRows).toContainEqual(expect.objectContaining({
+      key: 'draft-grid-name-matches',
+      status: 'valid',
+    }));
+  });
+
+  test('lets users save, edit, and remove owner-scoped ambiguous name resolutions', () => {
+    const previousLocalStorage = globalThis.localStorage;
+    globalThis.localStorage = { setItem: () => {} };
+    const state = {
+      version: 2,
+      datasets: {
+        ahlPool: {},
+        prospects: {
+          prospects: {
+            'john-smith': { name: 'John Smith', owner: 'YEASTIE BEASTIES' },
+            'james-smith': { name: 'James Smith', owner: 'YEASTIE BEASTIES' },
+          },
+        },
+        veterans: { veterans: {} },
+        roster: {
+          players: { 'j-smith': { name: 'J Smith', owner: 'YEASTIE BEASTIES', source: 'retained-grid' } },
+          sources: {
+            'retained-grid': {
+              layout: 'retained-grid',
+              players: { 'j-smith': { name: 'J Smith', owner: 'YEASTIE BEASTIES', source: 'retained-grid' } },
+            },
+          },
+        },
+      },
+      metadata: {},
+    };
+
+    try {
+      expect(buildOwnerViewData(state).owners[0].rosterPlayers[0].nameUnresolved).toBe(true);
+      const saved = upsertDraftGridNameAlias(state, {
+        sourceName: 'J Smith',
+        owner: 'YEASTIE BEASTIES',
+        targetName: 'James Smith',
+      });
+      expect(saved.error).toBeUndefined();
+      expect(buildOwnerViewData(saved.state).owners[0].rosterPlayers[0]).toMatchObject({
+        name: 'James Smith',
+        sourceName: 'J Smith',
+        nameMatchMethod: 'manual',
+        nameUnresolved: false,
+      });
+      expect(saved.state.draftGridNameAliases).toEqual([{
+        sourceName: 'J Smith',
+        owner: 'YEASTIE BEASTIES',
+        targetName: 'James Smith',
+      }]);
+      expect(upsertDraftGridNameAlias(state, {
+        sourceName: 'J Smith',
+        owner: 'YEASTIE BEASTIES',
+        targetName: 'Unlisted Player',
+      }).error).toMatch(/Select a player found/);
+
+      const removed = removeDraftGridNameAlias(saved.state, 'J Smith', 'YEASTIE BEASTIES');
+      expect(removed.draftGridNameAliases).toEqual([]);
+      expect(buildOwnerViewData(removed).owners[0].rosterPlayers[0].nameUnresolved).toBe(true);
+    } finally {
+      if (previousLocalStorage === undefined) {
+        delete globalThis.localStorage;
+      } else {
+        globalThis.localStorage = previousLocalStorage;
+      }
+    }
   });
 
   test('accepts only valid $0.50 working assignment bid increments', () => {

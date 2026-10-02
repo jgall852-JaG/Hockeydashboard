@@ -450,8 +450,21 @@ export function buildOwnerViewData(rawState) {
   const veteransArrRaw = Object.values(stateObj.datasets.veterans?.veterans || {}).map((player) => decoratePlayer(player, 'veteran'));
   const rosterArrRaw = Object.values(stateObj.datasets.roster?.players || {}).map((player) => decoratePlayer(player, 'roster'));
   const retainedGridPlayers = stateObj.datasets.roster?.sources?.['retained-grid']?.players;
+  const resolveDraftGridName = createDraftGridNameResolver(stateObj);
   const draftRosterArr = Object.values(retainedGridPlayers || stateObj.datasets.roster?.players || {})
-    .map((player) => decoratePlayer(player, 'roster'));
+    .map((player) => {
+      const resolvedName = resolveDraftGridName?.(player) || null;
+      return {
+        ...decoratePlayer({
+          ...player,
+          name: resolvedName?.name || player.name,
+          sourceName: resolvedName ? player.name : player.sourceName,
+        }, 'roster'),
+        nameUnresolved: resolveDraftGridName ? !resolvedName : false,
+        nameMatchMethod: resolvedName?.method || null,
+        nameMatchSource: resolvedName?.sources || null,
+      };
+    });
 
   // Merge in local draft edits (manual assignments) and recorded winning bids
   // (workingAssignments) so Tools & Validation reflects drafted players
@@ -601,6 +614,123 @@ function decoratePlayer(player, sourceType) {
   };
 }
 
+function getDraftGridNameCandidates(stateObj) {
+  const candidates = new Map();
+  const addCandidate = (name, source) => {
+    const cleanName = String(name || '').trim();
+    const key = normalizeLookupKey(cleanName);
+    if (!key) return;
+    const current = candidates.get(key) || { name: cleanName, sources: new Set() };
+    current.sources.add(source);
+    candidates.set(key, current);
+  };
+
+  Object.entries(stateObj?.datasets?.ahlPool || {}).forEach(([key, player]) => {
+    addCandidate(player?.name || key, 'AHL pool');
+  });
+  Object.values(stateObj?.datasets?.prospects?.prospects || {}).forEach((player) => {
+    addCandidate(getRecordName(player), 'Prospects');
+  });
+  Object.values(stateObj?.datasets?.veterans?.veterans || {}).forEach((player) => {
+    addCandidate(getRecordName(player), 'Veterans');
+  });
+
+  return [...candidates.values()].map((candidate) => ({
+    name: candidate.name,
+    sources: [...candidate.sources].join(', '),
+  }));
+}
+
+function createDraftGridNameResolver(stateObj) {
+  const candidates = getDraftGridNameCandidates(stateObj);
+  if (!candidates.length) return null;
+  const candidatesByName = new Map(candidates.map((candidate) => [normalizeLookupKey(candidate.name), candidate]));
+  const exactNames = new Map(candidatesByName);
+  const aliases = new Map();
+  candidates.forEach(({ name }) => {
+    const canonicalKey = normalizeLookupKey(name);
+    getRosterPlayerIdentityAliases(name).forEach((alias) => {
+      const keys = aliases.get(alias) || new Set();
+      keys.add(canonicalKey);
+      aliases.set(alias, keys);
+    });
+  });
+
+  const savedAliases = Array.isArray(stateObj?.draftGridNameAliases) ? stateObj.draftGridNameAliases : [];
+  return (record) => {
+    const name = String(record?.name || '').trim();
+    const normalizedName = normalizeLookupKey(name);
+    const normalizedOwner = normalizeLookupKey(record?.owner);
+    const saved = savedAliases.find((entry) => (
+      normalizeLookupKey(entry?.sourceName) === normalizedName
+      && normalizeLookupKey(entry?.owner) === normalizedOwner
+    ));
+    if (saved) {
+      const candidate = candidatesByName.get(normalizeLookupKey(saved.targetName));
+      return candidate ? { ...candidate, method: 'manual' } : null;
+    }
+
+    const parts = normalizedName.split(' ').filter(Boolean);
+    const isInitial = parts.length > 1 && parts[0].length === 1;
+    if (isInitial) {
+      const expandedNames = new Set(
+        [...(aliases.get(normalizedName) || [])]
+          .filter((key) => candidatesByName.get(key)?.name.split(/\s+/)[0].length > 1),
+      );
+      if (expandedNames.size === 1) {
+        const candidate = candidatesByName.get([...expandedNames][0]);
+        return { ...candidate, method: 'initial' };
+      }
+      if (expandedNames.size > 1) return null;
+    }
+
+    const exact = exactNames.get(normalizedName);
+    if (exact) return { ...exact, method: 'exact' };
+    const matchedNames = new Set(
+      getRosterPlayerIdentityAliases(name).flatMap((alias) => [...(aliases.get(alias) || [])]),
+    );
+    if (matchedNames.size !== 1) return null;
+    const candidate = candidatesByName.get([...matchedNames][0]);
+    return candidate ? { ...candidate, method: 'initial' } : null;
+  };
+}
+
+export function upsertDraftGridNameAlias(stateObj, draft) {
+  const sourceName = String(draft?.sourceName || '').trim();
+  const owner = String(draft?.owner || '').trim();
+  const targetName = String(draft?.targetName || '').trim();
+  if (!sourceName || !owner || !targetName) {
+    return { state: normalizeState(stateObj), error: 'Draft-grid name, owner, and resolved player are required.' };
+  }
+  const next = normalizeState(stateObj);
+  const candidateNames = new Set(getDraftGridNameCandidates(next).map((candidate) => normalizeLookupKey(candidate.name)));
+  if (!candidateNames.has(normalizeLookupKey(targetName))) {
+    return { state: next, error: 'Select a player found in the AHL pool, Prospects, or Veterans.' };
+  }
+  const alias = { sourceName, owner, targetName };
+  const key = `${normalizeLookupKey(sourceName)}|${normalizeLookupKey(owner)}`;
+  next.draftGridNameAliases = [
+    ...next.draftGridNameAliases.filter((entry) => (
+      `${normalizeLookupKey(entry.sourceName)}|${normalizeLookupKey(entry.owner)}` !== key
+    )),
+    alias,
+  ];
+  persistState(next);
+  return { state: next, entry: alias };
+}
+
+export function removeDraftGridNameAlias(stateObj, sourceName, owner) {
+  const sourceKey = normalizeLookupKey(sourceName);
+  const ownerKey = normalizeLookupKey(owner);
+  const next = normalizeState(stateObj);
+  next.draftGridNameAliases = next.draftGridNameAliases.filter((entry) => (
+    normalizeLookupKey(entry.sourceName) !== sourceKey
+    || normalizeLookupKey(entry.owner) !== ownerKey
+  ));
+  persistState(next);
+  return next;
+}
+
 // Builds the unified player object consumed by Tools & Validation (team summary,
 // player cards, intelligence panel). `context` carries optional, already-resolved
 // async data (live NHL profile, the historical bids bundle, the matching Dobber
@@ -688,6 +818,7 @@ const DEFAULT_STATE = {
   datasets: createEmptyDatasets(),
   metadata: { ...createEmptyMetadata(), localDraftEdits: createEmptyLocalEdits() },
   manualOverrides: [],
+  draftGridNameAliases: [],
   workingAssignments: {},
   localEdits: createEmptyLocalEdits(),
 };
@@ -795,6 +926,13 @@ function normalizeState(stateObj) {
   next.datasets = { ...next.datasets, ...(stateObj.datasets || {}) };
   next.metadata = { ...next.metadata, ...(stateObj.metadata || {}) };
   next.manualOverrides = Array.isArray(stateObj.manualOverrides) ? stateObj.manualOverrides : [];
+  next.draftGridNameAliases = Array.isArray(stateObj.draftGridNameAliases)
+    ? stateObj.draftGridNameAliases.filter((entry) => (
+      entry && typeof entry.sourceName === 'string'
+      && typeof entry.owner === 'string'
+      && typeof entry.targetName === 'string'
+    ))
+    : [];
   next.workingAssignments = stateObj.workingAssignments && typeof stateObj.workingAssignments === 'object' && !Array.isArray(stateObj.workingAssignments)
     ? stateObj.workingAssignments
     : {};
@@ -2131,8 +2269,9 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
   const monies = providedMonies || buildTeamMonies(nextState, getOfficialPoolAliasOwners(nextState));
   const ownerDraftPlans = ownerData.owners.map((owner) => {
     const teamMonies = findTeamMonies(monies, owner.name);
-    if (!teamMonies?.hasSheetBaseline) return buildOwnerDraftPlan(owner);
-    return buildOwnerDraftPlan(owner, {
+    const plan = !teamMonies?.hasSheetBaseline
+      ? buildOwnerDraftPlan(owner)
+      : buildOwnerDraftPlan(owner, {
       totalSpent: teamMonies.totalSpent,
       remainingBudget: teamMonies.remainingBudget,
       playersDrafted: teamMonies.playersDrafted,
@@ -2144,7 +2283,27 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
       penalties: teamMonies.penalties,
       adjustments: teamMonies.adjustments,
     });
+    plan.unmatchedDraftPlayers = (owner.rosterPlayers || [])
+      .filter((player) => player.nameUnresolved)
+      .map((player) => ({
+        name: player.name,
+        sourceName: player.sourceName || player.name,
+        owner: owner.name,
+        position: getDraftSlotPosition(player),
+        cost: getPlayerRetainedCost(player),
+      }));
+    return plan;
   });
+  const unmatchedDraftGridPlayers = ownerData.owners.flatMap((owner) => (
+    (owner.rosterPlayers || [])
+      .filter((player) => player.nameUnresolved)
+      .map((player) => ({
+        name: player.name,
+        sourceName: player.sourceName || player.name,
+        owner: owner.name,
+        position: getDraftSlotPosition(player),
+      }))
+  ));
   const inventoryByKey = new Map();
   [
     ...Object.values(nextState.datasets.positions?.players || {}),
@@ -2321,6 +2480,15 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
 
   const validationRows = [
     {
+      key: 'draft-grid-name-matches',
+      label: 'Draft Grid Name Matches',
+      status: unmatchedDraftGridPlayers.length ? 'warning' : 'valid',
+      message: unmatchedDraftGridPlayers.length
+        ? `Draft-grid names not matched to the AHL pool, Prospects, or Veterans: ${unmatchedDraftGridPlayers.map((player) => `${player.sourceName} (${player.owner})`).join(', ')}`
+        : 'All Draft 2026 grid names match a player in the AHL pool, Prospects, or Veterans',
+      count: unmatchedDraftGridPlayers.length,
+    },
+    {
       key: 'ownership-integrity',
       label: 'Ownership Integrity',
       status: ownershipMismatches.length ? 'error' : missingOwnershipIssues.length ? 'warning' : 'valid',
@@ -2442,7 +2610,10 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
       missingClassificationIssues,
       retentionIssues,
       availableIntegrityIssues,
+      unmatchedDraftGridPlayers,
     },
+    draftGridNameAliases: nextState.draftGridNameAliases,
+    draftGridNameCandidates: getDraftGridNameCandidates(nextState),
     availablePlayers,
     assignedPlayers,
     assignedByTeam,
@@ -2766,7 +2937,9 @@ function renderValidationStatusText(status) {
 function renderDraftValidationCenter(report) {
   const ownerPlanRows = (report.ownerDraftPlans || []).map((plan) => {
     let status = 'Ready';
-    if (plan.remainingBudget === null) {
+    if (plan.unmatchedDraftPlayers?.length) {
+      status = 'Name unresolved';
+    } else if (plan.remainingBudget === null) {
       status = 'Budget unavailable';
     } else if (plan.budgetShortfall > 0 || plan.remainingBudget < 0 || plan.hasOverfilledSkaters || plan.hasOverfilledGoalieTeams) {
       status = 'Shortfall';
@@ -2784,6 +2957,9 @@ function renderDraftValidationCenter(report) {
         <td>${plan.slotsNeeded}</td>
         <td>$${formatValue(plan.minimumRequired)}</td>
         <td>${plan.budgetShortfall > 0 ? `$${formatValue(plan.budgetShortfall)}` : '—'}</td>
+        <td>${plan.unmatchedDraftPlayers?.length
+    ? `<span class="validation-pill validation-warning">Unresolved</span> ${plan.unmatchedDraftPlayers.map((player) => escapeHtml(player.sourceName)).join(', ')}`
+    : '—'}</td>
         <td>${escapeHtml(status)}</td>
       </tr>
     `;
@@ -2798,6 +2974,64 @@ function renderDraftValidationCenter(report) {
       <div class="validation-pill">${renderValidationStatusText(row.status)}</div>
     </div>
   `).join('');
+
+  const candidates = report.draftGridNameCandidates || [];
+  const playerNameOptions = candidates.map((candidate) => (
+    `<option value="${escapeHtml(candidate.name)}">${escapeHtml(candidate.sources)}</option>`
+  )).join('');
+  const candidateNames = new Set(candidates.map((candidate) => normalizeLookupKey(candidate.name)));
+  const renderNameSearch = (selectedName = '') => `
+    <input name="targetName" type="search" list="draftGridNameCandidates" value="${candidateNames.has(normalizeLookupKey(selectedName)) ? escapeHtml(selectedName) : ''}" placeholder="Search players by name" autocomplete="off" required>
+  `;
+  const unresolvedNames = new Map();
+  (report.details.unmatchedDraftGridPlayers || []).forEach((player) => {
+    const key = `${normalizeLookupKey(player.sourceName)}|${normalizeLookupKey(player.owner)}`;
+    if (!unresolvedNames.has(key)) unresolvedNames.set(key, player);
+  });
+  const newAliasForms = [...unresolvedNames.values()].map((player) => `
+    <form class="draft-grid-alias-form" data-draft-grid-alias-form>
+      <label>
+        Draft-grid name
+        <input name="sourceName" value="${escapeHtml(player.sourceName)}" required>
+      </label>
+      <label>
+        Owner
+        <input name="owner" value="${escapeHtml(player.owner)}" required>
+      </label>
+      <label>
+        Search player by name
+        ${renderNameSearch()}
+      </label>
+      <button class="secondary" type="submit">Save match</button>
+    </form>
+  `).join('');
+  const savedAliasForms = (report.draftGridNameAliases || []).map((alias) => `
+    <form class="draft-grid-alias-form saved-draft-grid-alias" data-draft-grid-alias-form>
+      <label>
+        Draft-grid name
+        <input name="sourceName" value="${escapeHtml(alias.sourceName)}" required>
+      </label>
+      <label>
+        Owner
+        <input name="owner" value="${escapeHtml(alias.owner)}" required>
+      </label>
+      <label>
+        Search player by name
+        ${renderNameSearch(alias.targetName)}
+      </label>
+      <button class="secondary" type="submit">Update</button>
+      <button class="secondary remove-draft-grid-alias-btn" type="button" data-alias-source="${escapeHtml(alias.sourceName)}" data-alias-owner="${escapeHtml(alias.owner)}">Remove</button>
+    </form>
+  `).join('');
+  const nameResolutionEditor = `
+    <div class="draft-grid-name-resolution">
+      <h4>Resolve Draft Grid Names</h4>
+      <p class="panel-subtitle">Unambiguous first-initial names are expanded from the AHL pool, Prospects, and Veterans automatically. Resolve ambiguous or unknown names here; saved matches are retained in exported dashboard state.</p>
+      <datalist id="draftGridNameCandidates">${playerNameOptions}</datalist>
+      ${newAliasForms || '<div class="empty-state">No unresolved Draft grid names.</div>'}
+      ${savedAliasForms ? `<h4>Saved name matches</h4>${savedAliasForms}` : ''}
+    </div>
+  `;
 
   return `
     <section class="panel validation-panel">
@@ -2828,22 +3062,24 @@ function renderDraftValidationCenter(report) {
         <table class="validation-table">
           <thead>
             <tr>
-              <th>Owner</th>
-              <th>Spent</th>
-              <th>Remaining</th>
-              <th>Skaters</th>
-              <th>Goalie Teams</th>
-              <th>Open Slots</th>
-              <th>Min Needed</th>
-              <th>Shortfall</th>
-              <th>Status</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Spent</th>
+              <th scope="col">Remaining</th>
+              <th scope="col">Skaters</th>
+              <th scope="col">Goalie Teams</th>
+              <th scope="col">Open Slots</th>
+              <th scope="col">Min Needed</th>
+              <th scope="col">Shortfall</th>
+              <th scope="col">Name Resolution</th>
+              <th scope="col">Status</th>
             </tr>
           </thead>
           <tbody>
-            ${ownerPlanRows || '<tr><td colspan="9" class="empty-state">No owner roster data available.</td></tr>'}
+            ${ownerPlanRows || '<tr><td colspan="10" class="empty-state">No owner roster data available.</td></tr>'}
           </tbody>
         </table>
       </div>
+      ${nameResolutionEditor}
     </section>
   `;
 }
@@ -3265,6 +3501,7 @@ function renderPlayerBadges(player, historicalBidsBundle) {
     const position = player.position || player.poolposition;
     if (position) badges.push(`Pool ${position}`);
     if (player.cost !== undefined && player.cost !== null) badges.push(`$${formatValue(player.cost)}`);
+    if (player.nameUnresolved) badges.push('Name unresolved');
   } else if (player.sourceType) {
     badges.push(player.sourceType);
   }
@@ -3274,7 +3511,7 @@ function renderPlayerBadges(player, historicalBidsBundle) {
   badges.push(unified.experienceTier);
   if (unified.avgCost !== 'NA') badges.push(`Avg $${formatValue(unified.avgCost)}`);
 
-  return badges.map((badge) => `<span class="player-chip">${escapeHtml(badge)}</span>`).join('');
+  return badges.map((badge) => `<span class="player-chip ${badge === 'Name unresolved' ? 'warning-chip' : ''}">${escapeHtml(badge)}</span>`).join('');
 }
 
 function renderPlayerList(players, filter, historicalBidsBundle) {
@@ -3608,6 +3845,7 @@ function renderOwnerList(ownerData, report) {
         <div class="owner-badges">
           <span class="owner-badge">Pros ${owner.prospects.length}</span>
           <span class="owner-badge">Vet ${owner.veterans.length}</span>
+          <span class="owner-badge">Draft ${owner.rosterPlayers.length}</span>
           <span class="owner-badge">Farm ${owner.farmPlayers.length}</span>
           <span class="owner-badge">MR ${owner.matchingRights.length}</span>
           <span class="owner-badge">WS ${localAssignedCount}</span>
@@ -3899,6 +4137,39 @@ function renderOwnerView(unifiedState) {
       renderOwnerView(unifiedState);
     });
   }
+
+  document.querySelectorAll('[data-draft-grid-alias-form]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+      }
+      const formData = new FormData(form);
+      const result = upsertDraftGridNameAlias(state.importedData || unifiedState, {
+        sourceName: formData.get('sourceName'),
+        owner: formData.get('owner'),
+        targetName: formData.get('targetName'),
+      });
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
+      state.importedData = result.state;
+      renderOwnerView(result.state);
+    });
+  });
+  document.querySelectorAll('.remove-draft-grid-alias-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextState = removeDraftGridNameAlias(
+        state.importedData || unifiedState,
+        button.dataset.aliasSource,
+        button.dataset.aliasOwner,
+      );
+      state.importedData = nextState;
+      renderOwnerView(nextState);
+    });
+  });
 
   const manualOverrideForm = document.getElementById('manualOverrideForm');
   if (manualOverrideForm) {
@@ -4283,7 +4554,39 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     });
   });
   bindTabKeyboardNavigation(app);
-  const rerender = () => renderOwnerView(unifiedState);
+  const rerender = () => renderOwnerView(state.importedData || unifiedState);
+  document.querySelectorAll('[data-draft-grid-alias-form]').forEach((form) => {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (!form.checkValidity()) {
+        form.reportValidity();
+        return;
+      }
+      const formData = new FormData(form);
+      const result = upsertDraftGridNameAlias(state.importedData || unifiedState, {
+        sourceName: formData.get('sourceName'),
+        owner: formData.get('owner'),
+        targetName: formData.get('targetName'),
+      });
+      if (result.error) {
+        alert(result.error);
+        return;
+      }
+      state.importedData = result.state;
+      rerender();
+    });
+  });
+  document.querySelectorAll('.remove-draft-grid-alias-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const nextState = removeDraftGridNameAlias(
+        state.importedData || unifiedState,
+        button.dataset.aliasSource,
+        button.dataset.aliasOwner,
+      );
+      state.importedData = nextState;
+      rerender();
+    });
+  });
   document.querySelectorAll('.owner-item').forEach((button) => {
     button.addEventListener('click', () => {
       state.selectedOwner = button.dataset.owner;

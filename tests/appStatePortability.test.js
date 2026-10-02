@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import {
   getLiveCacheStatus,
   getDataQualitySources,
+  buildOwnerViewData,
+  buildDraftValidationReport,
   isRetentionListLoaded,
   persistState,
   parsePortableStateBundle,
@@ -195,6 +197,11 @@ describe('portable state helpers', () => {
         transactions: { status: 'empty' },
       },
       manualOverrides: [{ id: 'manual-1', name: 'Manual Player' }],
+      draftGridNameAliases: [{
+        sourceName: 'J Guentzel',
+        owner: 'TEAM A',
+        targetName: 'Jake Guentzel',
+      }],
       workingAssignments: { alpha: { playerKey: 'alpha' } },
     }, {
       updatedAt: '2026-09-27T13:05:00.000Z',
@@ -204,6 +211,11 @@ describe('portable state helpers', () => {
 
     expect(bundle.format).toBe('hockey-dashboard-portable-state');
     expect(bundle.appState.metadata.prospects.sourceName).toBe('prospects.csv');
+    expect(bundle.appState.draftGridNameAliases).toEqual([{
+      sourceName: 'J Guentzel',
+      owner: 'TEAM A',
+      targetName: 'Jake Guentzel',
+    }]);
     expect(bundle.liveCache.players['prospect:player-one'].status).toBe('ok');
     expect(bundle.liveCache.teams.EDM.teamAbbrev).toBe('EDM');
   });
@@ -353,6 +365,11 @@ describe('google sheet refresh integration', () => {
         transactions: { status: 'empty' },
       },
       manualOverrides: [{ id: 'manual-1', name: 'Manual Player' }],
+      draftGridNameAliases: [{
+        sourceName: 'J Guentzel',
+        owner: 'TEAM B',
+        targetName: 'Jake Guentzel',
+      }],
       workingAssignments: {
         'nick perbix': { playerKey: 'nick perbix', name: 'Nick Perbix' },
       },
@@ -412,6 +429,11 @@ describe('google sheet refresh integration', () => {
       'AHL Games Played',
     ]);
     expect(next.manualOverrides).toHaveLength(1);
+    expect(next.draftGridNameAliases).toEqual([{
+      sourceName: 'J Guentzel',
+      owner: 'TEAM B',
+      targetName: 'Jake Guentzel',
+    }]);
     expect(next.workingAssignments['nick perbix'].name).toBe('Nick Perbix');
     expect(next.localEdits).toMatchObject({
       removedPlayers: [],
@@ -420,6 +442,43 @@ describe('google sheet refresh integration', () => {
     });
     expect(next.localEdits.lastUpdated).toEqual(expect.any(Number));
     expect(next.metadata.localDraftEdits).toEqual(next.localEdits);
+  });
+
+  test('refreshes owner roster snapshots and flags new draft-grid names outside the AHL pool', async () => {
+    const responses = buildMockSheetResponses();
+    const updatedDraftGrid = [
+      'YEASTIE BEASTIES,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Crack and hookers,C/L,$200.00,1,Matthew Knies,LW,$3.00',
+      ',TOTAL SPENT,,$200.00,,TOTAL SPENT,,$3.00',
+      ',BALANCE,,$50.00,,BALANCE,,$247.00',
+    ].join('\n');
+    responses[2] = updatedDraftGrid;
+    responses[3] = updatedDraftGrid;
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      text: async () => responses.shift(),
+    }));
+
+    const refreshed = await refreshGoogleSheetState(EMPTY_SAVED_STATE, fetchMock);
+    const ownerData = buildOwnerViewData(refreshed);
+    const owner = ownerData.owners.find((entry) => entry.name === 'YEASTIE BEASTIES');
+    const report = buildDraftValidationReport(refreshed);
+
+    expect(owner.rosterPlayers).toEqual([
+      expect.objectContaining({
+        name: 'Crack and hookers',
+        owner: 'YEASTIE BEASTIES',
+        position: 'C/L',
+        cost: 200,
+        nameUnresolved: true,
+      }),
+    ]);
+    expect(report.ownerDraftPlans.find((plan) => plan.owner === 'YEASTIE BEASTIES')).toMatchObject({
+      retainedSpend: 200,
+      skaters: 1,
+      unmatchedDraftPlayers: [{ name: 'Crack and hookers', position: 'C/L', cost: 200 }],
+    });
   });
 });
 
