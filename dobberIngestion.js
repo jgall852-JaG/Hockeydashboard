@@ -63,6 +63,13 @@ function projectionScore(row, projections, field) {
   return normalizeScore(readField(projections, field), `Dobber Projections.${field}`);
 }
 
+function readPowerPlayUnit(row) {
+  const unit = readField(row, 'PP Unit');
+  return unit === undefined || unit === null || String(unit).trim() === ''
+    ? readField(row, 'PP')
+    : unit;
+}
+
 function forecastProjections(row, projections) {
   const directFields = {
     // 'Games'/'Points'/'SOG' are the bare column names used by the real
@@ -72,6 +79,7 @@ function forecastProjections(row, projections) {
     ProjG: ['ProjG', 'Proj Goals', 'Projected Goals', 'Forecasted Goals', 'Goals'],
     ProjA: ['ProjA', 'Proj Assists', 'Projected Assists', 'Forecasted Assists', 'Assists'],
     ProjSOG: ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots', 'SOG', 'Shots'],
+    PPUnit: ['PP Unit', 'PPUnit', 'PP'],
   };
   const direct = Object.fromEntries(Object.entries(directFields).flatMap(([field, aliases]) => {
     const value = aliases.map((alias) => readField(row, alias))
@@ -143,7 +151,7 @@ function derivePricingInputs(pricingRows) {
   })));
   const ppUnitScores = new Map(pricingRows
     .filter((row) => Number.isFinite(row.ppUnit))
-    .map((row) => [row.key, row.ppUnit <= 1 ? 100 : row.ppUnit === 2 ? 60 : 30]));
+    .map((row) => [row.key, row.ppUnit === 1 ? 100 : row.ppUnit === 2 ? 60 : 0]));
 
   const derivedByKey = new Map();
   pricingRows.forEach((row) => {
@@ -209,7 +217,7 @@ export function normalizeDobberRows(rows) {
       threeYearPoints: parseOptionalNumber(readField(row, '3YP')),
       projectedPoints: parseOptionalNumber(normalizedForecastProjections.ProjPts),
       projectedGames: parseOptionalNumber(normalizedForecastProjections.ProjGP),
-      ppUnit: parseOptionalNumber(readField(row, 'PP Unit')),
+      ppUnit: parseOptionalNumber(readPowerPlayUnit(row)),
     });
   });
   if (!rowEntries.length) {
@@ -218,7 +226,7 @@ export function normalizeDobberRows(rows) {
 
   const derivedByKey = derivePricingInputs(rowEntries);
   const players = {};
-  rowEntries.forEach(({ key, index, player, row, projections, normalizedForecastProjections, rank, upside, threeYearPoints }) => {
+  rowEntries.forEach(({ key, index, player, row, projections, normalizedForecastProjections, rank, upside, threeYearPoints, ppUnit }) => {
     const derived = derivedByKey.get(key) || { pps: null, rss: null, bps: null, rrs: null, kvs: null };
     const explicitBps = normalizeScore(readField(row, 'BPS'), `${player}.BPS`);
     const explicitKvs = normalizeScore(readField(row, 'KVS'), `${player}.KVS`);
@@ -251,13 +259,14 @@ export function normalizeDobberRows(rows) {
       rank,
       upside,
       threeYearPoints,
+      ppUnit,
       projections,
       forecastProjections: normalizedForecastProjections,
       riskFlags: parseRiskFlags(readField(row, 'RiskFlags')),
       // Role/Tier are read generically since Dobber's own column names vary by
       // edition (e.g. "PP Unit" for role); left null when the sheet omits them
       // rather than inferring a value.
-      role: String(readField(row, 'Role') || readField(row, 'PP Unit') || '').trim() || null,
+      role: String(readField(row, 'Role') || readPowerPlayUnit(row) || '').trim() || null,
       tier: String(readField(row, 'Tier') || '').trim() || null,
       rookie: Boolean(String(readField(row, 'Rookie') || '').trim()),
       intelEdge: null,
@@ -813,6 +822,7 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
       player.nhlPosition = null;
       player.salary = null;
       player.aav = null;
+      player.ppUnit = null;
       player.intelEdge = intelEdge;
       player.production = { ...(player.production || {}), PPS: null };
       player.deployment = { ...(player.deployment || {}), RSS: null, RRS: null };
@@ -848,6 +858,7 @@ export function applyDobberIntelligence(outputs, stateObj, beforePricing = (play
     player.salary = dobber.salary;
     player.aav = dobber.aav;
     player.age = Number.isFinite(dobber.age) ? dobber.age : null;
+    player.ppUnit = Number.isFinite(dobber.ppUnit) ? dobber.ppUnit : null;
     player.dobberUpside = Number.isFinite(dobber.upside) ? dobber.upside : null;
     player.threeYearPoints = Number.isFinite(dobber.threeYearPoints) ? dobber.threeYearPoints : null;
     player.dobberProjections = dobber.projections;

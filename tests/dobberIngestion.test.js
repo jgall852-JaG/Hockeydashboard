@@ -101,6 +101,20 @@ describe('Dobber ingestion', () => {
     expect(star.kvs).toBeGreaterThan(depth.kvs);
   });
 
+  test('scores PP1 above PP2 and treats PP0 as no PP advantage, including the PP column header', () => {
+    const players = normalizeDobberRows([
+      { Player: 'Power Play One', PP: '1' },
+      { Player: 'Power Play Two', PP: '2' },
+      { Player: 'No Power Play', PP: '0' },
+      { Player: 'Missing Power Play' },
+    ]);
+
+    expect(players['power play one']).toMatchObject({ ppUnit: 1, rss: 100 });
+    expect(players['power play two']).toMatchObject({ ppUnit: 2, rss: 60 });
+    expect(players['no power play']).toMatchObject({ ppUnit: 0, rss: 0 });
+    expect(players['missing power play']).toMatchObject({ ppUnit: null, rss: null });
+  });
+
   test('leaves pricing inputs null when neither explicit score columns nor Rank/Upside/3YP signals are available', () => {
     const players = normalizeDobberRows([{ Player: 'Unknown Player', POS: 'C' }]);
     expect(players['unknown player']).toMatchObject({
