@@ -72,6 +72,8 @@ describe('forecasted stats', () => {
     ]);
     expect(applyForecastedStats({ name: 'Bad Points' }, rows['bad points'].forecastProjections))
       .toMatchObject({ forecastedGoals: null, forecastedAssists: 4, forecastedPoints: null });
+    expect(buildForecastedStats({ ProjPts: '', ProjG: '  ', ProjA: null }, null))
+      .toMatchObject({ projectedPoints: null, projectedGoals: null, projectedAssists: null });
   });
 
   test('reads Dobber Goals/Assists columns as forecasted goals and assists, leaving bad cells NULL', () => {
