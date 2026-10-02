@@ -6,6 +6,7 @@ import {
   isRetentionListLoaded,
   persistState,
   parsePortableStateBundle,
+  rebuildCanonicalAhlPoolState,
   resolveWorkingAssignmentTeamName,
   refreshDobberState,
   refreshGoogleSheetState,
@@ -13,6 +14,119 @@ import {
   STORAGE_KEY,
 } from '../app.js';
 import { DOBBER_EXCEL_URL } from '../dobberIngestion.js';
+import { deserializeCanonicalAhlPool } from '../ahlSheetIngestion.js';
+
+function buildMockSheetResponses() {
+  return [
+    [
+      'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
+      'LW One,ANA,C One,BOS,RW One,BUF,D One,CGY',
+      'Utility One,NYR,,,,,,',
+    ].join('\n'),
+    [
+      'UTILITY,,',
+      'Utility One,NYR,C/L',
+    ].join('\n'),
+    [
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Connor Bedard,C,$5.00,1,Matthew Knies,LW,$3.00',
+      ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
+    ].join('\n'),
+    [
+      'TEAM A,,,,TEAM B,,,',
+      '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
+      '1,Connor Bedard,C,$5.00,1,Matthew Knies,LW,$3.00',
+      ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
+    ].join('\n'),
+    [
+      ',TEAM A,TEAM B',
+      'C,Connor Bedard,',
+      'LW,,Matthew Knies',
+      'D,Nick Perbix,',
+      'RW,,Jake Guentzel',
+    ].join('\n'),
+    [
+      'TEAMS,',
+      'TEAM A,',
+      'Connor Bedard C - 2023,$5,2,,,,Y',
+      'TEAM B,',
+      'Matthew Knies LW - 2021,$3,1,,,,N',
+    ].join('\n'),
+    ',Thursday,October 1,2026\n1,MATCHUP,,TIME\n,Buffalo,@ Columbus,7:00 PM',
+    ',Rank,Team,GP,W,L,T,PTS,GF,GA,GD\n,1,Ironmen,0,0,0,0,0,0,0,0',
+    ',Player,GP\n,Example,0',
+  ];
+}
+
+function mockSheetFetch() {
+  const responses = buildMockSheetResponses();
+  return jest.fn(async () => ({ ok: true, text: async () => responses.shift() }));
+}
+
+const EMPTY_SAVED_STATE = {
+  version: 2,
+  datasets: { prospects: null, veterans: null, roster: null, transactions: null },
+  metadata: {
+    prospects: { status: 'empty' },
+    veterans: { status: 'empty' },
+    roster: { status: 'empty' },
+    transactions: { status: 'empty' },
+  },
+  manualOverrides: [],
+  workingAssignments: {},
+};
+
+describe('canonical AHL pool portability', () => {
+  test('survives export -> import -> refresh with Set positions and recomputed availability', async () => {
+    const refreshed = await refreshGoogleSheetState(EMPTY_SAVED_STATE, mockSheetFetch());
+    const exportedJson = JSON.parse(JSON.stringify(serializePortableStateBundle(refreshed, {})));
+    const imported = parsePortableStateBundle(exportedJson);
+
+    expect(imported.poolWarning).toBeNull();
+    expect(imported.appState.datasets.ahlPool).toEqual(refreshed.datasets.ahlPool);
+    const restoredPool = deserializeCanonicalAhlPool(imported.appState.datasets.ahlPool);
+    expect(restoredPool.get('utility one').positions).toEqual(new Set(['LW', 'C']));
+
+    imported.appState.workingAssignments = {
+      'utility one': { playerKey: 'utility one', name: 'Utility One', team: 'TEAM B', bid: 1 },
+    };
+    rebuildCanonicalAhlPoolState(imported.appState);
+    expect(imported.appState.datasets.availableKeys).not.toContain('utility one');
+    expect(imported.appState.datasets.ahlPool['utility one'].flags.assigned).toBe(true);
+
+    imported.appState.workingAssignments = {};
+    const reRefreshed = await refreshGoogleSheetState(imported.appState, mockSheetFetch());
+    expect(reRefreshed.datasets.ahlPool).toEqual(refreshed.datasets.ahlPool);
+    expect(reRefreshed.datasets.availableKeys).toEqual(refreshed.datasets.availableKeys);
+    expect(reRefreshed.datasets.availableKeys).toContain('utility one');
+  });
+
+  test('does not trust an imported snapshot without a canonical pool until AHL Sheets are refreshed', async () => {
+    const imported = parsePortableStateBundle({
+      ...EMPTY_SAVED_STATE,
+      datasets: {
+        ...EMPTY_SAVED_STATE.datasets,
+        ahlPool: {},
+        availableKeys: ['stale player'],
+        roster: { sources: { inventory: { players: { stale: { name: 'Stale Player', position: 'C' } } } } },
+      },
+    });
+
+    expect(imported.poolWarning).toMatch(/Refresh AHL Sheets/);
+    expect(imported.appState.metadata.ahlPool.status).toBe('needs-refresh');
+    expect(imported.appState.datasets.availableKeys).toEqual([]);
+
+    rebuildCanonicalAhlPoolState(imported.appState);
+    expect(imported.appState.datasets.ahlPool).toEqual({});
+    expect(imported.appState.datasets.availableKeys).toEqual([]);
+
+    const refreshed = await refreshGoogleSheetState(imported.appState, mockSheetFetch());
+    expect(refreshed.metadata.ahlPool.status).toBe('ok');
+    expect(Object.keys(refreshed.datasets.ahlPool)).toContain('utility one');
+    expect(refreshed.datasets.availableKeys).toContain('utility one');
+  });
+});
 
 describe('local draft edit persistence', () => {
   test('mirrors local edits and their timestamp into stored metadata', () => {
@@ -217,46 +331,7 @@ describe('working assignment team matching', () => {
 
 describe('google sheet refresh integration', () => {
   test('merges the multi-sheet live snapshot without dropping saved state', async () => {
-    const responses = [
-      [
-        'LEFT WING,,CENTER,,RIGHT WING,,DEFENSE,',
-        'LW One,ANA,C One,BOS,RW One,BUF,D One,CGY',
-        'Utility One,NYR,,,,,,',
-      ].join('\n'),
-      [
-        'UTILITY,,',
-        'Utility One,NYR,C/L',
-      ].join('\n'),
-      [
-        'TEAM A,,,,TEAM B,,,',
-        '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
-        '1,Connor Bedard,C,$5.00,1,Matthew Knies,LW,$3.00',
-        ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
-      ].join('\n'),
-      [
-        'TEAM A,,,,TEAM B,,,',
-        '#,Player Name,Pos.,Cost,#,Player Name,Pos.,Cost',
-        '1,Connor Bedard,C,$5.00,1,Matthew Knies,LW,$3.00',
-        ',TOTAL SPENT,,$5.00,,TOTAL SPENT,,$3.00',
-      ].join('\n'),
-      [
-        ',TEAM A,TEAM B',
-        'C,Connor Bedard,',
-        'LW,,Matthew Knies',
-        'D,Nick Perbix,',
-        'RW,,Jake Guentzel',
-      ].join('\n'),
-      [
-        'TEAMS,',
-        'TEAM A,',
-        'Connor Bedard C - 2023,$5,2,,,,Y',
-        'TEAM B,',
-        'Matthew Knies LW - 2021,$3,1,,,,N',
-      ].join('\n'),
-      ',Thursday,October 1,2026\n1,MATCHUP,,TIME\n,Buffalo,@ Columbus,7:00 PM',
-      ',Rank,Team,GP,W,L,T,PTS,GF,GA,GD\n,1,Ironmen,0,0,0,0,0,0,0,0',
-      ',Player,GP\n,Example,0',
-    ];
+    const responses = buildMockSheetResponses();
 
     const fetchMock = jest.fn(async () => ({
       ok: true,

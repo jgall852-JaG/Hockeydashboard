@@ -4,8 +4,10 @@ import {
   buildAvailableAhlPoolKeys,
   buildAhlDraftIntelligenceOutputs,
   buildCanonicalAhlPool,
+  deserializeCanonicalAhlPool,
   getAhlHistoricalSplits,
   getCanonicalAhlPoolOwnership,
+  hasCanonicalAhlPool,
   parseAhlScoreSheet,
   serializeCanonicalAhlPool,
   UTILITY_POSITION_BY_PLAYER,
@@ -77,6 +79,78 @@ describe('AHL sheet ingestion', () => {
       localEdits: { ...state.localEdits, manualAssignments: {} },
     });
     expect([...afterAssignmentRemoved].sort()).toEqual(['assigned player', 'available player', 'local assigned player']);
+  });
+
+  test('excludes locally removed players from canonical availability', () => {
+    const pool = buildCanonicalAhlPool([
+      { name: 'Kept Player', position: 'C', nhlteam: 'AAA' },
+      { name: 'Removed Player', position: 'D', nhlteam: 'BBB' },
+    ]);
+    const state = {
+      datasets: { ahlPool: serializeCanonicalAhlPool(pool) },
+      localEdits: { removedPlayers: ['Removed Player'], manualAssignments: {}, manualUnassign: [] },
+    };
+
+    const ownership = getCanonicalAhlPoolOwnership(state);
+    expect(ownership.removedKeys).toEqual(new Set(['removed player']));
+    expect([...buildAvailableAhlPoolKeys(state)]).toEqual(['kept player']);
+  });
+
+  test('manual unassign frees draft/workspace ownership but never prospect, veteran, or rights ownership', () => {
+    const pool = buildCanonicalAhlPool([
+      { name: 'Grid Pick', position: 'C', nhlteam: 'AAA' },
+      { name: 'Board Pick', position: 'LW', nhlteam: 'BBB' },
+      { name: 'Workspace Pick', position: 'RW', nhlteam: 'CCC' },
+      { name: 'Keeper Prospect', position: 'D', nhlteam: 'DDD' },
+      { name: 'Keeper Veteran', position: 'C', nhlteam: 'EEE' },
+      { name: 'Rights Holder', position: 'G', nhlteam: 'FFF' },
+    ]);
+    const unassignAll = ['grid pick', 'board pick', 'workspace pick', 'keeper prospect', 'keeper veteran', 'rights holder'];
+    const state = {
+      datasets: {
+        ahlPool: serializeCanonicalAhlPool(pool),
+        prospects: { prospects: {
+          keeper: { name: 'Keeper Prospect', owner: 'TEAM A' },
+          rights: { name: 'Rights Holder', owner: 'TEAM B', matchingRights: true, termRemaining: 0 },
+        } },
+        veterans: { veterans: { vet: { name: 'Keeper Veteran', owner: 'TEAM C' } } },
+        roster: { sources: { 'retained-grid': { players: {
+          grid: { name: 'Grid Pick', owner: 'TEAM D' },
+          keeper: { name: 'Keeper Prospect', owner: 'TEAM A' },
+        } } } },
+        draft: { players: { board: { name: 'Board Pick', owner: 'TEAM E' } } },
+      },
+      workingAssignments: { w1: { name: 'Workspace Pick', team: 'TEAM F' } },
+      localEdits: { removedPlayers: [], manualAssignments: {}, manualUnassign: [] },
+    };
+
+    expect([...buildAvailableAhlPoolKeys(state)]).toEqual([]);
+
+    const unassigned = { ...state, localEdits: { ...state.localEdits, manualUnassign: unassignAll } };
+    const ownership = getCanonicalAhlPoolOwnership(unassigned);
+    expect([...buildAvailableAhlPoolKeys(unassigned)].sort()).toEqual(['board pick', 'grid pick', 'workspace pick']);
+    expect(ownership.ownersByPlayerKey.get('keeper prospect')).toEqual(new Set(['TEAM A']));
+    expect(ownership.ownersByPlayerKey.get('keeper veteran')).toEqual(new Set(['TEAM C']));
+    expect(ownership.rightsKeys.has('rights holder')).toBe(true);
+    expect(ownership.draftedKeys.has('keeper prospect')).toBe(false);
+    expect([...ownership.protectedKeys].sort()).toEqual(['keeper prospect', 'keeper veteran', 'rights holder']);
+  });
+
+  test('round-trips the canonical pool through JSON and restores position Sets', () => {
+    const pool = buildCanonicalAhlPool(
+      [{ name: 'Utility Skater', position: 'C', nhlteam: 'NYR', rights: 'Y' }],
+      [{ name: 'Utility Skater', poolposition: 'C/L' }],
+    );
+    const restored = deserializeCanonicalAhlPool(JSON.parse(JSON.stringify(serializeCanonicalAhlPool(pool))));
+    const original = pool.get('utility skater');
+    const roundTripped = restored.get('utility skater');
+
+    expect(roundTripped.positions).toBeInstanceOf(Set);
+    expect(roundTripped.positions).toEqual(original.positions);
+    expect({ ...roundTripped, positions: null }).toEqual({ ...original, positions: null });
+    expect(hasCanonicalAhlPool({})).toBe(false);
+    expect(hasCanonicalAhlPool(null)).toBe(false);
+    expect(hasCanonicalAhlPool(serializeCanonicalAhlPool(pool))).toBe(true);
   });
 
   test('uses the authoritative Google workbooks and includes score tabs', () => {

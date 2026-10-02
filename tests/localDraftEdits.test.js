@@ -77,6 +77,22 @@ describe('local draft edits', () => {
     expect(result.availableKeys.has('owned player')).toBe(true);
   });
 
+  test('manual unassign never frees protected prospect or veteran keepers', () => {
+    const players = [
+      { id: 'keeper', name: 'Keeper Prospect', status: 'in-ahl', ownership: 'TEAM A', available: false },
+      { id: 'pick', name: 'Draft Pick', status: 'in-ahl', ownership: 'TEAM B', available: false },
+    ];
+    const result = applyLocalDraftEdits(players, new Set(), {
+      manualUnassign: ['keeper prospect', 'draft pick'],
+    }, {}, { protectedKeys: new Set(['keeper prospect']) });
+
+    expect(result.players[0]).toMatchObject({ ownership: 'TEAM A', available: false });
+    expect(result.players[0].localUnassigned).toBeUndefined();
+    expect(result.availableKeys.has('keeper prospect')).toBe(false);
+    expect(result.players[1]).toMatchObject({ ownership: null, available: true });
+    expect(result.availableKeys.has('draft pick')).toBe(true);
+  });
+
   test('working assignments (winning bids) fill in cost and owner only when the sheet has no owner yet', () => {
     const players = [
       { id: 'undrafted', name: 'Undrafted Player', status: 'in-ahl', ownership: null, cost: null, available: true },

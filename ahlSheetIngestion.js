@@ -226,6 +226,8 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
   });
 
   const ownersByPlayerKey = new Map(poolEntries.map(([playerKey]) => [playerKey, new Set()]));
+  // Prospect, veteran, rights, and league-roster owners survive manual unassign.
+  const protectedOwnersByPlayerKey = new Map(poolEntries.map(([playerKey]) => [playerKey, new Set()]));
   const draftedKeys = new Set();
   const assignedKeys = new Set();
   const rightsKeys = new Set();
@@ -233,31 +235,32 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
   const resolvePoolKey = (name) => getRosterPlayerIdentityAliases(name)
     .map((alias) => aliasesToPoolKeys.get(alias))
     .find(Boolean) || null;
-  const markOwner = (record, keySet = null) => {
+  const markOwner = (record, keySet = null, { protectedOwner = false } = {}) => {
     const playerKey = resolvePoolKey(record?.name || record?.playerName);
     if (!playerKey) return;
     if (keySet) keySet.add(playerKey);
     const owner = String(record?.owner || record?.team || '').trim();
     if (!owner) return;
     ownersByPlayerKey.get(playerKey).add(owner);
+    if (protectedOwner) protectedOwnersByPlayerKey.get(playerKey).add(owner);
   };
 
   const prospects = Object.values(stateObj?.datasets?.prospects?.prospects || {});
   const veterans = Object.values(stateObj?.datasets?.veterans?.veterans || {});
   prospects.forEach((record) => {
-    markOwner(record);
+    markOwner(record, null, { protectedOwner: true });
     if (hasRightsFlag(record) || (record.matchingRights && Number(record.termRemaining) === 0)) {
       const key = resolvePoolKey(record.name);
       if (key) rightsKeys.add(key);
     }
   });
-  veterans.forEach((record) => markOwner(record));
+  veterans.forEach((record) => markOwner(record, null, { protectedOwner: true }));
 
   const draftGrid = stateObj?.datasets?.roster?.sources?.['retained-grid']?.players || {};
   Object.values(draftGrid).forEach((record) => markOwner(record, draftedKeys));
   Object.values(stateObj?.datasets?.draft?.players || {}).forEach((record) => markOwner(record, draftedKeys));
   Object.values(stateObj?.datasets?.roster?.sources?.['league-layout']?.players || {})
-    .forEach((record) => markOwner(record));
+    .forEach((record) => markOwner(record, null, { protectedOwner: true }));
 
   const assignments = [
     ...Object.values(stateObj?.workingAssignments || {}),
@@ -268,7 +271,7 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
   (stateObj?.localEdits?.manualUnassign || []).forEach((name) => {
     const key = resolvePoolKey(name);
     if (!key) return;
-    ownersByPlayerKey.get(key).clear();
+    ownersByPlayerKey.set(key, new Set(protectedOwnersByPlayerKey.get(key)));
     draftedKeys.delete(key);
     assignedKeys.delete(key);
   });
@@ -281,10 +284,38 @@ export function getCanonicalAhlPoolOwnership(stateObj) {
   poolEntries.forEach(([playerKey, player]) => {
     if (player.rights || player.flags?.rights) rightsKeys.add(playerKey);
     const rightsOwner = player.flags?.rightsOwner || player.rightsOwner;
-    if (rightsOwner) ownersByPlayerKey.get(playerKey).add(String(rightsOwner).trim());
+    if (rightsOwner) {
+      ownersByPlayerKey.get(playerKey).add(String(rightsOwner).trim());
+      protectedOwnersByPlayerKey.get(playerKey).add(String(rightsOwner).trim());
+    }
   });
 
-  return { ownersByPlayerKey, draftedKeys, assignedKeys, rightsKeys, removedKeys };
+  const protectedKeys = new Set(rightsKeys);
+  protectedOwnersByPlayerKey.forEach((owners, playerKey) => {
+    if (owners.size) protectedKeys.add(playerKey);
+  });
+
+  return {
+    ownersByPlayerKey,
+    protectedOwnersByPlayerKey,
+    protectedKeys,
+    draftedKeys,
+    assignedKeys,
+    rightsKeys,
+    removedKeys,
+  };
+}
+
+export function deserializeCanonicalAhlPool(serializedPool) {
+  return new Map(getCanonicalPoolEntries(serializedPool).map(([playerKey, player]) => [
+    playerKey,
+    { ...player, flags: { ...(player.flags || {}) } },
+  ]));
+}
+
+export function hasCanonicalAhlPool(ahlPool) {
+  if (ahlPool instanceof Map) return ahlPool.size > 0;
+  return Boolean(ahlPool && typeof ahlPool === 'object' && !Array.isArray(ahlPool) && Object.keys(ahlPool).length);
 }
 
 export function buildAvailableAhlPoolKeys(stateObj) {

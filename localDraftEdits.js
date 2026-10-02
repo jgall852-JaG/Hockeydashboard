@@ -72,10 +72,11 @@ function buildCostPatch(player, cost) {
   return { cost };
 }
 
-export function applyLocalDraftEdits(players, availableKeys, localEdits, workingAssignments = {}) {
+export function applyLocalDraftEdits(players, availableKeys, localEdits, workingAssignments = {}, { protectedKeys = null } = {}) {
   const edits = normalizeLocalEdits(localEdits);
   const removed = new Set(edits.removedPlayers);
   const unassigned = new Set(edits.manualUnassign);
+  const protectedOwnerKeys = new Set(protectedKeys || []);
   const workingOverrides = buildWorkingAssignmentOverrideMap(workingAssignments);
   const nextAvailableKeys = new Set(availableKeys || []);
   const nextPlayers = (players || [])
@@ -88,7 +89,8 @@ export function applyLocalDraftEdits(players, availableKeys, localEdits, working
       // once the sheet reports a real owner, that stays authoritative and any
       // disagreement is surfaced via detectLocalEditMismatches instead.
       const workingOverride = !assignment && !hasAuthoritativeOwner ? workingOverrides.get(key) : null;
-      const isManuallyUnassigned = unassigned.has(key) && !assignment;
+      // Unassign only undoes draft/workspace ownership; retained keepers stay owned.
+      const isManuallyUnassigned = unassigned.has(key) && !assignment && !protectedOwnerKeys.has(key);
       const isRemoved = removed.has(key);
       if (assignment || workingOverride || isManuallyUnassigned || isRemoved) nextAvailableKeys.delete(key);
       if (isManuallyUnassigned && !isRemoved) nextAvailableKeys.add(key);
