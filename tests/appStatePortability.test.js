@@ -444,6 +444,35 @@ describe('google sheet refresh integration', () => {
     expect(next.metadata.localDraftEdits).toEqual(next.localEdits);
   });
 
+  test('keeps a saved Draft grid name resolution after refreshed sheets change the target spelling', async () => {
+    const responses = buildMockSheetResponses();
+    responses[0] += '\nArseni Gritsyuk,MIN,,,,,,';
+    responses[2] += '\n2,A Gritsyuk,LW,$1.00,,,,';
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      text: async () => responses.shift(),
+    }));
+    const next = await refreshGoogleSheetState({
+      ...EMPTY_SAVED_STATE,
+      draftGridNameAliases: [{
+        sourceName: 'A Gritsyuk',
+        owner: 'TEAM A',
+        targetName: 'Arseny Gritsyuk',
+      }],
+    }, fetchMock);
+
+    const owner = buildOwnerViewData(next).owners.find((entry) => entry.name === 'TEAM A');
+    expect(owner.rosterPlayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: 'Arseni Gritsyuk',
+        sourceName: 'A Gritsyuk',
+        nameMatchMethod: 'manual',
+        nameUnresolved: false,
+      }),
+    ]));
+    expect(next.draftGridNameAliases[0].targetName).toBe('Arseny Gritsyuk');
+  });
+
   test('refreshes owner roster snapshots and flags new draft-grid names outside the AHL pool', async () => {
     const responses = buildMockSheetResponses();
     const updatedDraftGrid = [

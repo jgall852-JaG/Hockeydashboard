@@ -641,6 +641,19 @@ function getDraftGridNameCandidates(stateObj) {
   }));
 }
 
+function getAhlPoolNameSuggestion(stateObj, sourceName) {
+  const sourceAliases = new Set(getRosterPlayerIdentityAliases(sourceName));
+  const matches = new Map();
+  Object.entries(stateObj?.datasets?.ahlPool || {}).forEach(([key, player]) => {
+    const name = String(player?.name || key).trim();
+    if (!name) return;
+    if (getRosterPlayerIdentityAliases(name).some((alias) => sourceAliases.has(alias))) {
+      matches.set(normalizeLookupKey(name), name);
+    }
+  });
+  return matches.size === 1 ? [...matches.values()][0] : null;
+}
+
 function createDraftGridNameResolver(stateObj) {
   const candidates = getDraftGridNameCandidates(stateObj);
   if (!candidates.length) return null;
@@ -657,6 +670,24 @@ function createDraftGridNameResolver(stateObj) {
   });
 
   const savedAliases = Array.isArray(stateObj?.draftGridNameAliases) ? stateObj.draftGridNameAliases : [];
+  const resolveSavedTarget = (targetName) => {
+    const normalizedTarget = normalizeLookupKey(targetName);
+    const exact = candidatesByName.get(normalizedTarget);
+    if (exact) return exact;
+
+    const matchingKeys = new Set(
+      getRosterPlayerIdentityAliases(targetName)
+        .flatMap((alias) => [...(aliases.get(alias) || [])]),
+    );
+    const canonicalMatches = [...matchingKeys]
+      .map((key) => candidatesByName.get(key))
+      .filter((candidate) => candidate?.sources.split(', ').includes('AHL pool'));
+    if (canonicalMatches.length === 1) return canonicalMatches[0];
+    if (canonicalMatches.length > 1) return null;
+    if (matchingKeys.size !== 1) return null;
+    return candidatesByName.get([...matchingKeys][0]) || null;
+  };
+
   return (record) => {
     const name = String(record?.name || '').trim();
     const normalizedName = normalizeLookupKey(name);
@@ -666,7 +697,7 @@ function createDraftGridNameResolver(stateObj) {
       && normalizeLookupKey(entry?.owner) === normalizedOwner
     ));
     if (saved) {
-      const candidate = candidatesByName.get(normalizeLookupKey(saved.targetName));
+      const candidate = resolveSavedTarget(saved.targetName);
       return candidate ? { ...candidate, method: 'manual' } : null;
     }
 
@@ -2302,6 +2333,7 @@ function buildDraftValidationReport(stateObj, { monies: providedMonies = null } 
         sourceName: player.sourceName || player.name,
         owner: owner.name,
         position: getDraftSlotPosition(player),
+        ahlPoolSuggestion: getAhlPoolNameSuggestion(nextState, player.sourceName || player.name),
       }))
   ));
   const inventoryByKey = new Map();
@@ -2979,9 +3011,8 @@ function renderDraftValidationCenter(report) {
   const playerNameOptions = candidates.map((candidate) => (
     `<option value="${escapeHtml(candidate.name)}">${escapeHtml(candidate.sources)}</option>`
   )).join('');
-  const candidateNames = new Set(candidates.map((candidate) => normalizeLookupKey(candidate.name)));
   const renderNameSearch = (selectedName = '') => `
-    <input name="targetName" type="search" list="draftGridNameCandidates" value="${candidateNames.has(normalizeLookupKey(selectedName)) ? escapeHtml(selectedName) : ''}" placeholder="Search players by name" autocomplete="off" required>
+    <input name="targetName" type="search" list="draftGridNameCandidates" value="${escapeHtml(selectedName)}" placeholder="Search players by name" autocomplete="off" required>
   `;
   const unresolvedNames = new Map();
   (report.details.unmatchedDraftGridPlayers || []).forEach((player) => {
@@ -3002,6 +3033,7 @@ function renderDraftValidationCenter(report) {
         Search player by name
         ${renderNameSearch()}
       </label>
+      ${player.ahlPoolSuggestion ? `<button class="secondary" type="button" data-ahl-pool-target="${escapeHtml(player.ahlPoolSuggestion)}">Use AHL pool suggestion: ${escapeHtml(player.ahlPoolSuggestion)}</button>` : ''}
       <button class="secondary" type="submit">Save match</button>
     </form>
   `).join('');
@@ -4159,6 +4191,14 @@ function renderOwnerView(unifiedState) {
       renderOwnerView(result.state);
     });
   });
+  document.querySelectorAll('[data-ahl-pool-target]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const targetName = button.closest('form')?.querySelector('[name="targetName"]');
+      if (!targetName) return;
+      targetName.value = button.dataset.ahlPoolTarget || '';
+      targetName.focus();
+    });
+  });
   document.querySelectorAll('.remove-draft-grid-alias-btn').forEach((button) => {
     button.addEventListener('click', () => {
       const nextState = removeDraftGridNameAlias(
@@ -4574,6 +4614,14 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       }
       state.importedData = result.state;
       rerender();
+    });
+  });
+  document.querySelectorAll('[data-ahl-pool-target]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const targetName = button.closest('form')?.querySelector('[name="targetName"]');
+      if (!targetName) return;
+      targetName.value = button.dataset.ahlPoolTarget || '';
+      targetName.focus();
     });
   });
   document.querySelectorAll('.remove-draft-grid-alias-btn').forEach((button) => {
