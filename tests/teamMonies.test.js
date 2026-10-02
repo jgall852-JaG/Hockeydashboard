@@ -20,12 +20,14 @@ function buildState({ workingAssignments = {}, localEdits = {}, teamBudgets } = 
     { name: 'Keeper Prospect', position: 'D', nhlteam: 'BBB' },
     { name: 'Free Agent', position: 'LW', nhlteam: 'CCC' },
     { name: 'Second Agent', position: 'RW', nhlteam: 'DDD' },
+    { name: 'Veteran Keeper', position: 'D', nhlteam: 'EEE' },
   ]);
   return {
     metadata: {},
     datasets: {
       ahlPool: serializeCanonicalAhlPool(pool),
       prospects: { prospects: { keeper: { name: 'Keeper Prospect', owner: 'TEAM A' } } },
+      veterans: { veterans: { vet: { name: 'Veteran Keeper', owner: 'TEAM A', currentCost: 40 } } },
       roster: {
         teamBudgets: teamBudgets || [
           sheetBudget('TEAM A', 100, 150, 10),
@@ -34,6 +36,7 @@ function buildState({ workingAssignments = {}, localEdits = {}, teamBudgets } = 
         sources: { 'retained-grid': { players: {
           grid: { name: 'Grid Pick', owner: 'TEAM A', cost: 20, position: 'C' },
           keeper: { name: 'Keeper Prospect', owner: 'TEAM A', cost: 3, position: 'D' },
+          vet: { name: 'Veteran Keeper', owner: 'TEAM A', cost: 40, position: 'D' },
         } } },
       },
     },
@@ -49,11 +52,11 @@ describe('team Monies', () => {
 
     expect(teamA).toMatchObject({
       hasSheetBaseline: true,
-      spend: 100,
+      totalSpent: 100,
       remainingBudget: 150,
       playersDrafted: 10,
       openSlots: 15,
-      maxBid: 143,
+      maxPossibleBid: 143,
       localSpendDelta: 0,
     });
     expect(monies.teamSpendMap).toEqual({ 'TEAM A': 100, 'TEAM B': 50 });
@@ -71,7 +74,7 @@ describe('team Monies', () => {
     expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({
       hasSheetBaseline: false,
       remainingBudget: null,
-      maxBid: null,
+      maxPossibleBid: null,
     });
   });
 
@@ -96,15 +99,15 @@ describe('team Monies', () => {
       localEdits: { manualAssignments: { 'Grid Pick': 'TEAM B' } },
     }));
 
-    expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({ spend: 80, remainingBudget: 170, openSlots: 16 });
-    expect(findTeamMonies(monies, 'TEAM B')).toMatchObject({ spend: 70, remainingBudget: 180, openSlots: 19 });
+    expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({ totalSpent: 80, remainingBudget: 170, openSlots: 16 });
+    expect(findTeamMonies(monies, 'TEAM B')).toMatchObject({ totalSpent: 70, remainingBudget: 180, openSlots: 19 });
   });
 
   test('manual assign of a non-grid player uses a slot without charging money', () => {
     const monies = buildTeamMonies(buildState({
       localEdits: { manualAssignments: { 'Second Agent': 'TEAM A' } },
     }));
-    expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({ spend: 100, remainingBudget: 150, openSlots: 14 });
+    expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({ totalSpent: 100, remainingBudget: 150, openSlots: 14 });
   });
 
   test('manual unassign refunds a draft-grid pick but never a protected keeper', () => {
@@ -113,7 +116,7 @@ describe('team Monies', () => {
     }));
     const teamA = findTeamMonies(monies, 'TEAM A');
 
-    expect(teamA).toMatchObject({ spend: 80, remainingBudget: 170, playersDrafted: 9, openSlots: 16 });
+    expect(teamA).toMatchObject({ totalSpent: 80, remainingBudget: 170, playersDrafted: 9, openSlots: 16 });
     expect(teamA.changes.map((change) => change.reason)).toEqual(['manual-unassign']);
   });
 
@@ -123,6 +126,48 @@ describe('team Monies', () => {
     }));
     expect(monies.teamRemainingMap['TEAM B']).toBe(200);
     expect(monies.unresolvedAssignments).toEqual([{ name: 'Not In Pool', team: 'TEAM B', source: 'working' }]);
+  });
+
+  test('derives keeper, rookie, farm, and auction costs from ownership layers and the draft grid', () => {
+    const state = buildState({
+      teamBudgets: [
+        sheetBudget('TEAM A', 100, 150, 4, { gridCosts: 98, farmCosts: 2 }),
+        sheetBudget('TEAM B', 0, 250, 0, { gridCosts: 0, farmCosts: null }),
+      ],
+      workingAssignments: { free: { name: 'Free Agent', team: 'TEAM B', bid: 12 } },
+    });
+    const monies = buildTeamMonies(state);
+
+    // Grid: Veteran Keeper $40 (veteran), Keeper Prospect $3 (rookie), Grid Pick $20 (auction),
+    // plus $35 of grid rows outside the canonical pool, plus a $2 farm deduction.
+    expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({
+      totalSpent: 100,
+      keeperCosts: 40,
+      rookieCosts: 3,
+      draftCosts: 55,
+      farmCosts: 2,
+      unreconciledSpend: 0,
+    });
+    expect(findTeamMonies(monies, 'TEAM B')).toMatchObject({
+      totalSpent: 12,
+      draftCosts: 12,
+      farmCosts: 0,
+      unreconciledSpend: 0,
+    });
+
+    state.localEdits.manualUnassign = ['Grid Pick'];
+    state.localEdits.manualAssignments = { 'Veteran Keeper': 'TEAM B' };
+    state.workingAssignments = {};
+    const after = buildTeamMonies(state);
+    expect(findTeamMonies(after, 'TEAM A')).toMatchObject({ totalSpent: 40, keeperCosts: 0, draftCosts: 35, unreconciledSpend: 0 });
+    expect(findTeamMonies(after, 'TEAM B')).toMatchObject({ totalSpent: 40, keeperCosts: 40, draftCosts: 0, unreconciledSpend: 0 });
+  });
+
+  test('flags TOTAL SPENT that the cost breakdown cannot explain', () => {
+    const monies = buildTeamMonies(buildState({
+      teamBudgets: [sheetBudget('TEAM A', 64, 186, 3, { gridCosts: 63, farmCosts: null })],
+    }));
+    expect(findTeamMonies(monies, 'TEAM A')).toMatchObject({ farmCosts: 0, unreconciledSpend: 1 });
   });
 
   test('the unified rebuild pipeline stores Monies and feeds the validation report', () => {

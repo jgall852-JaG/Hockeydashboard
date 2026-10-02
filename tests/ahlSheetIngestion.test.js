@@ -161,6 +161,7 @@ describe('AHL sheet ingestion', () => {
       'AHL Budget',
       'AHL Roster',
       'AHL Keeper Rights',
+      'AHL Veterans',
       'AHL Scores',
       'AHL Scorebulator',
       'AHL Games Played',
