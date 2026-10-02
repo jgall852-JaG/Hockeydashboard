@@ -1,5 +1,6 @@
 import { calculateRecommendedMaxBid } from './draftIntelligence.js';
 import { normalizeLookupKey } from './liveNhlApi.js';
+import { getDealRating } from './poolGames.js';
 
 const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
   '&': '&amp;',
@@ -10,6 +11,14 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character
 }[character]));
 
 const money = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'NULL';
+
+// Fair price is the estimated auction value in draft dollars; NHL and keeper salaries are never used.
+export function renderDealRatingContent(bid, fairPrice) {
+  if (!Number.isFinite(fairPrice) || fairPrice <= 0) return 'Deal rating: UNPRICED (no estimated auction value)';
+  const deal = getDealRating(bid, fairPrice);
+  if (!deal) return `Deal rating: enter a bid (fair price ${money(fairPrice)})`;
+  return `Deal rating: <span class="deal-badge deal-${deal.tone}">${deal.rating}</span> (fair price ${money(fairPrice)})`;
+}
 
 export function getExperienceTierFromGames(gamesPlayed) {
   if (gamesPlayed === null || gamesPlayed === undefined) return 'Veteran';
@@ -207,6 +216,12 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
     .join('');
   const projectionRows = Object.entries(projections).map(([label, value]) => [label, value]);
   const forecastRows = [
+    ['Forecasted Goals', player.forecastedGoals ?? player.forecast?.projectedGoals],
+    ['Forecasted Assists', player.forecastedAssists ?? player.forecast?.projectedAssists],
+    ['Forecasted Points', player.forecastedPoints ?? player.forecast?.projectedPoints],
+    ['Pool Games (FH)', player.poolGames?.firstHalfGames],
+    ['Pool Games (SH)', player.poolGames?.secondHalfGames],
+    ['Total Pool Games', player.poolGames?.totalPoolGames],
     ['Projected Points', player.forecast?.projectedPoints ?? player.forecastedPoints],
     ['Projected Games', player.forecast?.projectedGames],
     ['Projected Shots', player.forecast?.projectedShots],
@@ -314,8 +329,9 @@ function renderModal(player, teams, teamBudgets, selectedTeam) {
           </select>
         </label>
         <label>Winning bid
-          <input name="bid" type="number" min="0.50" step="0.50" placeholder="0.50" required />
+          <input name="bid" type="number" min="0.50" step="0.50" placeholder="0.50" required data-deal-bid />
         </label>
+        <output class="deal-rating" data-deal-rating data-fair-price="${Number.isFinite(player.auctionValue) ? player.auctionValue : ''}" aria-live="polite">${renderDealRatingContent('', player.auctionValue)}</output>
         <label>Roster category
           <select name="classification" required>
             <option value="">Select category</option>

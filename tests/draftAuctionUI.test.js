@@ -1,4 +1,4 @@
-import { getExperienceTierFromGames, renderDraftAuctionDashboard } from '../draftAuctionUI.js';
+import { getExperienceTierFromGames, renderDealRatingContent, renderDraftAuctionDashboard } from '../draftAuctionUI.js';
 import { buildDraftBoardPlayers } from '../app.js';
 
 function createAhlPool(players) {
@@ -506,6 +506,46 @@ describe('draft auction dashboard rendering', () => {
     expect(modal).toContain('FHPPG</dt><dd>0.6</dd>');
     expect(modal).toContain('SHPPG</dt><dd>0.9</dd>');
     expect(modal).toContain('Composite Score</dt><dd>86</dd>');
+  });
+
+  test('player profile shows AHL Scores pool games under forecast goals/assists/points and a deal rating', () => {
+    const player = {
+      id: 'pool-player', name: 'Pool Player', status: 'in-ahl', available: true, finalPosition: 'C',
+      forecastedGoals: 30, forecastedAssists: 40, forecastedPoints: 70,
+      poolGames: { firstHalfGames: 31, secondHalfGames: 27, totalPoolGames: 58 },
+      auctionValue: 20, valuationStatus: 'priced', nhlCareerGamesPlayed: 500,
+    };
+    const baseProps = {
+      activeTab: 'best-available', players: [player], ahlPool: createAhlPool([player]),
+      availableKeys: new Set(['pool player']), search: '', teamBudgets: [], teamNames: ['Team A'],
+      selectedTeam: '', sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+    };
+    const modal = renderDraftAuctionDashboard({ ...baseProps, selectedPlayer: player });
+    const labels = [...modal.matchAll(/<dt>([^<]+)<\/dt>/g)].map((match) => match[1]);
+    const start = labels.indexOf('Forecasted Goals');
+    expect(labels.slice(start, start + 6)).toEqual([
+      'Forecasted Goals', 'Forecasted Assists', 'Forecasted Points',
+      'Pool Games (FH)', 'Pool Games (SH)', 'Total Pool Games',
+    ]);
+    expect(modal).toContain('Pool Games (FH)</dt><dd>31</dd>');
+    expect(modal).toContain('Pool Games (SH)</dt><dd>27</dd>');
+    expect(modal).toContain('Total Pool Games</dt><dd>58</dd>');
+    expect(modal).toContain('data-deal-rating data-fair-price="20"');
+    expect(modal).toContain('Deal rating: enter a bid (fair price $20.00)');
+
+    const missing = { ...player, poolGames: undefined, auctionValue: null, valuationStatus: 'unpriced' };
+    const unpricedModal = renderDraftAuctionDashboard({ ...baseProps, players: [missing], selectedPlayer: missing });
+    expect(unpricedModal).toContain('Total Pool Games</dt><dd>NULL</dd>');
+    expect(unpricedModal).toContain('data-fair-price=""');
+    expect(unpricedModal).toContain('Deal rating: UNPRICED');
+  });
+
+  test('deal rating content colours STEAL / FAIR / OVERPAY from draft dollars only', () => {
+    expect(renderDealRatingContent('14', 20)).toContain('<span class="deal-badge deal-green">STEAL</span>');
+    expect(renderDealRatingContent('22', 20)).toContain('<span class="deal-badge deal-yellow">FAIR</span>');
+    expect(renderDealRatingContent('22.5', 20)).toContain('<span class="deal-badge deal-red">OVERPAY</span>');
+    expect(renderDealRatingContent('', 20)).toBe('Deal rating: enter a bid (fair price $20.00)');
+    expect(renderDealRatingContent('10', null)).toContain('UNPRICED');
   });
 
   test('Best Available sorts ADP ascending, otherwise Forecasted Points descending, with missing values last', () => {

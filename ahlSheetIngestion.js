@@ -1,5 +1,6 @@
 import { parseCSVLine } from './rosterParser.js';
 import { getRosterPlayerIdentityAliases, normalizeLookupKey } from './liveNhlApi.js';
+import { getPoolGames } from './poolGames.js';
 
 export const AHL_DRAFT_SPREADSHEET_ID = '1_RbnvnxnMzzwty7jdq8I9SN3mWfp187xKVnyPackzeA';
 export const AHL_SCORES_SPREADSHEET_ID = '1FAyJwtHNWjXsnDCehNm1Li-n9pxFN5PvXRdhMokJQ3o';
@@ -678,6 +679,7 @@ export function buildAhlDraftIntelligenceOutputs(outputs, stateObj, poolOwnershi
     player.available = availableKeys.has(key);
     player.availability = player.available ? 'available' : 'unavailable';
     player.historicalSplits = getAhlHistoricalSplits(stateObj, player.name);
+    player.poolGames = getPoolGames(stateObj, player.team);
     player.nhlPosition = null;
     player.sourcesUsed = { ...sourceAvailability };
     player.status = 'in-ahl';

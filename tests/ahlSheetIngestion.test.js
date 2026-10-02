@@ -250,7 +250,7 @@ describe('AHL sheet ingestion', () => {
               owner: 'TEAM A',
               position: 'U',
               poolposition: 'C/L',
-              nhlteam: 'BBB',
+              nhlteam: 'CBS',
               cost: 3.5,
             },
           },
@@ -258,13 +258,13 @@ describe('AHL sheet ingestion', () => {
             inventory: {
               players: {
                 'player-one': { name: 'Player One', position: 'LW', poolposition: 'LW', nhlteam: 'AAA' },
-                'player-two': { name: 'Player Two', position: 'C', poolposition: 'C', nhlteam: 'BBB' },
+                'player-two': { name: 'Player Two', position: 'C', poolposition: 'C', nhlteam: 'CBS' },
               },
             },
             utility: {
               players: {
                 'player-one': { name: 'Player One', position: 'U', poolposition: 'C/LW', nhlteam: 'AAA' },
-                'player-two': { name: 'Player Two', position: 'U', poolposition: 'C/L', nhlteam: 'BBB' },
+                'player-two': { name: 'Player Two', position: 'U', poolposition: 'C/L', nhlteam: 'CBS' },
               },
             },
             'league-layout': {
@@ -280,7 +280,14 @@ describe('AHL sheet ingestion', () => {
             'player-two': { name: 'Player Two', owner: 'TEAM A', cost: 3.5, termRemaining: 1, matchingRights: true },
           },
         },
-        ahlScores: { tabs: { 'AHL Scores': { rows: [['Rank', 'Team']] } } },
+        ahlScores: { tabs: { 'AHL Scores': { rows: [
+          ['#', 'NHL GAMES'],
+          ['1', 'MATCHUP', '', 'TIME'],
+          ['', 'Buffalo', '\u00a0 @ \u00a0Columbus', '7:00 PM'],
+          ['47', 'MATCHUP', '', 'TIME'],
+          ['', 'Columbus', '\u00a0 @ \u00a0Edmonton', '7:00 PM'],
+          ['', 'Ottawa', '\u00a0 @ \u00a0Toronto', '7:00 PM'],
+        ] } } },
       },
       metadata: { ahlSheets: { importedAt: '2026-09-28T00:00:00.000Z' } },
     };
@@ -290,6 +297,9 @@ describe('AHL sheet ingestion', () => {
 
     expect(next.players.sourceAvailability).toEqual({ AHLSheets: true, DobberExcel: false });
     expect(next.players.sourceCoverage.ahlSheets.scoreTabs).toEqual(['AHL Scores']);
+    // Pool games come from the AHL Scores schedule rows for the player's NHL team, never NHL GP.
+    expect(keeper.poolGames).toEqual({ firstHalfGames: 1, secondHalfGames: 1, totalPoolGames: 2 });
+    expect(available.poolGames).toEqual({ firstHalfGames: null, secondHalfGames: null, totalPoolGames: null });
     expect(available).toMatchObject({
       ahlPosition: 'LW',
       utilityPosition: 'C/LW',
