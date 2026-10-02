@@ -363,7 +363,9 @@ describe('google sheet refresh integration', () => {
       },
     }, fetchMock);
 
-    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(fetchMock).toHaveBeenCalledTimes(12);
+    // Optional Post Draft 2025/2024 tabs returned nothing; refresh still succeeds without them.
+    expect(next.datasets.pastAuctions).toEqual({ seasons: {} });
     expect(next.datasets.roster.layout).toBe('merged');
     expect(Object.keys(next.datasets.roster.sources)).toEqual(expect.arrayContaining([
       'inventory',

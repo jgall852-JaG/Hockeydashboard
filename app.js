@@ -11,9 +11,12 @@ import {
   buildCanonicalAhlPool,
   getCanonicalAhlPoolOwnership,
   hasCanonicalAhlPool,
+  PAST_AUCTION_SOURCES,
   parseAhlScoreSheet,
   serializeCanonicalAhlPool,
 } from './ahlSheetIngestion.js';
+import { computeFairPriceV2, parsePastAuctionSheet } from './fairPrice.js';
+import { getPoolGames } from './poolGames.js';
 import {
   addPersonalDraftListEntry,
   normalizePersonalDraftList,
@@ -203,6 +206,7 @@ const DATASET_NAMES = Object.freeze([
   'budget',
   'dobber',
   'ahlScores',
+  'pastAuctions',
 ]);
 
 function createEmptyDatasets() {
@@ -1288,7 +1292,24 @@ async function refreshGoogleSheetState(stateObj, fetchImpl = globalThis.fetch) {
     return { source, parsedData };
   }));
 
+  const pastAuctionSnapshots = await Promise.all(PAST_AUCTION_SOURCES.map(async (source) => {
+    try {
+      const url = `https://docs.google.com/spreadsheets/d/${source.spreadsheetId}/export?format=csv&gid=${source.gid}&cacheBust=${Date.now()}`;
+      const response = await fetchImpl(url, { cache: 'no-store' });
+      if (!response?.ok) return null;
+      const parsed = parsePastAuctionSheet(await response.text());
+      return parsed.players.length ? { source, parsed } : null;
+    } catch {
+      return null;
+    }
+  }));
+
   let next = normalizeState(stateObj);
+  const pastAuctionSeasons = { ...(next.datasets.pastAuctions?.seasons || {}) };
+  pastAuctionSnapshots.filter(Boolean).forEach(({ source, parsed }) => {
+    pastAuctionSeasons[source.season] = { sourceName: source.name, players: parsed.players };
+  });
+  next.datasets.pastAuctions = { seasons: pastAuctionSeasons };
   const scoreTabs = {};
   const loadedTabs = {};
   snapshots.forEach(({ source, parsedData }) => {
@@ -1523,13 +1544,26 @@ function rebuildDraftValidationReport(stateObj, monies = null) {
 }
 
 // Single rebuild pipeline: canonical pool -> availability -> ownership -> Monies -> validation report
-// -> DraftIQ v2 -> DraftIQ v3 (always last).
+// -> DraftIQ v2 -> DraftIQ v3 -> fairPriceV2 (always last).
 function rebuildDraftState(stateObj) {
   const { ownership, availableKeys, monies } = rebuildCanonicalAhlPoolState(stateObj);
   const report = rebuildDraftValidationReport(stateObj, monies);
   const draftIQ = rebuildDraftIQ(stateObj, { ownership, availableKeys, monies });
   const draftIQv3 = rebuildDraftIQv3(stateObj, { ownership, availableKeys, monies });
-  return { ownership, availableKeys, monies, report, draftIQ, draftIQv3 };
+  const fairPriceV2 = rebuildFairPriceV2(stateObj, { availableKeys });
+  return { ownership, availableKeys, monies, report, draftIQ, draftIQv3, fairPriceV2 };
+}
+
+function rebuildFairPriceV2(stateObj, { availableKeys }) {
+  const fairPriceV2 = computeFairPriceV2({
+    ahlPool: stateObj?.datasets?.ahlPool,
+    availableKeys,
+    players: state.draftIntelligence?.players?.players || [],
+    pastAuctions: stateObj?.datasets?.pastAuctions,
+    getPoolGamesForTeam: (team) => getPoolGames(stateObj, team),
+  });
+  if (stateObj?.datasets) stateObj.datasets.fairPriceV2 = fairPriceV2;
+  return fairPriceV2;
 }
 
 function getDraftIqTeamContext(monies) {
@@ -4120,6 +4154,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     ahlPool: unifiedState.datasets.ahlPool || {},
     draftIQ: unifiedState.datasets.draftIQ || {},
     draftIQv3: unifiedState.datasets.draftIQv3 || {},
+    fairPriceV2: unifiedState.datasets.fairPriceV2 || {},
     availableKeys,
     shortlist: state.shortlist,
     personalDraftList: state.personalDraftList,

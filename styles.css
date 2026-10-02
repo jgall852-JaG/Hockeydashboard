@@ -325,6 +325,9 @@ button.secondary {
 .deal-rating {
   align-self: end;
   font-size: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
 }
 
 .deal-badge {

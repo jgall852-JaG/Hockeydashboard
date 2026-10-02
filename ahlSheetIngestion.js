@@ -18,6 +18,13 @@ export const AHL_SHEET_SOURCES = Object.freeze([
   { name: 'AHL Games Played', spreadsheetId: AHL_SCORES_SPREADSHEET_ID, gid: '1076930424', datasetType: 'scores' },
 ]);
 
+// Prior-season post-draft grids. They only supply fairPriceV2 base prices, never ownership, and
+// are optional: a failed fetch keeps the previously loaded season.
+export const PAST_AUCTION_SOURCES = Object.freeze([
+  { name: 'Post Draft 2025', season: '2025', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '1971572547' },
+  { name: 'Post Draft 2024', season: '2024', spreadsheetId: AHL_DRAFT_SPREADSHEET_ID, gid: '483115229' },
+]);
+
 export const UTILITY_POSITION_BY_PLAYER = Object.freeze({
   'ryan nugent-hopkins': 'C/L',
   'thomas hertl': 'C/L',
