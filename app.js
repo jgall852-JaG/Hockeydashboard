@@ -105,6 +105,58 @@ const GOALIE_TEAM_CITY_KEYS = new Set([
 ]);
 const SKATER_POSITION_KEYS = new Set(['c', 'l', 'lw', 'r', 'rw', 'd', 'ld', 'rd', 'f']);
 const GOALIE_TEAM_POSITION_KEYS = new Set(['g', 'goalie', 'goalieteam', 'goalie team', 'team goalie', 'gt']);
+const MODAL_FOCUSABLE_SELECTOR = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+let lastPlayerDetailsTriggerId = null;
+
+function bindTabKeyboardNavigation(root) {
+  root.querySelectorAll('[role="tablist"]').forEach((tabList) => {
+    tabList.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...tabList.querySelectorAll('[role="tab"]')];
+      const currentIndex = tabs.indexOf(document.activeElement);
+      if (currentIndex < 0 || !tabs.length) return;
+      event.preventDefault();
+      const nextIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? tabs.length - 1
+          : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      const nextTabId = tabs[nextIndex].dataset.dashboardTab;
+      tabs[nextIndex].click();
+      [...root.querySelectorAll('[role="tab"]')]
+        .find((tab) => tab.dataset.dashboardTab === nextTabId)
+        ?.focus();
+    });
+  });
+}
+
+function getModalFocusState(dialog) {
+  const activeElement = document.activeElement;
+  if (!dialog?.contains(activeElement)) return null;
+  const controls = [...dialog.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)];
+  return {
+    activeIndex: controls.indexOf(activeElement),
+    tagName: activeElement.tagName,
+    name: activeElement.getAttribute('name'),
+    formClassName: activeElement.form?.className || '',
+    className: activeElement.className,
+    isDealBid: activeElement.hasAttribute('data-deal-bid'),
+  };
+}
+
+function focusMatchingModalControl(dialog, focusState) {
+  const controls = [...dialog.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)];
+  const target = controls.find((element) => (
+    focusState.name
+      ? element.tagName === focusState.tagName
+        && element.getAttribute('name') === focusState.name
+        && (element.form?.className || '') === focusState.formClassName
+      : focusState.isDealBid
+        ? element.hasAttribute('data-deal-bid')
+        : element.tagName === focusState.tagName && element.className === focusState.className
+  )) || controls[focusState.activeIndex];
+  (target || dialog).focus();
+}
 
 const state = {
   importedData: null,
@@ -3788,6 +3840,7 @@ function renderOwnerView(unifiedState) {
       renderOwnerView(unifiedState);
     });
   });
+  bindTabKeyboardNavigation(app);
 
   if (searchFocus) {
     const replacement = document.getElementById(searchFocus.id);
@@ -4147,6 +4200,8 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     ${ownerData.owners.length ? `<div class="owner-layout">${ownerListMarkup}<div>${renderLeagueIntelligence(computeOwnerAggregates(unifiedState))}${ownerDetailMarkup}</div></div>` : ''}`;
   const workspaceHtml = renderDraftWorkspacePanel(draftValidationReport);
 
+  const existingDialog = app.querySelector('[role="dialog"]');
+  const modalFocusState = getModalFocusState(existingDialog);
   app.innerHTML = renderDraftAuctionDashboard({
     activeTab: state.activeDashboardTab,
     players,
@@ -4185,6 +4240,39 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
         ? 'Some drafted players have invalid NHL career GP; their Experience Tier is Unknown.' : '',
     ].filter(Boolean).join(' '),
   });
+  const profileDialog = app.querySelector('[role="dialog"]');
+  if (profileDialog) {
+    if (modalFocusState) {
+      focusMatchingModalControl(profileDialog, modalFocusState);
+    } else {
+      profileDialog.querySelector('.modal-close')?.focus();
+    }
+    profileDialog.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        state.selectedDraftPlayerId = null;
+        rerender();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const controls = [...profileDialog.querySelectorAll(MODAL_FOCUSABLE_SELECTOR)]
+        .filter((element) => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+      if (!controls.length) {
+        event.preventDefault();
+        profileDialog.focus();
+      } else if (event.shiftKey && document.activeElement === controls[0]) {
+        event.preventDefault();
+        controls[controls.length - 1].focus();
+      } else if (!event.shiftKey && document.activeElement === controls[controls.length - 1]) {
+        event.preventDefault();
+        controls[0].focus();
+      }
+    });
+  } else if (lastPlayerDetailsTriggerId) {
+    const trigger = [...app.querySelectorAll('[data-player-details]')]
+      .find((button) => button.dataset.playerDetails === lastPlayerDetailsTriggerId);
+    (trigger || app.querySelector('[role="tab"][aria-selected="true"]'))?.focus();
+    lastPlayerDetailsTriggerId = null;
+  }
   if (state.activeDashboardTab === 'draft-board') void hydrateDraftBoardProfiles(draftedPlayers);
   updateTopbarActions(unifiedState);
 
@@ -4194,6 +4282,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       renderOwnerView(unifiedState);
     });
   });
+  bindTabKeyboardNavigation(app);
   const rerender = () => renderOwnerView(unifiedState);
   document.querySelectorAll('.owner-item').forEach((button) => {
     button.addEventListener('click', () => {
@@ -4331,6 +4420,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
   });
   document.querySelectorAll('[data-player-details]').forEach((button) => {
     button.addEventListener('click', () => {
+      lastPlayerDetailsTriggerId = button.dataset.playerDetails || null;
       state.selectedDraftPlayerId = button.dataset.playerDetails || null;
       state.selectedDraftTeam = '';
       rerender();

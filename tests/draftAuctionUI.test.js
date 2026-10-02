@@ -98,12 +98,18 @@ describe('draft auction dashboard rendering', () => {
     expect(html).toContain('Best Available');
     expect(html).toContain('Team Budgets');
     expect(html).toContain('Tools & Validation');
+    expect(html).toContain('id="draft-board-tab" role="tab" aria-controls="draft-board-panel" aria-selected="true"');
+    expect(html).toContain('id="draft-board-panel" class="dashboard-panel" role="tabpanel" aria-labelledby="draft-board-tab"');
+    expect(html).toContain('<th scope="col">Player</th>');
+    expect(html).toContain('role="dialog" aria-modal="true" aria-labelledby="draftModalTitle" tabindex="-1"');
     expect(html).toContain('UNPRICED');
-    expect(html).not.toContain('<th>Availability</th>');
+    expect(html).toContain('<th scope="col">Availability</th>');
+    expect(html).toMatch(/id="personal-draft-list-panel"[^>]* hidden>/);
     expect(html).toContain('Record winning bid');
     expect(html).toContain('Recommended max bid:</strong> NULL');
     expect(html).toContain('Personal Draft List');
-    expect(html).not.toContain('Add to Personal List');
+    const boardPanel = html.slice(html.indexOf('id="draft-board-panel"'), html.indexOf('id="best-available-panel"'));
+    expect(boardPanel).not.toContain('Add to Personal List');
     expect(html).toContain('NHL POS');
     expect(html).toContain('Final Position C/LW');
     expect(html).toContain('Final Position</th>');
@@ -293,9 +299,9 @@ describe('draft auction dashboard rendering', () => {
     };
     const defaultBoard = renderDraftAuctionDashboard(props);
     const boardPanel = defaultBoard.slice(defaultBoard.indexOf('id="draft-board-panel"'), defaultBoard.indexOf('id="best-available-panel"'));
-    expect(boardPanel.match(/<th>[^<]+<\/th>/g)).toEqual([
-      '<th>Player</th>', '<th>Final Position</th>', '<th>Experience Tier</th>',
-      '<th>Owner</th>', '<th>Auction Value</th>', '<th>Remove Locally</th>',
+    expect(boardPanel.match(/<th\b[^>]*>[^<]+<\/th>/g)).toEqual([
+      '<th scope="col">Player</th>', '<th scope="col">Final Position</th>', '<th scope="col">Experience Tier</th>',
+      '<th scope="col">Owner</th>', '<th scope="col">Auction Value</th>', '<th scope="col">Remove Locally</th>',
     ]);
     expect(boardPanel).not.toContain('data-player-details="available"');
     expect(boardPanel).toContain('data-player-details="drafted"');
@@ -315,9 +321,10 @@ describe('draft auction dashboard rendering', () => {
     const emptyBoard = renderDraftAuctionDashboard({ ...props, draftedPlayers: [] });
     expect(emptyBoard).toContain('No drafted players match the current filters.');
     const bestPanel = renderDraftAuctionDashboard({ ...props, activeTab: 'best-available' });
-    expect(bestPanel).toContain('data-player-details="available"');
-    expect(bestPanel).not.toContain('data-player-details="drafted"');
-    expect(bestPanel).toContain('data-personal-add="available"');
+    const bestAvailablePanel = bestPanel.slice(bestPanel.indexOf('id="best-available-panel"'), bestPanel.indexOf('id="team-budgets-panel"'));
+    expect(bestAvailablePanel).toContain('data-player-details="available"');
+    expect(bestAvailablePanel).not.toContain('data-player-details="drafted"');
+    expect(bestAvailablePanel).toContain('data-personal-add="available"');
     const draftedModal = renderDraftAuctionDashboard({ ...props, selectedPlayer: draftedPlayer });
     expect(draftedModal).toMatch(/Record winning bid<\/button>/);
     expect(draftedModal).toMatch(/<button class="primary" type="submit" disabled>Record winning bid<\/button>/);
@@ -454,11 +461,11 @@ describe('draft auction dashboard rendering', () => {
       workspaceHtml: '',
     };
     const html = renderDraftAuctionDashboard(props);
-    const panel = html.slice(html.indexOf('id="best-available-panel"'));
+    const panel = html.slice(html.indexOf('id="best-available-panel"'), html.indexOf('id="team-budgets-panel"'));
     const header = panel.slice(panel.indexOf('<thead>'), panel.indexOf('</thead>'));
-    expect(header.match(/<th>[^<]+<\/th>/g)).toEqual([
-      '<th>Player</th>', '<th>Final Position</th>',
-      '<th>Forecasted Goals</th>', '<th>Forecasted Assists</th>',       '<th>Forecasted Points</th>', '<th>DraftIQ</th>', '<th>DraftIQ v3</th>',
+    expect(header.match(/<th\b[^>]*>[^<]+<\/th>/g)).toEqual([
+      '<th scope="col">Player</th>', '<th scope="col">Final Position</th>',
+      '<th scope="col">Forecasted Goals</th>', '<th scope="col">Forecasted Assists</th>', '<th scope="col">Forecasted Points</th>', '<th scope="col">DraftIQ</th>', '<th scope="col">DraftIQ v3</th>',
     ]);
     expect(header).not.toContain('Shortlist');
     expect(header).not.toContain('Insights');

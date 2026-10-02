@@ -32,6 +32,11 @@ Use the app to answer four questions:
 3. What is this player’s draft value/context?
 4. Can I trust this data right now?
 
+## Keyboard and accessibility
+- Use Tab and Shift+Tab to move through controls; use Left/Right Arrow, Home, and End to navigate dashboard tabs.
+- Player profiles keep keyboard focus inside the dialog, close with Escape, and return focus to the player that opened them.
+- Keyboard focus is visibly highlighted, and reduced-motion preferences are respected.
+
 ## How to launch locally
 1. Install Node.js and run `Launch-Hockey-Dashboard.bat` from the folder containing `index.html` (the older `Start-Hockeydashboard.cmd` also works); keep the launcher running.
 2. Open `http://127.0.0.1:3000/index.html` on that computer. On another device on the same network, use the LAN URL printed by the launcher instead of `127.0.0.1`.
