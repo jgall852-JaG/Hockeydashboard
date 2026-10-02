@@ -458,7 +458,7 @@ describe('draft auction dashboard rendering', () => {
     const header = panel.slice(panel.indexOf('<thead>'), panel.indexOf('</thead>'));
     expect(header.match(/<th>[^<]+<\/th>/g)).toEqual([
       '<th>Player</th>', '<th>Final Position</th>',
-      '<th>Forecasted Goals</th>', '<th>Forecasted Assists</th>', '<th>Forecasted Points</th>',
+      '<th>Forecasted Goals</th>', '<th>Forecasted Assists</th>', '<th>Forecasted Points</th>', '<th>DraftIQ</th>',
     ]);
     expect(header).not.toContain('Shortlist');
     expect(header).not.toContain('Insights');
@@ -469,7 +469,9 @@ describe('draft auction dashboard rendering', () => {
     expect(header).not.toContain('Composite Score');
     expect(header).not.toContain('Availability');
     expect(panel).toContain('data-player-details="available"');
-    expect(panel).toMatch(/<td>C\/LW<\/td>\s*<td>25<\/td>\s*<td>35<\/td>\s*<td>60<\/td>\s*<\/tr>/);
+    expect(panel).toMatch(/<td>C\/LW<\/td>\s*<td>25<\/td>\s*<td>35<\/td>\s*<td>60<\/td>\s*<td>NULL<\/td>\s*<\/tr>/);
+    expect(renderDraftAuctionDashboard({ ...props, draftIQ: { 'available player': { draftIQ: 81.5 } } }))
+      .toMatch(/<td>60<\/td>\s*<td>81.5<\/td>\s*<\/tr>/);
     expect(panel.slice(panel.indexOf('<tbody>'))).not.toContain('RW');
     expect(panel.slice(panel.indexOf('<tbody>'))).not.toContain('Veteran');
     expect(panel).not.toContain('<td>Available</td>');
@@ -477,6 +479,7 @@ describe('draft auction dashboard rendering', () => {
     expect(sortOptions.match(/<option [^>]*>[^<]+<\/option>/g)).toEqual([
       '<option selected>ADP</option>',
       '<option >Forecasted Points</option>',
+      '<option >DraftIQ</option>',
     ]);
     expect(panel).toContain('<input id="bestAvailableSearch" type="search" value=""');
     expect(panel).not.toContain('Experience Tier');
@@ -524,6 +527,38 @@ describe('draft auction dashboard rendering', () => {
     expect(rowIds('Forecasted Points')).toEqual(['no-adp', 'low', 'high', 'missing']);
     // Legacy persisted sorts (Composite Score, FHPPG, ...) fall back to Forecasted Points.
     expect(rowIds('Composite Score')).toEqual(['no-adp', 'low', 'high', 'missing']);
+  });
+
+  test('Best Available sorts by DraftIQ descending with NULLs last and points/goals/assists/ADP tie-breakers', () => {
+    const players = [
+      { id: 'a', name: 'A', status: 'in-ahl', finalPosition: 'C', adp: 9, forecastedPoints: 50, forecastedGoals: 20, forecastedAssists: 30 },
+      { id: 'b', name: 'B', status: 'in-ahl', finalPosition: 'C', adp: 4, forecastedPoints: 50, forecastedGoals: 25, forecastedAssists: 25 },
+      { id: 'c', name: 'C', status: 'in-ahl', finalPosition: 'C', adp: 2, forecastedPoints: 50, forecastedGoals: 25, forecastedAssists: 25 },
+      { id: 'd', name: 'D', status: 'in-ahl', finalPosition: 'C', adp: 1, forecastedPoints: 50, forecastedGoals: 25, forecastedAssists: 26 },
+      { id: 'e', name: 'E', status: 'in-ahl', finalPosition: 'C', adp: 3, forecastedPoints: 80 },
+    ];
+    const props = {
+      activeTab: 'best-available', players, ahlPool: createAhlPool(players),
+      availableKeys: new Set(['a', 'b', 'c', 'd', 'e']),
+      draftIQ: { a: { draftIQ: 90 }, b: { draftIQ: 70 }, c: { draftIQ: 70 }, d: { draftIQ: null }, e: { draftIQ: 10 } },
+      search: '', teamBudgets: [], teamNames: [], selectedPlayer: null, selectedTeam: '',
+      sourceAvailability: {}, toolsHtml: '', workspaceHtml: '',
+    };
+    const rowIds = (sort) => {
+      const html = renderDraftAuctionDashboard({ ...props, bestAvailableSort: sort });
+      const panel = html.slice(html.indexOf('id="best-available-panel"'), html.indexOf('id="team-budgets-panel"'));
+      return [...panel.matchAll(/data-player-details="([^"]+)"/g)].map((match) => match[1]);
+    };
+    // b and c tie on DraftIQ/points/goals/assists, so ADP ascending breaks the tie.
+    expect(rowIds('DraftIQ')).toEqual(['a', 'c', 'b', 'e', 'd']);
+    // Points tie (50) -> goals (25 beats 20) -> assists (26 beats 25) -> ADP.
+    expect(rowIds('Forecasted Points')).toEqual(['e', 'd', 'c', 'b', 'a']);
+    expect(rowIds('ADP')).toEqual(['d', 'c', 'e', 'b', 'a']);
+    expect(renderDraftAuctionDashboard({ ...props, bestAvailableSort: 'DraftIQ' })).toContain('Sorted by DraftIQ (highest first)');
+    const needsSelect = renderDraftAuctionDashboard({ ...props, teamNames: ['Team A', 'Team B'], bestAvailableNeedsTeam: 'Team B' })
+      .match(/<select id="bestAvailableNeedsTeam">([\s\S]*?)<\/select>/)[1];
+    expect(needsSelect).toContain('<option value="Team B" selected>Team B</option>');
+    expect(needsSelect).toContain('<option value="">None</option>');
   });
 
   test('Best Available limits to the top 25 after position and sort, never including drafted players', () => {

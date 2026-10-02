@@ -57,11 +57,21 @@ describe('forecasted stats', () => {
     );
   });
 
-  test('rejects malformed numeric projection fields rather than treating them as missing', () => {
-    expect(() => buildForecastedStats({ ProjPts: 'maybe' }, {})).toThrow('Dobber projection ProjPts');
+  test('rejects malformed games/shots fields but leaves invalid Goals/Assists/Points cells NULL', () => {
+    expect(buildForecastedStats({ ProjPts: 'maybe' }, {}).projectedPoints).toBeNull();
+    expect(buildForecastedStats({ ProjPts: '#N/A', ProjG: '#N/A', ProjA: -1 }, {}))
+      .toMatchObject({ projectedPoints: null, projectedGoals: null, projectedAssists: null });
     expect(() => buildForecastedStats({ ProjGP: -1 }, {})).toThrow('Dobber projection ProjGP');
-    expect(() => normalizeDobberRows([{ Player: 'Player One', ProjPts: 'maybe' }]))
-      .toThrow('Dobber projection ProjPts');
+    expect(() => buildForecastedStats({ ProjSOG: 'many' }, {})).toThrow('Dobber projection ProjSOG');
+    expect(normalizeDobberRows([{ Player: 'Player One', ProjPts: 'maybe' }])['player one']).toBeTruthy();
+  });
+
+  test('reads Dobber Goals/Assists/Points columns into forecastedGoals/Assists/Points', () => {
+    const rows = normalizeDobberRows([
+      { Player: 'Bad Points', Games: '20', Goals: '#N/A', Assists: '4', Points: '-1', SOG: '30' },
+    ]);
+    expect(applyForecastedStats({ name: 'Bad Points' }, rows['bad points'].forecastProjections))
+      .toMatchObject({ forecastedGoals: null, forecastedAssists: 4, forecastedPoints: null });
   });
 
   test('reads Dobber Goals/Assists columns as forecasted goals and assists, leaving bad cells NULL', () => {

@@ -22,6 +22,7 @@ import {
   updatePersonalDraftListEntry,
 } from './personalDraftList.js';
 import { loadAhlSnapshot, saveAhlSnapshot } from './offlineSnapshotStore.js';
+import { computeDraftIQ } from './draftIqV2.js';
 import {
   applyLocalDraftEdits,
   createEmptyLocalEdits,
@@ -128,6 +129,7 @@ const state = {
   bestAvailableSearch: '',
   draftCategoryFilter: '',
   bestAvailableSort: 'ADP',
+  bestAvailableNeedsTeam: '',
   showRemovedPlayers: false,
   highlightUnavailablePlayers: false,
   selectedDraftPlayerId: null,
@@ -1483,11 +1485,27 @@ function rebuildDraftValidationReport(stateObj, monies = null) {
   return buildDraftValidationReport(stateObj, { monies });
 }
 
-// Single rebuild pipeline: canonical pool -> availability -> ownership -> Monies -> validation report.
+// Single rebuild pipeline: canonical pool -> availability -> ownership -> Monies -> validation report -> DraftIQ v2.
 function rebuildDraftState(stateObj) {
   const { ownership, availableKeys, monies } = rebuildCanonicalAhlPoolState(stateObj);
   const report = rebuildDraftValidationReport(stateObj, monies);
-  return { ownership, availableKeys, monies, report };
+  const draftIQ = rebuildDraftIQ(stateObj, { ownership, availableKeys, monies });
+  return { ownership, availableKeys, monies, report, draftIQ };
+}
+
+function rebuildDraftIQ(stateObj, { ownership, availableKeys, monies }) {
+  const team = state.bestAvailableNeedsTeam || '';
+  const teamMonies = (monies?.teams || []).find((entry) => normalizeLookupKey(entry.team) === normalizeLookupKey(team));
+  const draftIQ = computeDraftIQ({
+    ahlPool: stateObj?.datasets?.ahlPool,
+    availableKeys,
+    players: state.draftIntelligence?.players?.players || [],
+    ownersByPlayerKey: ownership?.ownersByPlayerKey,
+    team,
+    openSlots: Number.isInteger(teamMonies?.openSlots) ? teamMonies.openSlots : null,
+  });
+  if (stateObj?.datasets) stateObj.datasets.draftIQ = draftIQ;
+  return draftIQ;
 }
 
 function hasGoogleSheetSnapshot(stateObj) {
@@ -4046,6 +4064,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     players,
     draftedPlayers,
     ahlPool: unifiedState.datasets.ahlPool || {},
+    draftIQ: unifiedState.datasets.draftIQ || {},
     availableKeys,
     shortlist: state.shortlist,
     personalDraftList: state.personalDraftList,
@@ -4059,6 +4078,7 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
     bestAvailableSearch: state.bestAvailableSearch,
     categoryFilter: state.draftCategoryFilter,
     bestAvailableSort: state.bestAvailableSort,
+    bestAvailableNeedsTeam: state.bestAvailableNeedsTeam,
     showRemovedPlayers: state.showRemovedPlayers,
     highlightUnavailablePlayers: state.highlightUnavailablePlayers,
     teamBudgets,
@@ -4198,6 +4218,10 @@ function renderAuctionDashboard(unifiedState, ownerData, draftValidationReport) 
       edits.manualUnassign = edits.manualUnassign.filter((key) => key !== playerKey);
       saveLocalEdits(edits);
     });
+  });
+  document.getElementById('bestAvailableNeedsTeam')?.addEventListener('change', (event) => {
+    state.bestAvailableNeedsTeam = event.target.value || '';
+    rerender();
   });
   document.getElementById('personalDraftSort')?.addEventListener('change', (event) => {
     state.personalDraftListSort = event.target.value || 'rank';

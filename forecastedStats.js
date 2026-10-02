@@ -7,8 +7,8 @@ function readProjection(projections, aliases, { strict = true } = {}) {
   if (!key || projections[key] === null || String(projections[key]).trim() === '') return null;
   const value = Number(String(projections[key]).replace(/,/g, '').trim());
   if (!Number.isFinite(value) || value < 0) {
-    // Goals/assists are display-only; the bundled workbook has rows like Assists = -1, which
-    // should leave that field NULL rather than reject the entire Dobber import.
+    // Goals/assists/points are forecast fields; the bundled workbook has rows like Assists = -1 or
+    // #N/A, which should leave that field NULL rather than reject the entire Dobber import.
     if (!strict) return null;
     throw new Error(`Dobber projection ${key} must be a nonnegative number.`);
   }
@@ -43,7 +43,7 @@ function deriveTrendSplits({ projectedPoints, projectedGames, threeYearPoints, u
 }
 
 export function buildForecastedStats(projections, historicalSplits, trendInputs = {}) {
-  const projectedPoints = readProjection(projections, ['ProjPts', 'Projected Points', 'Forecasted Points', 'projectedPoints']);
+  const projectedPoints = readProjection(projections, ['ProjPts', 'Projected Points', 'Forecasted Points', 'projectedPoints'], { strict: false });
   const projectedGames = readProjection(projections, ['ProjGP', 'Proj Games', 'Projected Games', 'projectedGames', 'GP']);
   const projectedShots = readProjection(projections, ['ProjSOG', 'ProjShots', 'Proj Shots', 'Projected Shots', 'projectedShots', 'SOG', 'Shots']);
   const projectedGoals = readProjection(projections, ['ProjG', 'Proj Goals', 'Projected Goals', 'Forecasted Goals', 'projectedGoals', 'Goals'], { strict: false });
