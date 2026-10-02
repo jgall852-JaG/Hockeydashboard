@@ -359,11 +359,12 @@ export function renderDraftAuctionDashboard({
     return matchesSearch && matchesPosition && matchesCategory;
   });
   const bestPlayers = eligiblePlayers.filter((player) => {
-    const removed = player.localStatus === 'removed-local';
     if (draftedKeys.has(normalizeLookupKey(player.name))) return false;
-    if (removed) return showRemovedPlayers;
-    // Routing: unavailable players (drafted in AHL) are routed to Draft Board, not Best Available.
-    return player.availability !== 'Unavailable';
+    if (player.localStatus === 'removed-local') return false;
+    // availableKeys is the refreshed, unified availability source; do not trust
+    // a possibly stale player.availability field to admit unavailable players.
+    return player.status !== 'not-in-ahl'
+      && availableKeys.has(normalizeLookupKey(player.name));
   });
   const sortKeys = {
     ADP: 'adp',
@@ -396,14 +397,14 @@ export function renderDraftAuctionDashboard({
   });
   const rankedBestPlayers = bestPlayers
     .filter((player) => !bestPositionFilter || getAhlPlayerPositions(player).includes(bestPositionFilter))
-    .slice(0, 25);
+    .slice(0, 10);
   const tab = (id, label) => `<button type="button" role="tab" aria-selected="${activeTab === id}" data-dashboard-tab="${id}">${label}</button>`;
   const selected = (value, current) => value === current ? 'selected' : '';
   const localPlayerFilters = `<div class="draft-board-filters draft-local-edit-toggles">
     <label><input type="checkbox" data-show-removed-players ${showRemovedPlayers ? 'checked' : ''} /> Show Removed Players</label>
     <label><input type="checkbox" data-highlight-ahl-unavailable ${highlightUnavailablePlayers ? 'checked' : ''} /> Highlight AHL-eligible but unavailable players</label>
   </div>`;
-  const bestAvailableEmptyMessage = 'No undrafted AHL-eligible players match the current filters.';
+  const bestAvailableEmptyMessage = 'No available, undrafted AHL-eligible players match the current filters.';
   const draftBoardEmptyMessage = 'No drafted players match the current filters.';
   const sourceRows = Object.entries(sourceAvailability || {}).map(([name, loaded]) => `<tr><td>${escapeHtml(name)}</td><td>${loaded ? 'Available' : 'Missing'}</td></tr>`).join('');
   const legend = `<details class="acronym-legend"><summary class="secondary">Legend</summary>
@@ -436,7 +437,7 @@ export function renderDraftAuctionDashboard({
     </div>
   </section>`;
   const bestPanel = `<section id="best-available-panel" class="dashboard-panel" role="tabpanel" ${activeTab === 'best-available' ? '' : 'hidden'}>
-    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Top 25 undrafted players matching the selected position; check Availability before bidding. Forecast fields remain NULL until source-backed projections are available.</p></div>
+    <div class="panel"><div class="preview-header"><div><h2>Best Available</h2><p class="panel-subtitle">Top 10 currently available, undrafted players matching the selected position. Forecast fields remain NULL until source-backed projections are available.</p></div>
       <div class="best-available-toolbar"><label>Position <select id="bestPositionFilter"><option value="">All</option>${['C', 'LW', 'RW', 'D'].map((position) => `<option value="${position}" ${selected(position, bestPositionFilter)}>${position}</option>`).join('')}</select></label><label>Sort by <select id="bestAvailableSort">${Object.keys(sortKeys).map((key) => `<option ${selected(key, bestAvailableSort)}>${key}</option>`).join('')}</select></label>${legend}</div></div>
       ${localPlayerFilters}
       ${renderPlayerTable(rankedBestPlayers, availableKeys, personalDraftList, { kind: 'best-available', emptyMessage: bestAvailableEmptyMessage, highlightUnavailable: highlightUnavailablePlayers })}
